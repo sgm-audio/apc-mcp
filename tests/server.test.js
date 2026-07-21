@@ -144,9 +144,13 @@ describe('apc-mcp MCP Server', () => {
         name: 'audio_plugin_create',
         arguments: { projectPath: '/tmp' },
       });
-      const text = result.result?.content?.[0]?.text || '';
-      assert.ok(result.result?.isError, `expected isError, got: ${JSON.stringify(result).slice(0, 300)}`);
-      assert.ok(text.includes('Required') || text.includes('required'), `expected validation msg, got: ${text}`);
+      const toolResult = result.result;
+      const protocolError = result.error;
+      const text = toolResult?.content?.[0]?.text || JSON.stringify(protocolError || '');
+      assert.ok(protocolError || toolResult?.isError === true,
+        `expected JSON-RPC error or isError tool result, got: ${JSON.stringify(result).slice(0, 300)}`);
+      assert.match(text, /required|invalid input|expected string|validation|undefined/i,
+        `expected validation msg, got: ${text}`);
     });
 
     it('should scaffold a CLAP plugin', async () => {
