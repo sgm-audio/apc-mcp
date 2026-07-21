@@ -1,5 +1,5 @@
 {
-  "name": "@scottmills306/apc-mcp",
+  "name": "@sgm-audio/apc-mcp",
   "version": "1.5.0",
   "description": "MCP server for audio plugin development — CMake build, test, lint, and project management for JUCE, CLAP, VST3, and ARA plugin projects",
   "type": "module",
@@ -28,10 +28,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/scottmills306/apc-mcp.git"
+    "url": "https://github.com/sgm-audio/apc-mcp.git"
   },
-  "homepage": "https://github.com/scottmills306/apc-mcp",
-  "bugs": "https://github.com/scottmills306/apc-mcp/issues",
+  "homepage": "https://github.com/sgm-audio/apc-mcp",
+  "bugs": "https://github.com/sgm-audio/apc-mcp/issues",
   "license": "MIT",
   "keywords": [
     "mcp",

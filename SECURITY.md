@@ -79,4 +79,4 @@ Dependabot opens PRs automatically for any dependency update. CodeQL runs on eve
 
 ## Reporting a vulnerability
 
-Open an issue at https://github.com/scottmills306/apc-mcp/issues with the `security` label. For sensitive disclosures, reach out directly via the repository owner's GitHub profile.
+Open an issue at https://github.com/sgm-audio/apc-mcp/issues with the `security` label. For sensitive disclosures, reach out directly via the repository owner's GitHub profile.
