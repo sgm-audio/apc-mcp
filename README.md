@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/scottmills306/apc-mcp/main/assets/logo-dark.svg">
-    <img alt="apc-mcp" src="https://raw.githubusercontent.com/scottmills306/apc-mcp/main/assets/logo.svg" width="520">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/sgm-audio/apc-mcp/main/assets/logo-dark.svg">
+    <img alt="apc-mcp" src="https://raw.githubusercontent.com/sgm-audio/apc-mcp/main/assets/logo.svg" width="520">
   </picture>
 </p>
 
@@ -13,10 +13,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/scottmills306/apc-mcp/actions"><img src="https://img.shields.io/github/actions/workflow/status/scottmills306/apc-mcp/publish.yml?branch=main&logo=github&label=CI" alt="CI"></a>
-  <a href="https://github.com/scottmills306/apc-mcp/releases"><img src="https://img.shields.io/github/v/release/scottmills306/apc-mcp?logo=github&label=Release" alt="Release"></a>
+  <a href="https://github.com/sgm-audio/apc-mcp/actions"><img src="https://img.shields.io/github/actions/workflow/status/sgm-audio/apc-mcp/publish.yml?branch=main&logo=github&label=CI" alt="CI"></a>
+  <a href="https://github.com/sgm-audio/apc-mcp/releases"><img src="https://img.shields.io/github/v/release/sgm-audio/apc-mcp?logo=github&label=Release" alt="Release"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-18+-339933?logo=node.js&logoColor=white" alt="Node"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/scottmills306/apc-mcp" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/sgm-audio/apc-mcp" alt="License"></a>
 </p>
 
 **apc-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server for audio plugin development. It wraps the tools you already use — **CMake**, **ctest**, **clang-format**, **pluginval**, **clap-validator** — into a clean MCP tool interface for building, testing, linting, validating, and scaffolding plugin projects across JUCE, CLAP, VST3, and ARA formats.
@@ -34,7 +34,7 @@ Add one entry to your MCP config — no npm, no clone, no setup:
   "mcp": {
     "apc-mcp": {
       "type": "local",
-      "command": ["npx", "-y", "github:scottmills306/apc-mcp"],
+      "command": ["npx", "-y", "github:sgm-audio/apc-mcp"],
       "enabled": true
     }
   }
@@ -171,7 +171,7 @@ my-plugin/
 ## Development
 
 ```sh
-git clone https://github.com/scottmills306/apc-mcp.git
+git clone https://github.com/sgm-audio/apc-mcp.git
 cd apc-mcp
 npm install
 npm test          # 11 tests, node:test, zero deps
@@ -212,10 +212,10 @@ This project follows [Semantic Versioning](https://semver.org). Breaking changes
 A: apc-mcp uses your system's existing toolchain. Install CMake via your package manager: `brew install cmake`, `apt install cmake`, or download from [cmake.org](https://cmake.org).
 
 **Q: Does it work with VS Code / Cursor / Continue.dev?**  
-A: Yes — any MCP client works. Point it at `npx github:scottmills306/apc-mcp` using whatever MCP config format that client uses.
+A: Yes — any MCP client works. Point it at `npx github:sgm-audio/apc-mcp` using whatever MCP config format that client uses.
 
 **Q: How do I update to a new version?**  
-A: If using `npx github:...`, clear the npx cache: `npx --cache clear github:scottmills306/apc-mcp` — or just restart your MCP client, npx checks for updates automatically.
+A: If using `npx github:...`, clear the npx cache: `npx --cache clear github:sgm-audio/apc-mcp` — or just restart your MCP client, npx checks for updates automatically.
 
 **Q: Can I use this with non-JUCE projects?**  
 A: Yes. `audio_plugin_build`, `audio_plugin_configure`, `audio_plugin_test`, and `audio_plugin_lint` work with any CMake-based C++ project. Only `audio_plugin_create` and `audio_plugin_validate` are plugin-format-specific.

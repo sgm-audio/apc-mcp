@@ -8,7 +8,7 @@
 ## Setup
 
 ```sh
-git clone https://github.com/scottmills306/apc-mcp.git
+git clone https://github.com/sgm-audio/apc-mcp.git
 cd apc-mcp
 npm install
 ```

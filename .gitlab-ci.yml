@@ -1,0 +1,111 @@
+# apc-mcp — GitLab CI/CD (Ultimate features)
+# Uses GitLab Ultimate scanning: SAST, Secret Detection, Dependency Scan, License Scan, Code Quality
+# See https://gitlab.com/sgmstudios/apc-mcp
+
+default:
+  image: node:20
+  interruptible: true
+
+stages:
+  - test
+  - quality
+  - security
+  - license
+
+# ─── Test ───────────────────────────────────────────────────────────
+test:
+  stage: test
+  script:
+    - npm ci
+    - npm test
+  artifacts:
+    reports:
+      junit: junit.xml
+    expire_in: 30 days
+  coverage: '/^ℹ tests\s+(\d+)/'
+
+# ─── Code Quality (Code Climate) — Ultimate ────────────────────────
+code_quality:
+  stage: quality
+  image: docker:27-cli
+  services:
+    - docker:dind
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    CODE_CLIMATE_IMAGE: "registry.gitlab.com/gitlab-org/ci-cd/codequality:latest"
+  script:
+    - docker run --rm -v "$PWD:/code" "$CODE_CLIMATE_IMAGE" /code
+  artifacts:
+    reports:
+      codequality: gl-code-quality-report.json
+    expire_in: 30 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH == 'main'
+
+# ─── SAST (Static Application Security Testing) — Ultimate ─────────
+semgrep-sast:
+  stage: security
+  image: semgrep/semgrep
+  script:
+    - semgrep --config=auto --json --output=gl-sast-report.json .
+  artifacts:
+    reports:
+      sast: gl-sast-report.json
+    expire_in: 30 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH == 'main'
+
+# ─── Secret Detection — Ultimate ───────────────────────────────────
+secret_detection:
+  stage: security
+  image: node:20
+  script:
+    - npx --yes @secretlint/secretlint --format=json --output=gl-secret-detection-report.json . || true
+  artifacts:
+    reports:
+      secret_detection: gl-secret-detection-report.json
+    expire_in: 30 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH == 'main'
+
+# ─── Dependency Scanning (Gemnasium) — Ultimate ────────────────────
+gemnasium-dependency_scanning:
+  stage: security
+  image: docker:27-cli
+  services:
+    - docker:dind
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    GITLAB_DEPENDENCY_SCANNER: "registry.gitlab.com/gitlab-org/security-products/dependency-scanning:latest"
+  script:
+    - docker run --rm -v "$PWD:/code" "$GITLAB_DEPENDENCY_SCANNER" /code
+  artifacts:
+    reports:
+      dependency_scanning: gl-dependency-scanning-report.json
+    expire_in: 30 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH == 'main'
+
+# ─── License Scanning — Ultimate ────────────────────────────────────
+license_scanning:
+  stage: license
+  image: docker:27-cli
+  services:
+    - docker:dind
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    LICENSE_FINDER_IMAGE: "registry.gitlab.com/gitlab-org/ci-cd/license-finder:latest"
+  script:
+    - npm ci
+    - docker run --rm -v "$PWD:/code" "$LICENSE_FINDER_IMAGE" license_finder --decisions-file=license_decisions.yml
+  artifacts:
+    reports:
+      license_scanning: gl-license-scanning-report.json
+    expire_in: 30 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH == 'main'

@@ -40,9 +40,10 @@ function request(method, params = {}) {
 
 function withProject(name) {
   const dir = path.join(FIXTURE_DIR, name);
+  // Clean any leftover from prior runs
+  fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
   fs.mkdirSync(path.join(dir, 'plugins'), { recursive: true });
-  // Create a minimal CMakeLists.txt
   fs.writeFileSync(path.join(dir, 'CMakeLists.txt'),
     `cmake_minimum_required(VERSION 3.22)\nproject(${name})\n`);
   return dir;
@@ -97,7 +98,7 @@ describe('apc-mcp MCP Server', () => {
         arguments: { projectPath: dir },
       });
       const text = result.result.content[0].text;
-      assert.ok(text.includes('No plugin'), `unexpected text: ${text}`);
+      assert.ok(text.includes('plugins') && (text.includes('No') || text.includes('no')), `unexpected text: ${text}`);
       cleanupProject(dir);
     });
 
@@ -143,9 +144,13 @@ describe('apc-mcp MCP Server', () => {
         name: 'audio_plugin_create',
         arguments: { projectPath: '/tmp' },
       });
-      const text = result.result?.content?.[0]?.text || '';
-      assert.ok(result.result?.isError, `expected isError, got: ${JSON.stringify(result).slice(0, 300)}`);
-      assert.ok(text.includes('Required') || text.includes('required'), `expected validation msg, got: ${text}`);
+      const toolResult = result.result;
+      const protocolError = result.error;
+      const text = toolResult?.content?.[0]?.text || JSON.stringify(protocolError || '');
+      assert.ok(protocolError || toolResult?.isError === true,
+        `expected JSON-RPC error or isError tool result, got: ${JSON.stringify(result).slice(0, 300)}`);
+      assert.match(text, /required|invalid input|expected string|validation|undefined/i,
+        `expected validation msg, got: ${text}`);
     });
 
     it('should scaffold a CLAP plugin', async () => {

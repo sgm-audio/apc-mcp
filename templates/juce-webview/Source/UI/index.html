@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{PLUGIN_DISPLAY_NAME}}</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>{{PLUGIN_DISPLAY_NAME}}</h1>
+      <span class="vendor">{{VENDOR}}</span>
+    </header>
+
+    <main>
+      <section class="control-group">
+        <label for="gain">
+          <span class="label-text">Gain</span>
+          <span class="label-value" id="gain-value">75%</span>
+        </label>
+        <div class="slider-track">
+          <input type="range" id="gain" min="0" max="100" value="75">
+        </div>
+      </section>
+
+      <section class="meter-section">
+        <div class="meter-label">Level</div>
+        <div class="meter-bar">
+          <div class="meter-fill" id="meter-fill" style="width: 0%"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span class="status" id="status">ready</span>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
