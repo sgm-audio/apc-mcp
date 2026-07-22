@@ -5,7 +5,7 @@ updates:
     schedule:
       interval: "weekly"
     assignees:
-      - "scottmills306"
+      - "sgm-audio"
 
   - package-ecosystem: "github-actions"
     directory: "/"

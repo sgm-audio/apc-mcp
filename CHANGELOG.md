@@ -59,7 +59,7 @@
 ## [1.1.1] — 2026-06-16
 
 ### Changed
-- Primary install method now uses `npx github:scottmills306/apc-mcp` — no npm account needed
+- Primary install method now uses `npx github:sgm-audio/apc-mcp` — no npm account needed
 - Updated README, AGENTS_REFERENCE, meta-orchestrator to reflect GitHub-based install
 - Switched local opencode config to `npx github:` method
 

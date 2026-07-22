@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // apc-mcp — Audio Plugin Coder MCP Server
 // Model Context Protocol server for audio plugin development workflows.
-// Install: npx github:scottmills306/apc-mcp
+// Install: npx github:sgm-audio/apc-mcp
 //
 // SECURITY: This server uses spawnSync() with argument arrays (never shell strings).
 // No user input reaches a shell interpreter. No command injection possible.
