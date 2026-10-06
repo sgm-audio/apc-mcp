@@ -4,7 +4,9 @@
 // Install: npx github:sgm-audio/apc-mcp
 //
 // SECURITY: This server uses spawnSync() with argument arrays (never shell strings).
-// No user input reaches a shell interpreter. No command injection possible.
+// No user input reaches a shell interpreter — not even for binary discovery.
+// No command injection possible. All filesystem writes are confined to the
+// resolved project root by assertWithinProject().
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -46,6 +48,25 @@ function validatePath(p) {
   return path.resolve(p);
 }
 
+// True when a path contains a ".." segment, on either separator style.
+function hasDotDot(p) {
+  return String(p).split(/[\\/]/).includes('..');
+}
+
+// Authoritative path-boundary guard. Operates on fully resolved absolute paths,
+// so it cannot be bypassed by ".." segments, redundant separators, or by an
+// absolute path supplied where a relative one was expected.
+// Every value that gets joined onto the project root before being read from or
+// written to must pass through here.
+function assertWithinProject(projectRoot, candidate, label = 'path') {
+  const root = path.resolve(projectRoot);
+  const resolved = path.resolve(root, candidate);
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    throw new Error(`${label} escapes project root — rejected: ${candidate}`);
+  }
+  return resolved;
+}
+
 // ─── Prerequisite checking ─────────────────────────────────────────
 const REQUIREMENTS = [
   { bin: 'cmake', for: 'build/configure', install: 'brew install cmake / apt install cmake / https://cmake.org/download' },
@@ -57,24 +78,49 @@ const REQUIREMENTS = [
 
 const _prereqCache = new Map();
 
+// Resolve a binary against PATH directly — no subprocess, no shell.
+//
+// The previous implementation wrapped spawnSync() in try/catch and returned
+// `true` unconditionally: spawnSync does NOT throw when a binary is missing, it
+// returns { error, status }. That made every prerequisite check report "found",
+// silently disabling this whole feature (AUDIT FUNC-04). It also shelled out via
+// `sh -c`, contradicting this file's no-shell invariant (AUDIT HYG-01).
+function binaryOnPath(bin) {
+  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  const exts = process.platform === 'win32'
+    ? [...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').map(e => e.toLowerCase()), '']
+    : [''];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, bin + ext);
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        if (fs.statSync(candidate).isFile()) return true;
+      } catch {
+        // Not present (or not executable) here — keep searching PATH.
+      }
+    }
+  }
+  return false;
+}
+
 function findBinary(bin) {
   if (_prereqCache.has(bin)) return _prereqCache.get(bin);
-  try {
-    // which with no user input — safe to use shell
-    spawnSync('sh', ['-c', `which "${bin}" 2>/dev/null || command -v "${bin}" 2>/dev/null`], { stdio: 'pipe', encoding: 'utf-8' });
-    _prereqCache.set(bin, true);
-    return true;
-  } catch {
-    _prereqCache.set(bin, false);
-    return false;
-  }
+  const found = binaryOnPath(bin);
+  _prereqCache.set(bin, found);
+  return found;
+}
+
+function installHint(binName) {
+  const req = REQUIREMENTS.find(r => r.bin === binName);
+  const purpose = req ? ` (needed for ${req.for})` : '';
+  const install = req ? `\n  Install: ${req.install}` : '';
+  return `'${binName}' not found on PATH${purpose}.${install}`;
 }
 
 function requireTool(binName) {
-  const req = REQUIREMENTS.find(r => r.bin === binName);
   if (!findBinary(binName)) {
-    const hint = req ? `\n  Install: ${req.install}` : '';
-    throw new Error(`'${binName}' not found.${hint}`);
+    throw new Error(installHint(binName));
   }
 }
 
@@ -92,34 +138,47 @@ function checkOptionalTool(binName) {
 // User-controlled values are passed as separate argv entries.
 
 function spawn(cmd, args, opts = {}) {
-  const result = spawnSync(cmd, args, {
+  return spawnSync(cmd, args, {
     timeout: (opts.timeout ?? 180) * 1000,
     encoding: 'utf-8',
     maxBuffer: 2 * 1024 * 1024,
     cwd: opts.cwd,
     stdio: 'pipe',
   });
-  return result;
 }
 
+// spawnSync reports failures on `result.error` / `result.signal` — it does NOT
+// throw. The previous try/catch here was unreachable, so a missing binary or a
+// timeout surfaced as the meaningless "exit code null" (AUDIT FUNC-05).
 function trySpawn(cmd, args, opts = {}) {
-  try {
-    const result = spawn(cmd, args, opts);
-    const output = result.stdout || '';
-    if (result.status === 0) {
-      return { ok: true, output };
+  const timeoutSec = opts.timeout ?? 180;
+  const result = spawn(cmd, args, opts);
+
+  if (result.error) {
+    const code = result.error.code;
+    if (code === 'ENOENT') {
+      return { ok: false, output: '', stderr: installHint(cmd) };
     }
-    const stderr = result.stderr || '';
-    return { ok: false, output, stderr: stderr || `exit code ${result.status}` };
-  } catch (e) {
-    // ENOENT means command not found
-    if (e.code === 'ENOENT') {
-      const req = REQUIREMENTS.find(r => r.bin === cmd);
-      const hint = req ? `\n  Install: ${req.install}` : '';
-      return { ok: false, output: '', stderr: `'${cmd}' not found.${hint}` };
+    if (code === 'ETIMEDOUT' || result.signal === 'SIGTERM' || result.signal === 'SIGKILL') {
+      return {
+        ok: false,
+        output: result.stdout || '',
+        stderr: `'${cmd}' timed out after ${timeoutSec}s and was killed.` +
+                ` Partial output may be above; consider raising the timeout or narrowing the target.`,
+      };
     }
-    return { ok: false, output: '', stderr: e.message };
+    return { ok: false, output: '', stderr: `'${cmd}' could not be started: ${result.error.message}` };
   }
+
+  const output = result.stdout || '';
+  if (result.status === 0) return { ok: true, output };
+  const stderr = result.stderr || '';
+  return {
+    ok: false,
+    output,
+    stderr: stderr || `'${cmd}' exited with code ${result.status}` +
+      (result.signal ? ` after signal ${result.signal}` : ''),
+  };
 }
 
 // ─── Config ──────────────────────────────────────────────────────────
@@ -133,16 +192,61 @@ const defaultConfig = {
   clapValidatorCommand: 'clap-validator',
 };
 
+// Formats findPluginBinaries() actually knows how to locate.
+const KNOWN_FORMATS = ['VST3', 'CLAP', 'LV2', 'AudioUnit', 'Standalone'];
+
+// Per-key validators for apc-mcp.json. Config files are untrusted input in the
+// same sense tool arguments are: they reach path.join() and spawnSync() argv.
+// Previously the parsed JSON was spread over the defaults with no validation at
+// all, so a non-array `validateFormats` crashed on .join() and a `buildDir` of
+// "../x" escaped the project root (AUDIT SEC-03).
+const RELATIVE_DIR = z.string()
+  .regex(SAFE_PATH, 'may contain only letters, digits, spaces and _ / . \\ - : @ ~')
+  .refine(p => !hasDotDot(p), 'may not contain ".." segments')
+  .refine(p => !path.isAbsolute(p), 'must be relative to the project root');
+
+const CONFIG_SCHEMA = {
+  generator: z.string().regex(SAFE_GENERATOR, 'may contain only letters, digits, spaces, _ and -'),
+  config: z.enum(['Debug', 'Release']),
+  buildDir: RELATIVE_DIR,
+  pluginsDir: RELATIVE_DIR,
+  validateFormats: z.array(z.enum(KNOWN_FORMATS)).min(1),
+  validateCommand: z.string().regex(SAFE_TARGET, 'may contain only letters, digits, _ . and -'),
+  clapValidatorCommand: z.string().regex(SAFE_TARGET, 'may contain only letters, digits, _ . and -'),
+};
+
+// Validates each key independently so one bad value degrades to its default
+// instead of discarding the whole file. Unknown keys are ignored, keeping the
+// format forward-compatible.
 function loadProjectConfig(projectPath) {
+  const cfg = { ...defaultConfig };
   const configPath = path.join(projectPath, CONFIG_FILE);
-  if (fs.existsSync(configPath)) {
-    try {
-      return { ...defaultConfig, ...JSON.parse(fs.readFileSync(configPath, 'utf-8')) };
-    } catch (e) {
-      console.error(`[apc-mcp] Warning: invalid ${CONFIG_FILE}: ${e.message}`);
+  if (!fs.existsSync(configPath)) return cfg;
+
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  } catch (e) {
+    console.error(`[apc-mcp] Warning: ${CONFIG_FILE} is not valid JSON (${e.message}) — using defaults.`);
+    return cfg;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    console.error(`[apc-mcp] Warning: ${CONFIG_FILE} must be a JSON object — using defaults.`);
+    return cfg;
+  }
+
+  for (const [key, value] of Object.entries(raw)) {
+    const validator = CONFIG_SCHEMA[key];
+    if (!validator) continue; // unknown key: tolerate for forward compatibility
+    const result = validator.safeParse(value);
+    if (result.success) {
+      cfg[key] = result.data;
+    } else {
+      const issue = result.error.issues[0];
+      console.error(`[apc-mcp] Warning: ignoring ${CONFIG_FILE} "${key}" — ${issue.message}. Using "${JSON.stringify(cfg[key])}".`);
     }
   }
-  return { ...defaultConfig };
+  return cfg;
 }
 
 // ─── Project discovery ──────────────────────────────────────────────
@@ -165,13 +269,37 @@ function resolveProjectPath(provided) {
   return null;
 }
 
+// A project root must exist, be a directory, and carry one of the markers
+// findProjectRoot() looks for. Without this the build tool happily mkdir -p'd a
+// tree for a typo'd or attacker-supplied path and then reported on a project
+// that never existed (AUDIT QA-05).
+function assertProjectRoot(dir) {
+  let stat;
+  try {
+    stat = fs.statSync(dir);
+  } catch {
+    throw new Error(`Project path not found: ${dir}`);
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(`Project path is not a directory: ${dir}`);
+  }
+  const hasMarker = fs.existsSync(path.join(dir, CONFIG_FILE)) ||
+                    fs.existsSync(path.join(dir, 'CMakeLists.txt'));
+  if (!hasMarker) {
+    throw new Error(
+      `Project path not found as a project root (no CMakeLists.txt or ${CONFIG_FILE}): ${dir}`
+    );
+  }
+  return dir;
+}
+
 function requireProjectPath(provided) {
   const proj = resolveProjectPath(provided);
   if (!proj) throw new Error(
     'No project detected. Pass projectPath, create apc-mcp.json, ' +
     'or run from within (or under) a directory with CMakeLists.txt.'
   );
-  return proj;
+  return assertProjectRoot(proj);
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -276,26 +404,28 @@ function replaceTemplateVars(content, vars) {
 }
 
 function mapPluginType(type, ui) {
-  // JUCE-based types can choose webview or generic UI
+  // JUCE-based types can choose webview or generic UI.
+  // NOTE: 'ara' was removed from the schema — it mapped to the plain JUCE
+  // template with FORMATS "ARA", which is not a valid juce_add_plugin format
+  // and derives from juce::AudioProcessor rather than juce::ARAAudioProcessor.
+  // It reported success while scaffolding a plugin that could never configure
+  // (AUDIT FUNC-07). Restoring it requires a real ARA template first.
   const isWebView = ui === 'webview';
   switch (type) {
     case 'clap': return { template: 'clap', formats: 'CLAP' };
     case 'vst3': return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3' };
-    case 'juce': return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3;LV2;Standalone' };
-    case 'ara': return { template: 'juce', formats: 'ARA' };
-    default: return { template: 'juce', formats: 'VST3;LV2;Standalone' };
+    case 'juce':
+    default:     return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3;LV2;Standalone' };
   }
 }
 
 function slugName(name) { return name.replace(/[^a-zA-Z0-9]/g, '').replace(/^(\d)/, '_$1'); }
 function displayName(name) { return name.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).trim(); }
 
-// Security: ensure plugin dir is within project boundary
+// Security: ensure plugin dir is within project boundary.
+// Delegates to the shared guard so create and lint cannot drift apart.
 function checkPluginPath(projectPath, pluginDir) {
-  const resolved = path.resolve(pluginDir);
-  if (!resolved.startsWith(path.resolve(projectPath) + path.sep)) {
-    throw new Error('Plugin directory escapes project root — rejected.');
-  }
+  return assertWithinProject(projectPath, pluginDir, 'Plugin directory');
 }
 
 // ─── Server ─────────────────────────────────────────────────────────
@@ -304,8 +434,26 @@ const server = new McpServer({
   version: '1.5.0',
 });
 
+// Every handler runs inside this wrapper so that a thrown Error becomes a
+// readable isError tool result rather than a bare JSON-RPC protocol error.
+// MCP clients surface tool results to the model; protocol errors are often
+// shown opaquely, which defeats the actionable install/path messages below.
+function registerTool(name, schema, handler) {
+  server.tool(name, schema, async (params) => {
+    try {
+      return await handler(params);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: 'text', text: `## ${name} failed\n${message}` }],
+        isError: true,
+      };
+    }
+  });
+}
+
 // ─── audio_plugin_build ────────────────────────────────────────────
-server.tool(
+registerTool(
   'audio_plugin_build',
   {
     projectPath: z.string().optional()
@@ -353,7 +501,7 @@ server.tool(
 );
 
 // ─── audio_plugin_configure ────────────────────────────────────────
-server.tool(
+registerTool(
   'audio_plugin_configure',
   {
     projectPath: z.string().optional()
@@ -387,7 +535,7 @@ server.tool(
 );
 
 // ─── audio_plugin_test ─────────────────────────────────────────────
-server.tool(
+registerTool(
   'audio_plugin_test',
   {
     projectPath: z.string().optional()
@@ -420,7 +568,7 @@ server.tool(
 );
 
 // ─── audio_plugin_lint ─────────────────────────────────────────────
-server.tool(
+registerTool(
   'audio_plugin_lint',
   {
     projectPath: z.string().optional()
@@ -428,12 +576,39 @@ server.tool(
     fix: z.boolean().default(false)
       .describe('Auto-fix formatting in place. Without this flag, runs as dry-run and reports files that would change.'),
     target: z.string().regex(SAFE_PATH).optional()
-      .describe('Specific file or subdirectory to lint, relative to project root. Example: "plugins/Foo/Source". Lints the whole project if omitted.'),
+      .describe('Specific file or subdirectory to lint, relative to project root. Example: "plugins/Foo/Source". Must stay inside the project. Lints the whole project if omitted.'),
   },
   async (params) => {
     const proj = requireProjectPath(params.projectPath);
+
+    // SECURITY (AUDIT SEC-01): `target` is joined onto the project root and then
+    // handed to clang-format — with fix=true that is an in-place WRITE. SAFE_PATH
+    // allows ".", so "../x" used to pass straight through and let a single tool
+    // argument rewrite .cpp/.h files anywhere the user could write.
+    // Two independent guards: reject ".." segments outright, then re-check the
+    // fully resolved path against the project boundary (which also catches an
+    // absolute target that points outside the project).
+    let searchRoot = path.resolve(proj);
+    if (params.target) {
+      if (hasDotDot(params.target)) {
+        return {
+          content: [{ type: 'text', text:
+            `## audio_plugin_lint failed\nInvalid target: ".." segments are not allowed — ` +
+            `the path must stay within the project root. Rejected: ${params.target}` }],
+          isError: true,
+        };
+      }
+      try {
+        searchRoot = assertWithinProject(proj, params.target, 'Lint target');
+      } catch (e) {
+        return { content: [{ type: 'text', text: `## audio_plugin_lint failed\n${e.message}` }], isError: true };
+      }
+    }
+
+    // Validate input before touching the toolchain, so a bad path is reported
+    // as a bad path rather than masked by an unrelated missing-binary error.
     requireTool('clang-format');
-    const searchRoot = params.target ? validatePath(path.join(proj, params.target)) : proj;
+
     if (!fs.existsSync(searchRoot)) {
       return { content: [{ type: 'text', text: `Path not found: ${searchRoot}` }], isError: true };
     }
@@ -470,7 +645,7 @@ server.tool(
 );
 
 // ─── audio_plugin_plugins ──────────────────────────────────────────
-server.tool(
+registerTool(
   'audio_plugin_plugins',
   {
     projectPath: z.string().optional()
@@ -520,7 +695,7 @@ server.tool(
 );
 
 // ─── audio_plugin_validate ─────────────────────────────────────────
-server.tool(
+registerTool(
   'audio_plugin_validate',
   {
     projectPath: z.string().optional()
@@ -588,15 +763,15 @@ server.tool(
 );
 
 // ─── audio_plugin_create ───────────────────────────────────────────
-server.tool(
+registerTool(
   'audio_plugin_create',
   {
     projectPath: z.string().optional()
       .describe('Parent project root where the plugins/ directory lives. Auto-detected from CWD.'),
     name: z.string().min(1).regex(SAFE_PLUGIN_NAME)
       .describe('Plugin name. Use kebab-case, snake_case, or CamelCase. Examples: "Phaser9000", "my-delay", "TapeEcho".'),
-    type: z.enum(['clap', 'vst3', 'juce', 'ara']).default('clap')
-      .describe('Plugin format. "clap" generates a standalone CLAP plugin. "juce" generates a JUCE AudioProcessor.'),
+    type: z.enum(['clap', 'vst3', 'juce']).default('clap')
+      .describe('Plugin format. "clap" generates a standalone CLAP plugin. "vst3" generates a JUCE plugin targeting VST3 only. "juce" generates a JUCE AudioProcessor for VST3;LV2;Standalone. (ARA is not offered yet — it needs a dedicated template.)'),
     ui: z.enum(['generic', 'webview']).default('generic')
       .describe('UI style for JUCE/VST3 plugins. "generic" (default) uses JUCE\'s GenericAudioProcessorEditor. "webview" uses an HTML/CSS/JS WebView with parameter controls embedded via BinaryData.'),
     vendor: z.string().regex(SAFE_VENDOR).default('apc-mcp')
