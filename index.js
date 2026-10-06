@@ -41,7 +41,7 @@ const SAFE_TARGET = /^[a-zA-Z0-9_.-]+$/;
 // CMake generators: alphanumeric, spaces, underscores, hyphens
 const SAFE_GENERATOR = /^[a-zA-Z0-9_ -]+$/;
 // CMake options flags: -DNAME=VALUE, space-separated
-const SAFE_OPTIONS = /^[a-zA-Z0-9_= \/.\-+:@]+$/;
+const SAFE_OPTIONS = /^[a-zA-Z0-9_= /.\-+:@]+$/;
 // Plugin names for creation: alphanumeric, underscores, hyphens
 const SAFE_PLUGIN_NAME = /^[a-zA-Z0-9_-]+$/;
 // Vendor names: alphanumeric, underscores, hyphens, dots
@@ -53,7 +53,7 @@ const SAFE_DESCRIPTION = /^[\x20-\x7E]+$/;
 // JUCE format list: semicolon-separated format names
 const SAFE_FORMATS = /^[a-zA-Z0-9_;-]+$/;
 // Project path: block shell metacharacters
-const SAFE_PATH = /^[a-zA-Z0-9_ \/.\-:@~]+$/;
+const SAFE_PATH = /^[a-zA-Z0-9_ /.\-:@~]+$/;
 
 function validatePath(p) {
   if (!SAFE_PATH.test(p)) {
@@ -318,6 +318,9 @@ function requireProjectPath(provided) {
 
 // ─── Helpers ────────────────────────────────────────────────────────
 function stripAnsi(text) {
+  // The control character is the point: this strips ANSI SGR sequences so the
+  // diagnostic matchers below see plain text.
+  // eslint-disable-next-line no-control-regex
   return text.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
 }
 
@@ -442,7 +445,12 @@ function findFilesByExt(dir, exts) {
   return results;
 }
 
-function findPluginBinaries(projectPath, config, buildDir, formats) {
+// Scans <buildDir>/plugins/<name>/<name>_artefacts/<config>/<FORMAT>/ for built
+// artefacts. HYG-02: the leading `projectPath` parameter was never used in the
+// body — everything is derived from buildDir, which the caller has already joined
+// onto the project root — so a reader could not tell which argument anchored the
+// search. Removed rather than documented as unused.
+function findPluginBinaries(config, buildDir, formats) {
   const outDir = path.join(buildDir, 'plugins');
   if (!fs.existsSync(outDir)) return [];
 
@@ -811,7 +819,13 @@ registerTool(
       const statusPath = path.join(pluginsDir, name, 'status.json');
       let meta = { name };
       if (fs.existsSync(statusPath)) {
-        try { meta = { ...meta, ...JSON.parse(fs.readFileSync(statusPath, 'utf-8')) }; } catch {}
+        try {
+          meta = { ...meta, ...JSON.parse(fs.readFileSync(statusPath, 'utf-8')) };
+        } catch (e) {
+          // A malformed status.json must not break the listing — but silently
+          // dropping it showed the user a plugin with no type and no reason.
+          meta = { ...meta, statusError: `status.json is unreadable: ${e.message}` };
+        }
       }
       return meta;
     });
@@ -870,7 +884,7 @@ registerTool(
       }
     }
 
-    const binaries = findPluginBinaries(proj, config, buildDir, formats);
+    const binaries = findPluginBinaries(config, buildDir, formats);
     if (!binaries.length) {
       const hint = fs.existsSync(buildDir) ? '' : ' (build directory not found — run audio_plugin_build first)';
       return {

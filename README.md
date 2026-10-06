@@ -135,9 +135,37 @@ Scans the build directory for plugin binaries and runs the appropriate validator
 audio_plugin_create(name="Phaser9000", type="clap")
 audio_plugin_create(name="MyVerb", type="juce", vendor="MyCompany", formats="VST3;AU")
 audio_plugin_create(name="SimpleDelay", type="clap", vendor="MyCompany", description="A simple delay effect")
+audio_plugin_create(name="MyVerb", type="juce", ui="webview", vendor="MyCompany")
 ```
 
-Generates a working plugin stub with CMakeLists.txt, source files, and proper CLAP entry point or JUCE AudioProcessor structure.
+Generates a working plugin stub: `CMakeLists.txt`, source files, and either a
+modern CLAP entry (the `clap_entry` → plugin-factory chain) or a JUCE
+`AudioProcessor` structure.
+
+**`type`** — which template to scaffold:
+
+| `type` | Template | Notes |
+|---|---|---|
+| `clap` *(default)* | `templates/clap/` | Plain C++ against the free-audio/clap headers. Vendors CLAP at `_tools/clap` or finds an installed `clap-config.cmake`. |
+| `juce` | `templates/juce/` or `templates/juce-webview/` | Full `juce_add_plugin` project. `formats` accepts any of JUCE's: `AU AUv3 AAX LV2 Standalone Unity VST VST3`. |
+| `vst3` | same JUCE templates | Convenience alias that defaults `formats` to VST3. |
+
+> `type="ara"` was removed in 2.0.0. It emitted `FORMATS ARA`, which
+> `juce_add_plugin` does not accept, from a plain `juce::AudioProcessor` rather
+> than `juce::ARAAudioProcessor` — so it reported success while scaffolding a
+> plugin that could never configure. ARA is a JUCE *effect mode*
+> (`IS_ARA_EFFECT`), not a format; it will return with a real template.
+
+**`ui`** — editor style, for the JUCE templates only:
+
+| `ui` | What you get |
+|---|---|
+| `generic` *(default)* | `juce::GenericAudioProcessorEditor` — sliders for every parameter, no UI code to write. |
+| `webview` | A `juce::WebBrowserComponent` editor serving an embedded HTML/CSS/JS UI from BinaryData, with a two-way bridge: C++ pushes state via `window.updateState(...)`, and JS calls back by navigating to `apc://callback?action=...&data=...`. Edit `Source/UI/{index.html,style.css,app.js}`. |
+
+The webview template needs a browser backend, so its `CMakeLists.txt` sets
+`NEEDS_WEB_BROWSER TRUE` and `NEEDS_WEBVIEW2 TRUE` — WebView2 on Windows, WebKit
+on Linux, WKWebView on macOS.
 
 ---
 
@@ -193,19 +221,40 @@ npm run lint      # syntax check on the server code itself
 apc-mcp/
 ├── index.js                    # MCP server — single file, 7 tools
 ├── templates/
-│   ├── clap/                   # CLAP plugin scaffold template
-│   └── juce/                   # JUCE plugin scaffold template
-├── tests/
-│   └── server.test.js          # 11 integration tests
+│   ├── clap/                   # CLAP scaffold (modern factory/entry API)
+│   ├── juce/                   # JUCE scaffold, generic editor
+│   └── juce-webview/           # JUCE scaffold + WebBrowserComponent UI
+│       └── Source/UI/          # the HTML/CSS/JS you edit
+├── tests/                      # 119 tests, node:test, no framework
+│   ├── helpers/mcp-client.mjs  # shared MCP stdio client (full handshake)
+│   ├── fixtures/juce-api-stub/ # transcribed JUCE 9 API, for compile checks
+│   ├── server.test.js          # happy path
+│   ├── security.test.js        # negative / rejection tests
+│   ├── tool-output.test.js     # config precedence, parsers, failure reporting
+│   ├── templates.test.js       # generated-project structure (no toolchain)
+│   ├── cpp-api.test.js         # real g++/clang++ over generated sources
+│   └── release.test.js         # versioning, CI pins, release guards
+├── scripts/
+│   ├── smoke-scaffold.mjs      # npm run smoke — scaffold every type x ui
+│   ├── check-licenses.mjs      # npm run licenses — lockfile license gate
+│   └── ship.mjs                # npm run ship — guarded tag + push
 ├── .github/
 │   ├── workflows/
-│   │   ├── publish.yml         # CI: test on push/PR, publish on tag
+│   │   ├── publish.yml         # CI: test, compile-scaffold, scaffold-{clap,juce},
+│   │   │                       #     license, publish on v* tags
 │   │   └── codeql.yml          # CodeQL security analysis
 │   ├── dependabot.yml          # Automated dependency updates
+│   ├── pull_request_template.md
 │   └── ISSUE_TEMPLATE/         # Bug report + feature request templates
+├── eslint.config.js            # npm run lint
+├── license_decisions.yml       # the license allowlist
 ├── .editorconfig               # Editor consistency
+├── AUDIT.md                    # full build/QA/security audit + evidence
+├── HANDOFF.md                  # what remains, how to verify it, and the traps
+├── SECURITY.md                 # threat model and defence layers
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
+├── TODO.md                     # unbuilt feature scope
 └── LICENSE
 ```
 
@@ -217,8 +266,35 @@ This project follows [Semantic Versioning](https://semver.org). Breaking changes
 
 ## FAQ / Troubleshooting
 
-**Q: I get "command not found: cmake"**  
-A: apc-mcp uses your system's existing toolchain. Install CMake via your package manager: `brew install cmake`, `apt install cmake`, or download from [cmake.org](https://cmake.org).
+**Q: A tool fails with `'cmake' not found on PATH`**  
+A: apc-mcp drives your system's existing toolchain rather than shipping one. The message names the missing binary, what it is needed for, and how to install it:
+
+```
+## audio_plugin_configure failed
+'cmake' not found on PATH (needed for build/configure).
+  Install: brew install cmake / apt install cmake / https://cmake.org/download
+```
+
+The same applies to `clang-format` (for `audio_plugin_lint`) and `pluginval` /
+`clap-validator` (for `audio_plugin_validate`).
+
+**Q: A tool now reports failure where it used to report success**  
+A: That is deliberate, and it is the 2.0.0 breaking change. Previously `build`,
+`lint`, `test` and `validate` returned `isError: false` whenever the process
+*exited 0* — so a build that emitted compiler errors, or a validation that silently
+skipped because the validator was missing, was reported to the model as a success.
+They now report `isError: true` when the output shows errors or when a step had to
+be skipped, and say which. A tool that says it failed is more useful than one that
+lies about succeeding; if your own automation branched on the old behaviour, this is
+what changed.
+
+**Q: `audio_plugin_create` says success but the project won't configure**  
+A: It should not — the templates are verified by `tests/templates.test.js`,
+`tests/cpp-api.test.js` and `npm run smoke`. If you hit this, please open an issue
+with the tool's full output. For JUCE projects specifically, the generated
+`CMakeLists.txt` expects JUCE to be available (a `JUCE` submodule or
+`CMAKE_PREFIX_PATH`); that is a prerequisite of the project, not something the
+scaffold can supply.
 
 **Q: Does it work with VS Code / Cursor / Continue.dev?**  
 A: Yes — any MCP client works. Point it at `npx github:sgm-audio/apc-mcp` using whatever MCP config format that client uses.

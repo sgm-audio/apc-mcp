@@ -21,7 +21,9 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Lint
-        run: node --check index.js
+        # `npm run lint` is ESLint over the whole repo plus a parse check. It used
+        # to be `node --check index.js` alone, which only proves the file parses.
+        run: npm run lint
       - name: Test
         run: npm test
       - name: Scaffold smoke (every type x ui)

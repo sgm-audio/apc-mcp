@@ -12,12 +12,12 @@
   ],
   "scripts": {
     "test": "node --test",
-    "lint": "node --check index.js",
+    "lint": "eslint . && node --check index.js",
     "audit": "npm audit && echo '\u2705 No known vulnerabilities'",
     "licenses": "node scripts/check-licenses.mjs",
     "smoke": "node scripts/smoke-scaffold.mjs",
     "smoke:configure": "node scripts/smoke-scaffold.mjs --configure",
-    "quality": "node --check index.js && npm test",
+    "quality": "npm run lint && npm test",
     "security": "npm audit --audit-level=high && echo '\u2705 Security gate passed'",
     "check": "npm run quality && npm run smoke && npm run audit && npm run licenses",
     "ship": "node scripts/ship.mjs"
@@ -46,5 +46,9 @@
     "audio",
     "dsp",
     "modelcontextprotocol"
-  ]
+  ],
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.12.0"
+  }
 }

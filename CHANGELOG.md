@@ -216,7 +216,73 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
   resolves `uses:` to a commit, so the peeled `2892aa5e…` is the value pinned —
   pinning the tag object would not have resolved.
 
+#### QA tooling & documentation
+
+- **ESLint is now the real linter (HYG-04).** `npm run lint` used to be
+  `node --check index.js`, which only proves the file parses. It is now
+  `eslint . && node --check index.js`, with a flat config (`eslint.config.js`)
+  declaring Node and browser globals explicitly so no extra `globals` dependency is
+  needed. Beyond the usual rules it bans importing `exec`/`execSync` — the
+  shell-invoking APIs the entire security model exists to avoid. `npm run quality`
+  runs `lint` before `test`, so `npm run check` and CI both lint the repo now. The
+  first run found **15 real problems**, all fixed:
+  - two useless escapes inside the `SAFE_OPTIONS` / `SAFE_PATH` security allowlists.
+    These are the regexes that reject shell metacharacters, so rather than assume
+    the escape was cosmetic, both were compared to their cleaned forms over
+    **65,536 probe strings** (every code point below U+2000, alone and embedded in
+    a valid token) — **0 behavioural differences** — before the backslashes were
+    removed.
+  - an empty `catch` in `audio_plugin_plugins` that silently swallowed a malformed
+    `status.json`, so the user saw a plugin with no type and no explanation. It now
+    reports `statusError` on that entry and still lists the plugin.
+  - the dead `projectPath` parameter on `findPluginBinaries` (HYG-02), an unused
+    import, and eight empty catch blocks that now say why they are empty.
+- **`index.js` reports an unreadable `status.json` instead of hiding it.**
+  `audio_plugin_plugins` adds `statusError` to that plugin's entry. The listing
+  still succeeds — a bad metadata file must not break discovery — but it no longer
+  fails silently.
+- **`SECURITY.md` rewritten (HYG-08).** It was materially false: it called `0.1.0`
+  the current version, described 17 tests and 6 findings, claimed layer 3 performed
+  `path.resolve()` and `realpathSync` checks that **do not exist in the code**,
+  listed superseded dependency versions, and asserted there was *"no residual risk
+  of arbitrary file read/write"* — untrue, since the guard allowlists paths
+  *within* the project boundary and everything inside it is writable by design. It
+  also recorded SEC-01 as fixed in `0.3.0`; the lint path traversal was actually
+  closed in this release cycle, so **1.4.0 and 1.5.0 as published are still
+  vulnerable**. The replacement states the threat model, eight defence layers each
+  citing its source, an honest residual-risk section, and a correct audit history.
+- **`CONTRIBUTING.md` corrected (HYG-09).** The nonexistent `tryRun()`/`run()` are
+  now `trySpawn()`/`spawn()`; `server.tool()` is now the `registerTool()` wrapper
+  (with the reason — it is what turns a thrown error into a readable `isError`
+  result rather than an opaque protocol error); the stale advice to bump the
+  version in `index.js` is gone; and it now states the red-phase-first requirement,
+  the `isError` rule, and which test file covers which kind of change.
+- **`README.md` documents what the tool actually accepts (HYG-10).** All three
+  `type` values are tabulated — including that `vst3` is a JUCE alias which sets
+  `FORMATS VST3` — and `ui="generic"|"webview"` is documented with the bridge
+  contract (`window.updateState(...)` for C++→JS, `apc://callback?action=...&data=...`
+  for JS→C++). The structure tree lists `templates/juce-webview/` and every test and
+  script file. The FAQ no longer quotes a shell-style `command not found: cmake`;
+  it quotes the real message the server produces and explains the 2.0.0
+  honest-failure change. The Node badge is `node-22+`.
+- **`publish.yml`'s `test` job now runs the smoke test and the dependency audit.**
+  Neither `npm run smoke` nor `npm audit` ran anywhere in CI before, so a scaffold
+  regression or a vulnerable dependency could be published without any job
+  noticing.
+- **`index.js` is executable (HYG-11).** It has a shebang but was mode 644, so
+  `./index.js` failed even though `bin` pointed at it. Mode 755 is now recorded in
+  the index, and the installed tarball was confirmed to serve `initialize`.
+
 ### Added
+
+- **`.github/pull_request_template.md`.** The GitLab merge-request checklist that
+  survived the move to GitHub was deleted (`.gitlab/` — GitHub never reads it), and
+  its genuinely useful items were migrated here, updated for `npm run check`, the
+  template and CMake-keyword rules, the red-phase-in-a-worktree requirement, and the
+  `scripts/ship.mjs` release steps.
+- **`eslint.config.js`** and `eslint` + `@eslint/js` as devDependencies (both under
+  allowlisted licenses). `BlueOak-1.0.0` was added to `license_decisions.yml` — a
+  permissive license in ESLint's dev tree that the gate was warning about.
 
 - **Dependency license gate, ported to GitHub Actions.** `npm run licenses` runs
   `scripts/check-licenses.mjs`, which verifies every package in `package-lock.json`
@@ -247,6 +313,11 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
 
 ### Removed
 
+- **`.gitlab/`** — an orphaned GitLab merge-request template left over from before
+  the repository moved to GitHub. GitHub does not read it, so the checklist in it was
+  invisible to anyone opening a PR. Its useful content now lives in
+  `.github/pull_request_template.md`.
+
 - **`type: "ara"` removed from `audio_plugin_create` (breaking).** It mapped to the
   plain JUCE template with `FORMATS ARA` — not a valid `juce_add_plugin` format — and
   derived from `juce::AudioProcessor` rather than `juce::ARAAudioProcessor`, so it
@@ -262,6 +333,19 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
   see **Added** above.
 
 ### Tests
+
+- **`tests/server.test.js` rewritten onto the shared MCP client (HYG-06, HYG-07).**
+  It carried its own stdio client that duplicated the other two suites **and sent
+  `tools/list` and `tools/call` with no `initialize` handshake**, so it never
+  exercised the path a real MCP client takes. It now uses
+  `tests/helpers/mcp-client.mjs`, which performs the handshake. Every deep property
+  access is optional-chained with a descriptive assertion message, so a response
+  shape change fails an assertion instead of throwing a `TypeError`. Fixtures moved
+  to `os.tmpdir()`, so a test run leaves nothing in the repository.
+- **11 → 12 tests in that file, and 118 → 119 overall**, with better coverage than
+  before: the scaffold tests now also assert that no `{{...}}` placeholder survives,
+  that the requested `FORMATS` is actually emitted, that a rejected `create` writes
+  nothing, and that a malformed `status.json` is surfaced rather than swallowed.
 
 - **New `tests/security.test.js` — 30 negative tests.** Security controls previously had
   no test asserting they *reject* anything. Covers the lint traversal PoCs (including a
@@ -314,14 +398,28 @@ Tracked in `AUDIT.md`. The template defects above are fixed, and `scaffold-juce`
 job that will confirm a scaffolded JUCE plugin configures end to end — **it has not had
 a green run yet**, because neither cmake nor apt is reachable from the environment the
 fixes were developed in, and `publish` deliberately does not depend on it until it has.
-Phases 3 and 4 are complete. The remaining blocker is **OPS-07: GitHub Actions
+Phases 3, 4 and 5 are complete. The remaining blocker is **OPS-07: GitHub Actions
 cannot run at all until the account's billing lock is cleared**, so none of the new CI
 jobs — including `scaffold-juce`, the only check that can prove a scaffolded JUCE plugin
-configures against real JUCE — has ever executed. `publish` therefore still does not
-depend on `scaffold-juce`, and its apt package list is unverified against whatever
+configures against real JUCE — has ever executed. No workflow change made in Phase 4 or
+5 has been validated by a real run either; they were validated by parsing, by
+`tests/release.test.js`, and by `npx js-yaml`. `publish` therefore still does not depend
+on `scaffold-juce`, and its apt package list is unverified against whatever
 `ubuntu-latest` is by the time it first runs (`ubuntu-latest` becomes Ubuntu 26 on
-2026-10-19). Then Phase 5 hygiene and the unbuilt `TODO.md` features. See `HANDOFF.md`
-for file:line detail.
+2026-10-19).
+
+The largest unverified assumption in the project is **`cmake -B build` on a scaffolded
+plugin** (AUDIT Phase 6, item 41). No CMake binary was obtainable in the environment the
+fixes were made in. What is proven instead: the generated CLAP sources compile clean
+under `g++ -Wall -Wextra` against **real** free-audio/clap headers, and the generated
+JUCE sources pass `g++ -std=c++20 -fsyntax-only` against a **transcribed stub** of the
+JUCE 9 API — not real JUCE. Configure and build of a generated project have never run
+anywhere.
+
+Coverage is incomplete in a known way too: `clean`, `generator`, `options` and
+`testName` have no tests, and `audio_plugin_create`/`plugins` have happy-path coverage
+only. The unbuilt `TODO.md` feature scope (Standalone → ARA → LV2) follows. See
+`HANDOFF.md` for file:line detail.
 
 ## [1.5.0] — 2026-06-17
 

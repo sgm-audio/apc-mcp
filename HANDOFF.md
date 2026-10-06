@@ -11,7 +11,7 @@ this file is the operating manual.
 
 ## 1. Where the project stands
 
-`apc-mcp` is an MCP server (`index.js`, 902 lines, zero-dep beyond
+`apc-mcp` is an MCP server (`index.js`, 1063 lines, zero-dep beyond
 `@modelcontextprotocol/sdk` + `zod`) exposing 7 tools for audio-plugin work:
 `create`, `configure`, `build`, `test`, `lint`, `validate`, `plugins`. It ships
 CMake/C++ scaffold templates under `templates/` for `clap`, `juce` and `vst3`,
@@ -27,14 +27,19 @@ A full audit found **35 defects**. Phases 0–2 are **done, committed and pushed
 | `d5e7dda` | P2 | Recorded that `scaffold-juce` has never had a green run |
 | `7716749` | P3 | **Output correctness**: `config` from `apc-mcp.json` was dead (zod's `.default()` shadowed it), `lint(fix=true)` reported success when clang-format failed, both output parsers miscounted, build ignored its own `errorCount`, and `validate` aborted mid-loop on a missing optional validator. 22 new tests |
 | `8e259a1` | P4 | **Release engineering**: version had two sources of truth, `npm publish` had `continue-on-error: true`, both Node 18 *and* 20 are EOL, `ship` pushed `main` from any branch, and actions were on mutable tags. 19 new tests |
+| *(this commit)* | P5 | **QA tooling & docs**: added ESLint as the real linter (15 findings, all fixed), removed the dead `findPluginBinaries` param, rewrote the materially-false `SECURITY.md`, corrected `CONTRIBUTING.md`/`README.md`/the FAQ against the code, migrated the orphaned GitLab MR checklist to `.github/pull_request_template.md`, made `index.js` executable, added `npm run smoke` + `npm audit` to CI, and put `server.test.js` on the shared handshaking client. 119 tests |
 
-**Version is `2.0.0`** (both `package.json:3` and `index.js:460`) because
-removing `type:'ara'` is a breaking input-schema change. It has **not been
+**Version is `2.0.0`** — `package.json:3` is the only source of truth;
+`index.js:26` reads it at startup and `index.js:552` reports it in
+`initialize` — because removing `type:'ara'` is a breaking input-schema change
+and `engines.node >=22` drops two supported Node majors. It has **not been
 published**.
 
-**Phase 5 remains**, plus the unfinished feature scope in `TODO.md`.
-Estimated ~1.5 h of focused work. Everything below is verified against the code
-as of `d5e7dda`; line numbers are current.
+**Phases 0–5 are done.** What remains is: **OPS-07** (a human must clear the
+GitHub billing lock before any CI job can validate this work — see §7), one
+green `scaffold-juce` run before `publish` may depend on it (§6), and the
+unfinished feature scope in `TODO.md` (§8). Everything below is verified against
+the current tree; line numbers are current as of the P5 commit.
 
 ---
 
@@ -48,12 +53,19 @@ npm run check      # must exit 0
 Expected:
 
 ```
-node --check index.js   → clean
-npm test                → # tests 118  # pass 116  # fail 0  # skipped 2
+npm run lint            → eslint . && node --check index.js  → clean (0 problems)
+npm test                → # tests 119  # pass 117  # fail 0  # skipped 2
 npm run smoke           → smoke-scaffold: PASS (5/5 scaffolded, 0 failures)
 npm audit               → ✅ No known vulnerabilities   (0 vulnerabilities)
 npm run licenses        → ✅ All distributed dependencies are under an allowed license.
 ```
+
+`npm run check` chains all five (`quality` = `lint && test`). If `npm test` shows
+a different total than 119, a test file was added or removed — check
+`git status` before believing any later instruction in this file.
+
+ESLint is a **hard gate** as of Phase 5. `npm run lint` returning non-zero means
+`npm run check` fails, which means `scripts/ship.mjs` refuses to release.
 
 The **2 skips** are the CLAP compile checks in `tests/cpp-api.test.js`, which
 need real CLAP headers. To run them at full strength:
@@ -118,10 +130,14 @@ source header. Extend it rather than re-deriving from scratch.
 ## 4. Test and script layout
 
 ```
-tests/helpers/mcp-client.mjs   shared MCP stdio client: rpc(), call(), listTools()
-                               spawns index.js, does the full initialize handshake,
-                               advances on responses (no fixed timers)
-tests/server.test.js      11   original happy-path coverage
+tests/helpers/mcp-client.mjs   shared MCP stdio client: rpc(), call(), listTools(),
+                               initializeInfo() — spawns index.js, does the full
+                               initialize handshake, advances on responses (no fixed
+                               timers). ALL THREE test files that talk to the server
+                               use this; do not hand-roll another client.
+tests/server.test.js      12   happy-path coverage. Was 11 with its own
+                               hand-rolled client that SKIPPED the handshake;
+                               moved onto the shared client in Phase 5
 tests/tool-output.test.js 22   config precedence, failure reporting, and the
                                build/test output parsers (Phase 3)
 tests/release.test.js     19   version single-sourcing, no continue-on-error,
@@ -137,7 +153,13 @@ tests/fixtures/juce-api-stub/JuceHeader.h   the JUCE 9 API stub (test fixture,
 scripts/smoke-scaffold.mjs      npm run smoke / smoke:configure
 scripts/ship.mjs                npm run ship — guarded tag + push
 scripts/check-licenses.mjs      npm run licenses (zero-dep license gate)
+eslint.config.js                npm run lint — flat config, explicit Node/browser
+                                globals (no `globals` dep), and a ban on importing
+                                exec/execSync
 ```
+
+**Total: 119 tests** (12 server + 30 security + 30 templates + 6 cpp-api +
+22 tool-output + 19 release).
 
 `npm test` is bare `node --test` (auto-discovery), so a new `tests/*.test.js`
 file is picked up with no `package.json` edit. **Note `node --test tests/` fails
@@ -157,7 +179,17 @@ completely broken, because it only asserted that a tool's reply *mentioned* a
 filename. A control with no negative test is not a control.
 
 Where a whole class of bug was fixed, the test was also run against the
-**pre-fix** code in a throwaway worktree to prove it has teeth:
+**pre-fix** code in a throwaway worktree to prove it has teeth. The red-phase
+results actually observed, so you know what "has teeth" meant here:
+
+| Suite | Red result at the pre-fix commit |
+|---|---|
+| `templates.test.js` | 25 of 30 failed (P2) |
+| `tool-output.test.js` | 13 of 22 failed (P3) |
+| `release.test.js` | 11 of 19 failed (P4) |
+| `server.test.js` `statusError` test | 1 failed with `entry: {"name":"Broken"}` (P5) |
+
+The pattern:
 
 ```bash
 git worktree add /tmp/red HEAD~1
@@ -199,7 +231,7 @@ deliberately *not* `process.env.PATH` — `pluginval` and `clap-validator` are e
 what an audio developer has installed, and QA-06 depends on one being genuinely
 absent.
 
-## 6. Phase 4 — DONE (release engineering); Phase 5 remains
+## 6. Phases 4 and 5 — DONE (release engineering; QA tooling & docs)
 
 19 tests in `tests/release.test.js`; 11 of them fail against the pre-Phase-4 repo.
 
@@ -213,20 +245,46 @@ absent.
 | **HYG-11** | `index.js` was mode 644 despite its shebang (npm chmods on publish, so the `bin` worked but `./index.js` did not). | Mode 755, executable bit recorded in git. |
 | — | Nothing in CI gated on `npm audit`; the scaffold smoke test ran only locally. | `test` job now runs `npm run smoke` and `npm audit --audit-level=high`. |
 
-### Phase 5 — hygiene (~1.5 h)
+### Phase 5 — hygiene — DONE
 
-| ID | Location | Defect |
+| ID | What it was | What it is now |
 |---|---|---|
-| **HYG-02** | `index.js:445` | `findPluginBinaries(projectPath, config, buildDir, formats)` — `projectPath` is never used in the body. |
-| ✅ **HYG-03 done in P3** | `audio_plugin_validate` | `validateCommand` / `clapValidatorCommand` are now honoured. |
-| **HYG-04** | — | No ESLint config. `npm run lint` is just `node --check`. |
-| **HYG-07** | `tests/server.test.js` | Deep property access without optional chaining; a shape change throws instead of failing an assertion. |
-| **HYG-10** | `SECURITY.md:23`–`25` | Predates the P1 fixes: claims "`validatePath()` rejects non-alphanumeric path components", which was never true (`SAFE_PATH` permits `.` — that *was* SEC-01) and omits the `assertWithinProject()` boundary check that actually closed it. Rewrite the defence-in-depth table against the current code. |
-| **HYG-10b** | `README.md:16` CI badge | The Node badge was corrected to `22+` in P4. The **CI badge still points at `main`**, which is red for billing reasons (OPS-07), so it currently advertises a failure that is not the code's fault. Either leave it and rely on the status note, or point it at the branch once billing is cleared. |
-| ✅ done | `README.md:22`, `TODO.md:7` | The stale "and ARA formats" claim and the reference to the non-existent `juce_add_webview_ui()` were corrected while writing this handoff. |
-| ✅ **HYG-11 done in P4** | `index.js` | Now mode 755 with the executable bit recorded in git; `./index.js` answers an `initialize` request directly. |
-| — | `.gitlab/merge_request_templates/Default.md` | Orphaned since `.gitlab-ci.yml` was deleted in P0. Delete the directory. |
-| **HYG-05** | ✅ **done in P2** | `tests/fixtures/test-project/` is now gitignored. |
+| **HYG-04** | No ESLint. `npm run lint` was `node --check index.js`, which only proves the file parses — so a dead parameter and a silent `catch` survived review. | `eslint@10` + `@eslint/js` (devDeps, both allowlisted licenses). Flat config in `eslint.config.js` with **explicit** Node/browser globals, so no `globals` package is needed. Rules: `no-unused-vars`, `no-useless-escape`, `no-empty` (empty catch **not** allowed), `eqeqeq`, `prefer-const`, `no-var`, plus `no-restricted-properties`/`no-restricted-syntax` banning `exec`/`execSync` — the shell-invoking APIs SECURITY.md exists to avoid. `spawn`/`spawnSync` stay allowed; they take argv arrays. `lint` = `eslint . && node --check index.js`; `quality` = `lint && test`, so `npm run check` and CI both lint. **First run: 15 errors, all fixed, re-run clean.** |
+| **HYG-02** | `index.js:453` `findPluginBinaries(projectPath, config, buildDir, formats)` — `projectPath` never used. | Param removed; the single call site (`index.js:887`) updated. ESLint's `no-unused-vars` now prevents a recurrence. |
+| **HYG-07** | `tests/server.test.js` did `result.result.content[0].text` throughout — a shape change threw a `TypeError` instead of failing an assertion. | Every access optional-chained, with the actual response in the assertion message. `JSON.parse` wrapped so a non-JSON reply fails with the payload shown. |
+| **HYG-06** | The same file carried its own stdio client that **sent `tools/list` and `tools/call` with no `initialize` handshake** — it never exercised the path a real MCP client takes. | Rewritten onto `tests/helpers/mcp-client.mjs`, which handshakes. Fixtures moved to `os.tmpdir()`. 11 → **12 tests**, with more assertions than before. |
+| **HYG-10** | `SECURITY.md` was **materially false** — see the list below. | Fully rewritten against the current code. |
+| **HYG-10b** | README Node badge `18+`; FAQ quoted a shell-style `command not found: cmake` the server has not produced since P3; `type`/`ui` undocumented; structure tree missing `templates/juce-webview/`, all the scripts and all but one test file. | Badge `node-22+`. All three `type` values tabulated (incl. that `vst3` is a JUCE alias setting `FORMATS VST3`) and `ui="generic"\|"webview"` documented with the bridge contract. FAQ now quotes the **real** message, verified by running the server: `'cmake' not found on PATH (needed for build/configure).` + the install hint — and explains the 2.0.0 honest-failure change. Tree complete. **The CI badge still points at `main` and is red for billing reasons** — left deliberately; the README's status note explains it. Revisit once OPS-07 is cleared. |
+| — | `.gitlab/merge_request_templates/Default.md`, orphaned since P0 deleted `.gitlab-ci.yml`. GitHub never reads it, so the checklist was invisible. | `git rm -r .gitlab`; its useful items migrated into a real `.github/pull_request_template.md`. |
+| — | Neither `npm run smoke` nor `npm audit` ran in CI, so a scaffold regression or a vulnerable dependency could be published unnoticed. | Both added to `publish.yml`'s `test` job; YAML re-validated with `npx --yes js-yaml`. |
+| — | `audio_plugin_plugins` silently swallowed a malformed `status.json` (`try { … } catch {}`), so the user saw a plugin with no type and no reason. | Reports `statusError` on that entry and still lists the plugin. **New test, proven red** against the pre-change code. |
+| ✅ HYG-03 (P3) · HYG-05 (P2) · HYG-11 (P4) | | Already closed before Phase 5. |
+
+**What ESLint actually caught in `index.js`** — worth knowing before you assume the
+config is decorative:
+
+- Two useless escapes inside `SAFE_OPTIONS` (`index.js:44`) and `SAFE_PATH`
+  (`index.js:56`). **These are the security allowlists.** Before removing a
+  backslash from a regex that gates shell metacharacters, both were compared to
+  their cleaned forms over **65,536 probe strings** (every code point below U+2000,
+  alone and embedded in a valid token): 0 behavioural differences. Do the same if
+  you ever touch them — and if you do, `tests/security.test.js` has 10
+  metacharacter-rejection cases that must stay green.
+- The empty `catch` above (`index.js` ~:825).
+- `stripAnsi`'s `\x1B` control character, flagged by `no-control-regex`. That one is
+  **correct and intentional** — stripping ANSI SGR codes is the whole point — so it
+  carries an `eslint-disable-next-line` with the reason rather than being "fixed".
+
+**`SECURITY.md` was false in six separate ways.** If you inherit a security doc from
+an earlier phase, assume nothing in it is current:
+
+1. Called `0.1.0` the current version and described "17 tests, 6 findings" (reality: 2.0.0, 119 tests, 35 findings).
+2. Claimed layer 3 did `path.resolve()` + `realpathSync` checks — **neither call existed**. The real guard is `assertWithinProject` (`index.js:75`) with `hasDotDot` (`:66`) plus the zod regexes.
+3. Claimed `validatePath()` "rejects non-alphanumeric path components" — never true; `SAFE_PATH` permits `.`, and that permissiveness *was* SEC-01.
+4. Listed dependency versions that had all been superseded.
+5. Asserted *"no residual risk of arbitrary file read/write"* — untrue. The guard allowlists paths **within** the project boundary, so everything inside it is writable by design. The doc now says so.
+6. Recorded SEC-01 as "fixed in 0.3.0". The lint path traversal was closed in this cycle, so **1.4.0 and 1.5.0 as published on npm are still vulnerable** — the rewrite leads with an upgrade notice saying exactly that.
+
 
 ---
 
@@ -343,6 +401,33 @@ whatever new artefact layouts these introduce — keep them consistent with what
 
 ---
 
+**Docs & tooling** *(learned in Phase 5)*
+
+- **Tool output is JSON-escaped, so backslash counts lie.** `sed`/`grep` output
+  returned through the harness arrives as a JSON string, where one literal
+  backslash is shown as two. `index.js:44` *looked* like `\\/` but was really
+  `\/`. Before editing any regex — especially a security allowlist — print
+  `JSON.stringify(line)` or count in Node, never by eye.
+- **Never edit a security regex on the strength of a linter's opinion.** ESLint said
+  the escape was useless; the proof was 65,536 probe strings showing 0 behavioural
+  differences between the old and new forms. `no-useless-escape` is right about
+  syntax, not about your threat model.
+- **The empty `catch {}` blocks in `tests/helpers/mcp-client.mjs` and
+  `scripts/smoke-scaffold.mjs` are deliberate.** ESLint's `no-empty` flags them;
+  the fix is a comment saying why (`/* server gone */`), not deleting the `try`.
+  Deleting it turns "the process already exited" into an unhandled rejection.
+- **An inherited security/threat doc is a liability, not an asset.** `SECURITY.md`
+  described defences that did not exist and version numbers three releases behind.
+  If you touch it, re-derive every claim from source and cite file:line — that is
+  what makes the next person able to check it.
+- **`CHANGELOG.md` has two `### Added` sections** (Unreleased and 1.5.0), so a
+  scripted `assert s.count(anchor)==1` fails. Split the file at `## [1.5.0]` and
+  edit only the head, then assert the history marker is still present.
+- **`npm run lint` is now a release gate.** `scripts/ship.mjs` runs `npm run check`,
+  which runs `quality` = `lint && test`. An ESLint error blocks the release, not
+  just CI.
+
+
 ## 10. Verified correct — do not "fix" these
 
 Checked during the audit and found sound:
@@ -370,16 +455,26 @@ Checked during the audit and found sound:
 
 Do not publish until:
 
-1. ☐ Phases 3–5 complete, `npm run check` green, `npm test` green with
-   `APC_CLAP_INCLUDE` set (0 skips).
+1. ✅ **Phases 3–5 complete.** `npm run check` exits 0: ESLint clean, 119 tests /
+   117 pass / 0 fail / 2 skip, smoke 5/5, `npm audit` 0 vulnerabilities, license
+   gate PASS. With `APC_CLAP_INCLUDE` pointing at a real CLAP checkout the 2 skips
+   become passes (6/6 in `tests/cpp-api.test.js`).
 2. ☐ **Billing resolved** and a PR opened so all six CI jobs get a real run.
 3. ☐ `scaffold-juce` has had **one green run** → add it to `publish.needs`.
 4. ☐ `scaffold-juce`'s apt packages re-checked against whatever
    `ubuntu-latest` is by then; pin to `ubuntu-24.04` if they moved.
 5. ✅ `OPS-02` fixed — `continue-on-error` is gone and a test now asserts no
    workflow step reintroduces it.
-6. ☐ `README.md` and `SECURITY.md` no longer claim ARA support or describe
-   pre-P1 defences.
+6. ✅ `README.md` and `SECURITY.md` are accurate. The only ARA text left in the
+   README is the deliberate "removed in 2.0.0" note explaining why; `SECURITY.md`
+   was rewritten in Phase 5 and every claim in it cites file:line.
+6b. ☐ **The `scaffold-*` CI jobs still have never run**, so `cmake -B build` on a
+   generated project is unproven (AUDIT Phase 6, item 41). Until item 2 clears, that
+   is the largest untested assumption in the release. The installed-tarball path *is*
+   proven: `npm pack` → clean install → `node_modules/.bin/apc-mcp` answers
+   `initialize` with version 2.0.0 and lists 7 tools, and a `type=juce ui=webview`
+   scaffold from the *installed* package produced all 9 files with `FORMATS VST3;AU`,
+   `NEEDS_WEB_BROWSER`, zero unsubstituted placeholders and the three UI assets.
 7. ☐ `CHANGELOG.md` `## [Unreleased] — 2.0.0` renamed to a dated `## [2.0.0] — <date>`
    heading. **`scripts/ship.mjs` refuses to release until this is done** — that guard
    is the reason the step cannot be forgotten.
@@ -407,5 +502,12 @@ git clone --depth 1 --branch 9.0.3 https://github.com/juce-framework/JUCE.git /t
 git clone --depth 1 https://github.com/free-audio/clap.git /tmp/clap
 export APC_CLAP_INCLUDE=/tmp/clap/include APC_CLAP_DIR=/tmp/clap APC_JUCE_DIR=/tmp/JUCE
 
-# then start Phase 5 at §6, red test first (§5 and §6 record what P3/P4 changed)
+# Phases 3, 4 and 5 are DONE — §5 and §6 record what they changed.
+# Next, in order:
+#   §7  OPS-07 — a human must clear the GitHub billing lock; nothing validates
+#                in CI until then
+#   §11 the 2.0.0 release checklist (items 2, 3, 4, 6b, 7, 8 are still open)
+#   §8  the unbuilt TODO.md feature scope: Standalone → ARA → LV2
+# Whatever you pick: write the failing test first, and prove it fails against the
+# pre-change code in a throwaway worktree (§4 has the command).
 ```

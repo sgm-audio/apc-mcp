@@ -55,13 +55,17 @@ function rpc(method, params) {
   return new Promise((resolve, reject) => {
     const proc = spawn(process.execPath, [INDEX], { stdio: ['pipe', 'pipe', 'pipe'] });
     let buf = '', settled = false, stderr = '';
-    const send = o => { try { proc.stdin.write(JSON.stringify(o) + '\n'); } catch {} };
+    const send = o => {
+      // Best effort: if stdin is already closed the server has exited and the
+      // close handler below produces the real error.
+      try { proc.stdin.write(JSON.stringify(o) + '\n'); } catch { /* server gone */ }
+    };
     const killer = setTimeout(() => proc.kill('SIGKILL'), 60000);
     const done = (fn, arg) => {
       if (settled) return;
       settled = true; clearTimeout(killer);
-      try { proc.stdin.end(); } catch {}
-      try { proc.kill(); } catch {}
+      try { proc.stdin.end(); } catch { /* already closed */ }
+      try { proc.kill(); } catch { /* already exited */ }
       fn(arg);
     };
     proc.stderr.on('data', d => stderr += d);
