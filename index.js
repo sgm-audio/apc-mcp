@@ -574,8 +574,48 @@ function mapPluginType(type, ui) {
     // is what tells the create handler to skip format validation. `ui` is not
     // consulted — the app template ships its own AudioAppComponent UI, and a
     // webview variant would be a separate template.
-    case 'standalone': return { template: 'standalone', formats: null };
+    case 'standalone': return {
+      template: 'standalone',
+      formats: null,
+      formatsRejection: 'type="standalone" builds a standalone application (juce_add_gui_app), '
+        + 'which produces a single executable and has no plugin FORMATS. Remove the `formats` '
+        + 'argument. To build a plugin that also runs standalone, use type="juce" — Standalone '
+        + `is one of its FORMATS: ${JUCE_FORMATS.join(', ')}`,
+    };
+    // A native LV2 plugin: pure C against lv2/core/lv2.h, with Turtle metadata.
+    // This is NOT the same thing as JUCE's own LV2 output, which type="juce"
+    // produces from a C++ AudioProcessor via FORMATS "LV2".
+    case 'lv2': return {
+      template: 'lv2',
+      formats: null,
+      formatsRejection: 'type="lv2" builds a native LV2 plugin in C against lv2/core/lv2.h. An '
+        + 'LV2 bundle has one fixed format, so there is no FORMATS list to choose from. Remove '
+        + 'the `formats` argument. (If you wanted JUCE to emit an LV2 build from a C++ '
+        + 'AudioProcessor instead, use type="juce" with formats="LV2".)',
+    };
   }
+}
+
+// An LV2 plugin is identified by URI, and that URI appears in three places that
+// must agree byte for byte: the C descriptor (`<id>_URI` in Source/plugin.c),
+// manifest.ttl's subject and plugin.ttl's subject. Deriving it once here is what
+// stops them diverging — a mismatch makes the plugin load with no metadata, or
+// not at all, and no host reports why.
+//
+// `urn:<vendor>:<plugin>` is a placeholder the user should replace with a URI
+// they actually control. Both parts are reduced to characters that are legal in
+// a URN, so the scaffold can never emit an invalid one.
+function lv2Uri(vendor, id) {
+  const ns = String(vendor).toLowerCase().replace(/[^a-z0-9]/g, '') || 'vendor';
+  return `urn:${ns}:${id}`;
+}
+
+// Turtle string literals are delimited by `"` and honour backslash escapes, so a
+// description containing either character would terminate the literal early and
+// produce invalid metadata. SAFE_DESCRIPTION permits both (it is "printable
+// ASCII"), so they must be escaped rather than assumed absent.
+function turtleEscape(text) {
+  return String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 // Falls back to 'Plugin' when the name has no alphanumerics at all, so a name
@@ -1024,16 +1064,16 @@ registerTool(
       .describe('Parent project root where the plugins/ directory lives. Auto-detected from CWD.'),
     name: z.string().min(1).regex(SAFE_PLUGIN_NAME)
       .describe('Plugin name. Use kebab-case, snake_case, or CamelCase. Examples: "Phaser9000", "my-delay", "TapeEcho".'),
-    type: z.enum(['clap', 'vst3', 'juce', 'standalone']).default('clap')
-      .describe('What to scaffold. "clap" generates a CLAP plugin against the free-audio/clap headers. "vst3" generates a JUCE plugin targeting VST3 only. "juce" generates a JUCE AudioProcessor for VST3;LV2;Standalone. "standalone" generates a standalone audio APPLICATION (juce_add_gui_app) — one executable that owns its audio device, not a plugin a host loads. (ARA is not offered yet — it needs a dedicated template.)'),
+    type: z.enum(['clap', 'vst3', 'juce', 'standalone', 'lv2']).default('clap')
+      .describe('What to scaffold. "clap" generates a CLAP plugin against the free-audio/clap headers. "vst3" generates a JUCE plugin targeting VST3 only. "juce" generates a JUCE AudioProcessor for VST3;LV2;Standalone. "standalone" generates a standalone audio APPLICATION (juce_add_gui_app) — one executable that owns its audio device, not a plugin a host loads. "lv2" generates a native LV2 plugin in C with Turtle metadata, unrelated to the LV2 that type="juce" can emit from C++. (ARA is not offered yet — it needs a dedicated template.)'),
     ui: z.enum(['generic', 'webview']).default('generic')
-      .describe('UI style for the JUCE plugin types. "generic" (default) uses JUCE\'s GenericAudioProcessorEditor. "webview" uses an HTML/CSS/JS WebView with parameter controls embedded via BinaryData. Ignored for "clap" and "standalone", which ship their own UI.'),
+      .describe('UI style for the JUCE plugin types. "generic" (default) uses JUCE\'s GenericAudioProcessorEditor. "webview" uses an HTML/CSS/JS WebView with parameter controls embedded via BinaryData. Ignored for "clap", "standalone" and "lv2", which ship their own UI or none.'),
     vendor: z.string().regex(SAFE_VENDOR).default('apc-mcp')
       .describe('Vendor/company name embedded in plugin metadata.'),
     description: z.string().regex(SAFE_DESCRIPTION).default('An audio plugin')
       .describe('Short description for plugin metadata.'),
     formats: z.string().regex(SAFE_FORMATS).optional()
-      .describe('JUCE plugin formats override, semicolon-separated. Only for the juce/vst3 types. Default: "VST3;LV2;Standalone". Rejected for "standalone", which builds an app and has no FORMATS.'),
+      .describe('JUCE plugin formats override, semicolon-separated. Only for the juce/vst3 types. Default: "VST3;LV2;Standalone". Rejected for "standalone" and "lv2", neither of which has a JUCE FORMATS list.'),
   },
   async (params) => {
     const proj = requireProjectPath(params.projectPath);
@@ -1060,11 +1100,7 @@ registerTool(
     // configure-time failure the user would otherwise discover much later.
     if (typeInfo.formats === null && params.formats) {
       return { content: [{ type: 'text', text:
-        `## audio_plugin_create failed\n` +
-        `type="standalone" builds a standalone application (juce_add_gui_app), which ` +
-        `produces a single executable and has no plugin FORMATS. Remove the \`formats\` ` +
-        `argument. To build a plugin that also runs standalone, use type="juce" — ` +
-        `Standalone is one of its FORMATS: ${JUCE_FORMATS.join(', ')}` }],
+        `## audio_plugin_create failed\n${typeInfo.formatsRejection}` }],
         isError: true };
     }
 
@@ -1094,6 +1130,10 @@ registerTool(
       VENDOR: params.vendor,
       MANUFACTURER_CODE: fourCharCode(params.vendor),
       PLUGIN_CODE: fourCharCode(params.name, { exactlyOneUpper: true }),
+      // Used only by templates/lv2, but computed for every scaffold so a template
+      // can never reference a variable that was never supplied.
+      PLUGIN_URI: lv2Uri(params.vendor, id),
+      PLUGIN_DESCRIPTION_TTL: turtleEscape(params.description),
     };
 
     function copyDir(src, dest) {
@@ -1123,7 +1163,10 @@ registerTool(
     }
     listDir(pluginDir);
 
-    const kind = typeInfo.formats === null ? 'standalone app' : `${params.type} plugin`;
+    // Keyed on the type, not on `formats === null`: both "standalone" and "lv2"
+    // have no FORMATS list, and calling an LV2 plugin a standalone app would be
+    // the sort of wrong-but-plausible message a model then repeats to the user.
+    const kind = params.type === 'standalone' ? 'standalone app' : `${params.type} plugin`;
     const text = [`## Created ${kind}: ${params.name}`, `Location: ${pluginDir}`, '', ...tree].join('\n');
     return { content: [{ type: 'text', text }] };
   }

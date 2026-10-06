@@ -30,6 +30,7 @@ A full audit found **35 defects**, and one more (**FUNC-21**) turned up while bu
 | `f462446` | P5 | **QA tooling & docs**: added ESLint as the real linter (15 findings, all fixed), removed the dead `findPluginBinaries` param, rewrote the materially-false `SECURITY.md`, corrected `CONTRIBUTING.md`/`README.md`/the FAQ against the code, migrated the orphaned GitLab MR checklist to `.github/pull_request_template.md`, made `index.js` executable, added `npm run smoke` + `npm audit` to CI, and put `server.test.js` on the shared handshaking client. 119 tests |
 | `d1a353b` | FUNC-21 | **Artefact discovery**: `validate` could not find any artefact whose `PRODUCT_NAME` differed from its directory name (4 of 6 plausible names), looked for Audio Units in an `AudioUnit/` dir JUCE never creates (it is `AU`), and returned Standalone/LV2 *directories* instead of artefacts. 13 new tests |
 | `d1a353b` | feature | **`type="standalone"`**: a JUCE *application* template (`juce_add_gui_app`) with `AudioAppComponent`, built against the verified JUCE 9 API. 147 tests total |
+| *(this commit)* | feature | **`type="lv2"`**: a native LV2 plugin — C against the real `lv2/core/lv2.h`, Turtle metadata, `MODULE` library emitted into the bundle layout `validate` scans. Compile-checked against **real** upstream headers in CI, not a stub. 163 tests total |
 
 **Version is `2.0.0`** — `package.json:3` is the only source of truth;
 `index.js:26` reads it at startup and `index.js:619` reports it in
@@ -62,18 +63,29 @@ Expected:
 
 ```
 npm run lint            → eslint . && node --check index.js  → clean (0 problems)
-npm test                → # tests 147  # pass 145  # fail 0  # skipped 2
-npm run smoke           → smoke-scaffold: PASS (7/7 scaffolded, 0 failures)
+npm test                → # tests 163  # pass 161  # fail 0  # skipped 2
+npm run smoke           → smoke-scaffold: PASS (9/9 scaffolded, 0 failures)
 npm audit               → ✅ No known vulnerabilities   (0 vulnerabilities)
 npm run licenses        → ✅ All distributed dependencies are under an allowed license.
 ```
 
 `npm run check` chains all five (`quality` = `lint && test`). If `npm test` shows
-a different total than 147, a test file was added or removed — check
+a different total than 163, a test file was added or removed — check
 `git status` before believing any later instruction in this file.
 
-With `APC_CLAP_INCLUDE` pointing at a real free-audio/clap checkout the two skips
-become passes and the total reads **147 / 147 / 0 / 0**.
+The **2 skips** are the CLAP and LV2 compile checks. Set both env vars and they
+become passes, giving **163 / 163 / 0 / 0**:
+
+```bash
+git clone --depth 1 https://github.com/free-audio/clap.git /tmp/clap
+git clone --depth 1 https://github.com/lv2/lv2.git        /tmp/lv2
+export APC_CLAP_INCLUDE=/tmp/clap/include APC_LV2_INCLUDE=/tmp/lv2/include
+# and for `npm run smoke -- --configure` on those two families:
+export APC_CLAP_DIR=/tmp/clap APC_LV2_DIR=/tmp/lv2/include
+```
+
+`tests/cpp-api.test.js` has a guard test per header set, so a silent skip cannot
+read as a pass.
 
 ESLint is a **hard gate** as of Phase 5. `npm run lint` returning non-zero means
 `npm run check` fails, which means `scripts/ship.mjs` refuses to release.
@@ -159,10 +171,13 @@ tests/release.test.js     19   version single-sourcing, no continue-on-error,
                                SHA-pinned actions, no EOL Node, ship guards (Phase 4)
 tests/security.test.js    30   NEGATIVE tests: traversal PoCs, metacharacter
                                rejection, missing-toolchain messages, bogus paths
-tests/templates.test.js   44   structural checks over the *generated project*;
-                               needs no cmake/JUCE/CLAP. Includes a 14-test suite
-                               for the standalone app template.
-tests/cpp-api.test.js      7   real g++/clang++ -fsyntax-only over generated C++
+tests/templates.test.js   58   structural checks over the *generated project*;
+                               needs no cmake/JUCE/CLAP/LV2. Includes a 14-test
+                               suite for the standalone app template and a
+                               14-test suite for the native LV2 template.
+tests/cpp-api.test.js      9   real gcc/g++/clang -fsyntax-only over generated C
+                               and C++, driven by a per-family table (juce / clap
+                               / lv2) with its own header guard test each
 tests/fixtures/juce-api-stub/JuceHeader.h   the JUCE 9 API stub (test fixture,
                                             NOT shipped — package.json "files"
                                             is ["index.js","templates/"])
@@ -174,8 +189,8 @@ eslint.config.js                npm run lint — flat config, explicit Node/brow
                                 exec/execSync
 ```
 
-**Total: 147 tests** (12 server + 13 artefacts + 30 security + 44 templates +
-7 cpp-api + 22 tool-output + 19 release).
+**Total: 163 tests** (12 server + 13 artefacts + 30 security + 58 templates +
+9 cpp-api + 22 tool-output + 19 release).
 
 Both `tests/templates.test.js` and `tests/artefacts.test.js` have a
 comment-stripping helper (`cmakeCode()` / `cppCode()`). **Use them.** The templates
@@ -342,7 +357,7 @@ with that annotation and `publish` was skipped.
 
 ---
 
-## 8. Product scope (`TODO.md`) — Standalone ✅ done, ARA and LV2 remain
+## 8. Product scope (`TODO.md`) — Standalone ✅ and LV2 ✅ done; ARA is the last one
 
 The audit fixed what existed; these features were never built. `TODO.md` carries
 the detail and the verified CMake/C++ facts for each.
@@ -381,17 +396,48 @@ the detail and the verified CMake/C++ facts for each.
    `JUCE_DIR` one, and CI cannot validate it without fetching the SDK. Do not
    re-add the enum value until the template exists.
 
-3. **LV2 — not started.** Pure C plus a Turtle manifest, no JUCE involved.
-   Largest lift; the `LV2` string the JUCE templates emit is JUCE's own LV2
-   support and is unrelated. It will also need its own compile check in
-   `tests/cpp-api.test.js` (LV2 headers, like the CLAP case needs
-   `APC_CLAP_INCLUDE`).
+3. **LV2 — ✅ DONE.** `templates/lv2/` scaffolds a **native** LV2 plugin: pure C
+   against `lv2/core/lv2.h`, Turtle metadata, and a `MODULE` library emitted into
+   the same `<build>/plugins/<n>/<n>_artefacts/<config>/LV2/<n>.lv2/` bundle
+   layout that `findPluginBinaries()` already scans, with the `.ttl` files copied
+   in beside the binary. Unrelated to the `LV2` string the JUCE templates emit.
+
+   Unlike the JUCE templates this one is verified against **real** upstream
+   headers, not a stub: `tests/cpp-api.test.js` compiles `plugin.c` with a C
+   compiler and `-std=c11` when `APC_LV2_INCLUDE` points at an `lv2/lv2`
+   checkout's `include/`, and CI clones it. `templates.test.js` adds 14 structural
+   tests. A new `scaffold-lv2` CI job configures it with real cmake.
+
+   The invariants that matter, all now enforced: the plugin URI is derived once in
+   `index.js` and written into all three files; every `lv2:index`/`lv2:symbol`
+   pair in `plugin.ttl` is matched against the enum **and** the `connect_port()`
+   switch in `plugin.c`; `rdfs:seeAlso` names a file that exists; `PREFIX ""` and
+   `SUFFIX ".so"` pin the filename `manifest.ttl` refers to; the descriptor uses
+   designated initialisers; and `description` is escaped for Turtle (`"` and `\`
+   are both legal in `SAFE_DESCRIPTION` and either one truncates the literal).
+
+   **The `rdfs:seeAlso` test earned its place immediately** — the first version of
+   the template pointed at `<name>.ttl` while shipping `plugin.ttl`, which would
+   have made hosts load the plugin with no metadata and report nothing wrong.
 
 `audio_plugin_plugins` and `audio_plugin_validate` both consume
-`findPluginBinaries()`; whatever new artefact layouts ARA or LV2 introduce must be
-added to `ARTEFACT_LAYOUT` (`index.js`) rather than special-cased in the handlers —
-that mismatch was FUNC-14, and the suffix-scanning rewrite is what makes it
+`findPluginBinaries()`. **ARA needs no new layout** — it is `IS_ARA_EFFECT TRUE` on
+a normal `juce_add_plugin`, so it produces the usual VST3/AU artefacts and is
+already discoverable. If any future template emits something new, add a row to
+`ARTEFACT_LAYOUT` (`index.js`) rather than special-casing it in a handler; that
+mismatch was FUNC-14, and the suffix-scanning rewrite is what makes it
 maintainable now.
+
+**Why LV2 went before ARA, against `TODO.md`'s order:** LV2 could be verified
+end to end in this environment — its headers are small, public and header-only,
+so `plugin.c` is compiled against the real thing and its CMakeLists is
+configure-checked by a job with no apt surface. ARA cannot: its JUCE-side surface
+(`ARADocumentControllerSpecialisation`, `ARAPlaybackRenderer`,
+`ARAEditorRenderer`, `ARAEditorView`, the model objects) would need a large
+extension to `tests/fixtures/juce-api-stub`, and its CMake side needs an external
+ARA SDK that CI would also have to fetch. Shipping an unverifiable template is
+exactly how this project's worst defects happened, so the verifiable one went
+first.
 
 
 ---
@@ -517,10 +563,10 @@ Checked during the audit and found sound:
 Do not publish until:
 
 1. ✅ **Phases 3–5 complete, plus the Standalone feature and FUNC-21.**
-   `npm run check` exits 0: ESLint clean, 147 tests / 145 pass / 0 fail / 2 skip,
-   smoke 7/7, `npm audit` 0 vulnerabilities, license gate PASS. With
-   `APC_CLAP_INCLUDE` pointing at a real CLAP checkout the 2 skips become passes
-   (147 / 147 / 0 skip). Re-verified after `npm ci` from an empty `node_modules`,
+   `npm run check` exits 0: ESLint clean, 163 tests / 161 pass / 0 fail / 2 skip,
+   smoke 9/9, `npm audit` 0 vulnerabilities, license gate PASS. With
+   `APC_CLAP_INCLUDE` and `APC_LV2_INCLUDE` pointing at real checkouts the 2 skips
+   become passes (163 / 163 / 0 skip). Re-verified after `npm ci` from an empty `node_modules`,
    and by installing the packed tarball into a clean prefix and scaffolding a
    standalone app through `node_modules/.bin/apc-mcp`.
 2. ☐ **Billing resolved** and a PR opened so all six CI jobs get a real run.
@@ -564,7 +610,9 @@ npm run check                         # confirm the §2 baseline
 # ground truth for any template work
 git clone --depth 1 --branch 9.0.3 https://github.com/juce-framework/JUCE.git /tmp/JUCE
 git clone --depth 1 https://github.com/free-audio/clap.git /tmp/clap
-export APC_CLAP_INCLUDE=/tmp/clap/include APC_CLAP_DIR=/tmp/clap APC_JUCE_DIR=/tmp/JUCE
+git clone --depth 1 https://github.com/lv2/lv2.git /tmp/lv2
+export APC_CLAP_INCLUDE=/tmp/clap/include APC_LV2_INCLUDE=/tmp/lv2/include
+export APC_CLAP_DIR=/tmp/clap APC_LV2_DIR=/tmp/lv2/include APC_JUCE_DIR=/tmp/JUCE
 
 # Phases 3, 4 and 5 are DONE — §5 and §6 record what they changed.
 # Next, in order:
