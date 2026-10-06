@@ -26,7 +26,7 @@ A full audit found **35 defects**. Phases 0–2 are **done, committed and pushed
 | `2fb81da` | P2 | **Templates**: the scaffold output could not configure or compile at all. Rewrote all three CMakeLists and the whole `juce-webview` + `clap` C++ layer against verified JUCE 9 / CLAP APIs. 36 new tests |
 | `d5e7dda` | P2 | Recorded that `scaffold-juce` has never had a green run |
 | `7716749` | P3 | **Output correctness**: `config` from `apc-mcp.json` was dead (zod's `.default()` shadowed it), `lint(fix=true)` reported success when clang-format failed, both output parsers miscounted, build ignored its own `errorCount`, and `validate` aborted mid-loop on a missing optional validator. 22 new tests |
-| *(latest)* | P4 | **Release engineering**: version had two sources of truth, `npm publish` had `continue-on-error: true`, both Node 18 *and* 20 are EOL, `ship` pushed `main` from any branch, and actions were on mutable tags. 19 new tests |
+| `8e259a1` | P4 | **Release engineering**: version had two sources of truth, `npm publish` had `continue-on-error: true`, both Node 18 *and* 20 are EOL, `ship` pushed `main` from any branch, and actions were on mutable tags. 19 new tests |
 
 **Version is `2.0.0`** (both `package.json:3` and `index.js:460`) because
 removing `type:'ara'` is a breaking input-schema change. It has **not been
