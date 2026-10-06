@@ -15,6 +15,9 @@
 > (OPS-03), so the two cannot drift. Several tools also now return `isError` in
 > cases where they previously reported success — see *Tool output & failure
 > reporting* below.
+>
+> `audio_plugin_create` also **gains** `type: "standalone"` — an additive enum
+> value, not a breaking one.
 
 ### Security
 
@@ -216,6 +219,40 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
   resolves `uses:` to a commit, so the peeled `2892aa5e…` is the value pinned —
   pinning the tag object would not have resolved.
 
+#### Artefact discovery (`audio_plugin_validate`)
+
+- **`audio_plugin_validate` could not find most build artefacts (FUNC-21).** Two
+  independent causes, both invisible in this README's own examples because they
+  happen to dodge them.
+  - **The artefact is not named after its directory.** `templates/juce/CMakeLists.txt`
+    sets `PRODUCT_NAME "{{PLUGIN_DISPLAY_NAME}}"`, and `displayName()` title-cases the
+    name and turns `_`/`-` into spaces. JUCE names the artefact after PRODUCT_NAME
+    (`_juce_set_output_name`) but the directory after the CMake target, so
+    `name="my_verb"` builds `VST3/My Verb.vst3` inside `plugins/my_verb/`. The old
+    code constructed `${dir}.vst3`, found nothing, and reported *"No plugin binaries
+    found … run audio_plugin_build first"* — telling the user to redo a build that
+    had already succeeded. 4 of 6 plausible names were affected (`MyVerb` and
+    `Phaser9000` are not, because `displayName()` is the identity for them).
+  - **Audio Units were looked for in a directory JUCE never creates.** JUCE's kind
+    string is `AU`, from `_juce_get_platform_plugin_kinds()`, so `.component`
+    bundles live in `<Config>/AU/`. The code looked in `AudioUnit/`, which made AU
+    artefacts undiscoverable at all.
+  - **`Standalone` and `LV2` returned directories, not artefacts.** JUCE sets the
+    Standalone artefact to `$<TARGET_BUNDLE_DIR>` on macOS (`X.app`) and
+    `$<TARGET_FILE>` elsewhere (`X.exe`, or an extension-less executable on Linux) —
+    returning the containing directory gave a path that cannot be run or validated.
+    LV2 likewise reported `LV2/` instead of the `<name>.lv2` bundle inside it.
+
+  Artefacts are now found by **scanning for the format's suffix** rather than by
+  constructing a filename: `*.vst3`, `*.clap`, `*.lv2`, and `AU/*.component`.
+  Standalone is matched by platform shape in JUCE's own priority order
+  (`.app` bundle → `.exe` → an extension-less file that actually has the
+  executable bit), so a README or a `.pdb` dropped into the output directory is
+  never reported as the binary. `AudioUnit` stays the user-facing name in
+  `apc-mcp.json`'s `validateFormats` so existing configs keep working, mapped to
+  JUCE's `AU` directory internally.
+
+
 #### QA tooling & documentation
 
 - **ESLint is now the real linter (HYG-04).** `npm run lint` used to be
@@ -275,6 +312,29 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
 
 ### Added
 
+- **`type: "standalone"` on `audio_plugin_create` — a new `templates/standalone/`.**
+  It scaffolds a standalone audio **application**, not a plugin: `juce_add_gui_app()`
+  builds one executable that owns its audio device through `juce::AudioAppComponent`.
+  You get `Source/Main.cpp` (a `juce::JUCEApplication` plus its `DocumentWindow`, with
+  `START_JUCE_APPLICATION()` generating `main()`), `Source/MainComponent.{h,cpp}` (a
+  440 Hz sine generator with a level slider), and a `CMakeLists.txt`. Two JUCE 9
+  details it gets right that older example code does not:
+  - **`AudioAppComponent` has no `start()` and no `stop()` any more.**
+    `setAudioChannels()` both initialises the device and starts the callback, and its
+    counterpart `shutdownAudio()` *must* be called from the derived destructor — the
+    base class `jassert()`s otherwise. Most tutorials still in circulation will not
+    compile against JUCE 9.
+  - **An app target accepts no plugin keywords.** `juce_add_gui_app()` performs no
+    `UNPARSED_ARGUMENTS` check, so `FORMATS`, `PLUGIN_CODE` and `IS_SYNTH` would be
+    dropped silently. They are absent, and `audio_plugin_create(type="standalone",
+    formats="VST3")` is now **rejected with an explanation** rather than silently
+    ignoring the argument — the same silent-drop failure mode JUCE's CMake API has
+    and this project refuses to copy.
+  - The level is shared between the message and audio threads through a
+    `std::atomic<float>`; a plain `float` there is a data race, and the oscillator
+    advances its phase once per sample (not once per channel per sample) and wraps it
+    with `fmod` so precision does not decay over a long run.
+
 - **`.github/pull_request_template.md`.** The GitLab merge-request checklist that
   survived the move to GitHub was deleted (`.gitlab/` — GitHub never reads it), and
   its genuinely useful items were migrated here, updated for `npm run check`, the
@@ -333,6 +393,30 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
   see **Added** above.
 
 ### Tests
+
+- **New `tests/artefacts.test.js` — 13 tests** driving the real tool over stdio
+  against planted build trees, so no cmake is needed. Red phase confirmed: 9 of 13
+  failed before the FUNC-21 fix, with the predicted messages. The 4 that passed are
+  deliberate regression guards (CamelCase names, CLAP, and two negative cases) so
+  the fix cannot be over-broad.
+- **`tests/templates.test.js` grew 30 → 44** with a standalone-application suite:
+  `juce_add_gui_app` and never `juce_add_plugin`; **no plugin-only keyword** (each
+  one would be silently dropped); every keyword used is one JUCE actually parses;
+  the target is not `${PROJECT_NAME}`; app and plugin targets cannot collide;
+  `START_JUCE_APPLICATION` names a real `JUCEApplication` subclass and appears
+  exactly once; `shutdownAudio()` is in the destructor; **no `start()`/`stop()`**;
+  all three pure-virtual `AudioSource` methods are overridden; the shared level is
+  atomic; `ui` is ignored; and `formats` is rejected.
+- **`tests/cpp-api.test.js` now compiles the standalone app's C++** against the
+  fixture stub, which was extended with the application-side JUCE 9 API
+  (`JUCEApplication`, `DocumentWindow`, `Slider`, `Label`, `Graphics`, `Colour`,
+  `Justification`, `AudioSource`, `AudioSourceChannelInfo`, `AudioAppComponent`,
+  `AudioDeviceManager`, `MathConstants`, `ProjectInfo`). The extension was checked
+  for teeth: a JUCE-8-style `start()`/`stop()` component and a typo'd
+  `setUseNativeTitleBar` both fail to compile against it.
+- **Total 119 → 147 tests.** `scripts/smoke-scaffold.mjs` grew 5 → 7 cases and now
+  derives the expected CMake command from `type` (`add_library` / `juce_add_plugin` /
+  `juce_add_gui_app`) instead of a two-way branch.
 
 - **`tests/server.test.js` rewritten onto the shared MCP client (HYG-06, HYG-07).**
   It carried its own stdio client that duplicated the other two suites **and sent

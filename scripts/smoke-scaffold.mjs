@@ -41,7 +41,23 @@ const CASES = [
   { name: 'SmokeJuceWv',    type: 'juce', ui: 'webview', family: 'juce' },
   { name: 'SmokeVst3Wv',    type: 'vst3', ui: 'webview', family: 'juce' },
   { name: 'smoke-kebab',    type: 'clap', ui: 'generic', family: 'clap' },
+  // A standalone application. `family` stays 'juce' because that is what
+  // groups it for the optional cmake configure step — it needs JUCE, just like
+  // the plugin templates. The CMake command it must use is different, and is
+  // derived from `type` below rather than from `family`.
+  { name: 'SmokeStandalone', type: 'standalone', ui: 'generic', family: 'juce' },
+  { name: 'smoke_app',       type: 'standalone', ui: 'generic', family: 'juce' },
 ];
+
+// The CMake command each scaffold type must define its target with. One table,
+// keyed by `type`, so the structural check cannot drift from what the templates
+// actually emit.
+const CMAKE_COMMAND_FOR_TYPE = {
+  clap: 'add_library',            // a plain shared library against free-audio/clap
+  juce: 'juce_add_plugin',
+  vst3: 'juce_add_plugin',
+  standalone: 'juce_add_gui_app', // an executable, not a plugin library
+};
 
 let failures = 0;
 const fail = (label, detail) => {
@@ -178,7 +194,8 @@ for (const c of created) {
     if (left) fail(`${c.name}/${rel}`, `unsubstituted placeholders: ${left.join(', ')}`);
   }
   const cm = c.files.get('CMakeLists.txt');
-  const cmd = c.family === 'clap' ? 'add_library' : 'juce_add_plugin';
+  const cmd = CMAKE_COMMAND_FOR_TYPE[c.type];
+  if (!cmd) { fail(c.name, `no expected CMake command is known for type "${c.type}"`); continue; }
   const target = cm.match(new RegExp(`\\b${cmd}\\s*\\(\\s*([^\\s)]+)`))?.[1];
   if (target !== c.name) {
     fail(`${c.name}`, `${cmd} target is "${target}", expected "${c.name}"`);

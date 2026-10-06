@@ -20,12 +20,13 @@
 > | 2 | Template correctness | ✅ complete — `2fb81da`, `d5e7dda` |
 > | 3 | Parsing & failure reporting | ✅ complete — see §7 Phase 3 |
 > | 4 | CI / release engineering | ✅ complete |
-> | 5 | QA tooling & docs | ⬜ open (HYG-03/05/11 already closed early) |
-> | — | Feature scope (`TODO.md`) | ⬜ open |
+> | 5 | QA tooling & docs | ✅ complete — see §7 Phase 5 |
+> | — | Feature scope (`TODO.md`) | ◐ Standalone ✅ done; ARA and LV2 remain — see §8 |
 >
-> Finding counts below are the original 34 plus **QA-07**, discovered while writing
-> the Phase 3 tests. Fixed findings are annotated **[FIXED]** in place rather than
-> deleted, so the evidence trail survives.
+> Finding counts below are the original 34 plus **QA-07** (found while writing the
+> Phase 3 tests) and **FUNC-21** (found while building the Standalone feature, after
+> Phase 5). Fixed findings are annotated **[FIXED]** in place rather than deleted, so
+> the evidence trail survives.
 
 ---
 
@@ -338,6 +339,7 @@ The schema advertises an enum value that always produces a broken project and re
 | **QA-05** | **`build` accepts a non-existent `projectPath` and creates directories.** **Proven:** `projectPath: '/tmp/apc-audit/does-not-exist-<ts>'` → `isError:false`, and the harness confirmed the path *and* `<path>/build` were created. `requireProjectPath` resolves but never checks existence. Validate that the path exists and contains `CMakeLists.txt` before `mkdirSync`. |
 | **QA-06** | **`validate` checks prerequisites in the wrong place.** `checkOptionalTool()`'s return value is discarded, then `requireTool()` is called *inside* the per-binary results loop — once FUNC-04 is fixed, a missing validator would throw mid-loop after partial work. Hoist all prereq checks to the top. |
 | **QA-07** | *(new — found while writing the Phase 3 tests)* **Compiler diagnostics on stderr are never parsed.** `trySpawn` returns stdout as `output` and stderr separately, but the build handler called `parseBuildOutput(r.output)` only. Compilers write diagnostics to **stderr**, so on a failing build the report read `## Build failed` / `Errors: 0` with an empty `### Errors` section — the errors were missing precisely when they mattered. **Proven:** shim cmake exiting 2 with `error: use of undeclared identifier` on stderr reported `Errors: 0`. Fixed by parsing `output + stderr`. |
+| **FUNC-21** | *(new — found while building the Standalone feature)* **[FIXED]** **`audio_plugin_validate` could not find most build artefacts.** Two independent causes, both invisible in the README's own examples because they dodge them. (a) `templates/juce/CMakeLists.txt` sets `PRODUCT_NAME "{{PLUGIN_DISPLAY_NAME}}"`, and `displayName()` title-cases the name and turns `_`/`-` into spaces; JUCE names the *artefact* after PRODUCT_NAME (`_juce_set_output_name`) but the *directory* after the CMake target, so `name="my_verb"` builds `VST3/My Verb.vst3` inside `plugins/my_verb/`. `findPluginBinaries` constructed `${dir}.vst3`, found nothing, and told the user to re-run the build — advice that was simply wrong. 4 of 6 plausible names are affected. (b) It looked for Audio Units in an `AudioUnit/` directory that JUCE never creates: `_juce_get_platform_plugin_kinds()` yields the kind string **`AU`**, so `.component` bundles live in `<Config>/AU/`. (c) `Standalone` returned the format *directory* rather than the executable, and `LV2` returned `LV2/` rather than the `<name>.lv2` bundle inside it. **Fixed** by scanning for each format's suffix instead of constructing filenames, with `Standalone` matched by platform shape (`.app` bundle → `.exe` → an extension-less file with the executable bit) per `_juce_set_plugin_target_properties()`. 13 new tests in `tests/artefacts.test.js`; 9 failed before the fix.
 | **OPS-01** | **GitLab CI is broken.** (a) `test` declares `artifacts:reports:junit: junit.xml` but nothing generates it — `node --test` emits TAP; verified no `junit.xml`. (b) `coverage: '/^ℹ tests\s+(\d+)/'` never matches: verified **0** matches, because non-TTY output is `# tests 11`, not `ℹ tests 11`. (c) `license_scanning` runs `npm ci` inside `image: docker:27-cli`, which has no npm. (d) `secret_detection` ends with `\|\| true` — a security scan that can never fail. (e) Ultimate scanners are hand-rolled as `docker run` invocations instead of `include: - template: …`. (f) No `node --check` and no `npm audit` step, so GitLab's gates diverge from GitHub's. |
 | **OPS-02** | **`npm publish` uses `continue-on-error: true`.** A failed publish leaves CI green while the tag looks released. Remove it and rely on `NPM_TOKEN` being present, or gate on an explicit `if: github.event_name == 'push' && startsWith(github.ref,'refs/tags/v')` with a real failure. |
 | **OPS-03** | **Version is duplicated.** `package.json:3` and `index.js:304` both hardcode `1.5.0`. CONTRIBUTING's release checklist mentions only `package.json` → guaranteed drift, and `initialize` would report a stale server version. Read it instead: `JSON.parse(fs.readFileSync(path.join(PKG_DIR,'package.json'),'utf8')).version`. |
@@ -544,7 +546,7 @@ in a valid token): **0 behavioural differences**, so the escapes were removed.
 
 | # | Check | Status |
 |---|---|---|
-| 37 | `npm run check` → exit 0 | ✅ **Done.** 119 tests / 117 pass / 0 fail / 2 skip, ESLint clean, smoke 5/5, `npm audit` 0 vulnerabilities, license gate PASS. |
+| 37 | `npm run check` → exit 0 | ✅ **Done.** 147 tests / 145 pass / 0 fail / 2 skip, ESLint clean, smoke 7/7, `npm audit` 0 vulnerabilities, license gate PASS. With `APC_CLAP_INCLUDE` set against a real free-audio/clap checkout: **147 / 147 / 0 fail / 0 skip**. Re-verified after `npm ci` from an empty `node_modules`, so the lockfile CI installs from is in sync. |
 | 38 | Full suite green, covering all 7 tools | ✅ **Substantially done — but not "every parameter".** All 7 tools are exercised. Before Phase 3, four of them (`configure`, `test`, `lint`, `validate`) had **zero** tests. Still untested: `clean`, `generator`, `options`, `testName`, and the success paths of `audio_plugin_create`/`plugins` beyond what `server.test.js` covers. Treat that as known residual gap, not as complete coverage. |
 | 39 | Re-run the SEC-01 exploit PoC → rejected | ✅ **Done.** `tests/security.test.js` drives the real server over stdio with the traversal payloads; the lint path traversal is rejected, and 1.4.0/1.5.0 are documented as vulnerable in `SECURITY.md`. |
 | 40 | Re-run fake-toolchain scenarios (FUNC-04/05/06, QA-01/02/03) | ✅ **Done.** `tests/tool-output.test.js` builds PATH shims and asserts exit codes, diagnostic counts, skipped-step reporting and `isError` flags. |

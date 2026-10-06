@@ -32,6 +32,8 @@ Tests use Node's built-in `node:test` runner — no test framework dependency.
 3. Add tests. Pick the file by kind: `tests/server.test.js` (happy path),
    `tests/security.test.js` (rejections), `tests/tool-output.test.js` (reporting and
    parsing), `tests/templates.test.js` (generated project structure),
+   `tests/artefacts.test.js` (finding build artefacts in a build tree),
+   `tests/cpp-api.test.js` (compiling the generated C++),
    `tests/release.test.js` (packaging and CI invariants).
 4. **Write the failing test first and watch it fail.** Run it against the pre-change
    code in a throwaway worktree (`HANDOFF.md` §4). The original suite passed 11/11

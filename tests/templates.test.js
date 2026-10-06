@@ -33,6 +33,12 @@ const PERMUTATIONS = [
   { name: 'Vst3Wv',    type: 'vst3',  ui: 'webview' },
   { name: 'my-delay',  type: 'juce',  ui: 'webview' },
   { name: 'X',         type: 'clap',  ui: 'generic' },
+  // A standalone *application*, and a snake_case one at that — so it exercises
+  // both the gui_app template and the displayName() divergence (PRODUCT_NAME
+  // "Tone Gen" inside a directory called tone_gen). `ui` is deliberately
+  // 'webview' on the second to prove the app template ignores it.
+  { name: 'ToneGen',   type: 'standalone', ui: 'generic' },
+  { name: 'tone_gen',  type: 'standalone', ui: 'webview' },
 ];
 
 const scaffolded = new Map(); // name -> { dir, files: Map<relPath, content> }
@@ -55,6 +61,15 @@ function cmakeCode(text) {
   return text.split('\n')
     .map(l => l.replace(/(^|\s)#.*$/, ''))
     .join('\n');
+}
+
+// Strip `//` line comments from C++ source. Needed for the same reason
+// cmakeCode() exists: the templates explain in comments which removed or
+// inapplicable APIs they avoid (START_JUCE_APPLICATION, start(), stop(),
+// loadHTMLString), and a raw-text assertion cannot tell an explanation from a
+// call.
+function cppCode(text) {
+  return text.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
 }
 
 // First argument of a CMake command invocation, or null.
@@ -103,6 +118,16 @@ after(() => { fs.rmSync(ROOT, { recursive: true, force: true }); });
 const isJuce = s => s.type === 'juce' || s.type === 'vst3';
 const juceOnly = ui => [...scaffolded.values()].filter(s => isJuce(s) && (!ui || s.ui === ui));
 
+// `type: standalone` is a JUCE **application** (juce_add_gui_app), not a plugin.
+// It has no FORMATS, no PLUGIN_CODE and no PluginProcessor, so every
+// plugin-specific assertion must exclude it. Note this is NOT the same as
+// excluding `clap`: several checks that used to read `if (s.type === 'clap')
+// continue;` mean "JUCE plugin" and must now say so explicitly, or they silently
+// assert plugin-only invariants against an app target.
+const isApp = s => s.type === 'standalone';
+const appOnly = () => [...scaffolded.values()].filter(isApp);
+const jucePluginOnly = () => [...scaffolded.values()].filter(s => isJuce(s));
+
 // ═══════════════════════════════════════════════════════════════════
 describe('FUNC-01 · no unresolved template placeholders survive scaffolding', () => {
   it('every generated file is fully substituted', () => {
@@ -150,11 +175,25 @@ describe('FUNC-03 · each plugin gets its own CMake target name', () => {
   });
 
   it('two plugins scaffolded into one project do not collide', () => {
-    const names = [...scaffolded.values()]
-      .filter(s => s.type !== 'clap')
+    const names = jucePluginOnly()
       .map(s => cmakeFirstArg(cmakeCode(s.files.get('CMakeLists.txt')), 'juce_add_plugin'));
+    assert.ok(names.every(n => n), `every JUCE plugin needs a target name: ${names.join(', ')}`);
     assert.equal(new Set(names).size, names.length,
       `duplicate CMake target names would break configure: ${names.join(', ')}`);
+  });
+
+  it('two apps scaffolded into one project do not collide either', () => {
+    const names = appOnly()
+      .map(s => cmakeFirstArg(cmakeCode(s.files.get('CMakeLists.txt')), 'juce_add_gui_app'));
+    assert.ok(names.every(n => n), `every app needs a juce_add_gui_app target: ${names.join(', ')}`);
+    assert.equal(new Set(names).size, names.length,
+      `duplicate CMake target names would break configure: ${names.join(', ')}`);
+    // And an app target must not share a name with a plugin target in the same
+    // project — CMake target names are global, not per-kind.
+    const pluginNames = jucePluginOnly()
+      .map(s => cmakeFirstArg(cmakeCode(s.files.get('CMakeLists.txt')), 'juce_add_plugin'));
+    assert.equal(names.filter(n => pluginNames.includes(n)).length, 0,
+      'an app and a plugin must not claim the same CMake target name');
   });
 });
 
@@ -207,8 +246,7 @@ describe('FUNC-02/08/11/12 · JUCE templates use the real JUCE 9 CMake API', () 
   });
 
   it('declares only JUCE formats juce_add_plugin accepts', () => {
-    for (const s of scaffolded.values()) {
-      if (s.type === 'clap') continue;
+    for (const s of jucePluginOnly()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       const m = cm.match(/FORMATS\s+([A-Za-z0-9_;]+)/);
       assert.ok(m, `${s.name}: no FORMATS found`);
@@ -220,8 +258,9 @@ describe('FUNC-02/08/11/12 · JUCE templates use the real JUCE 9 CMake API', () 
   });
 
   it('sets deterministic four-character plugin IDs', () => {
-    for (const s of scaffolded.values()) {
-      if (s.type === 'clap') continue;
+    // Plugin IDs are meaningless for an app target: juce_add_gui_app() creates no
+    // plugin, so there is nothing for a host to identify.
+    for (const s of jucePluginOnly()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       const mc = cm.match(/PLUGIN_MANUFACTURER_CODE\s+(\S+)/)?.[1];
       const pc = cm.match(/PLUGIN_CODE\s+(\S+)/)?.[1];
@@ -311,7 +350,7 @@ describe('FUNC-02/15 · WebView template uses the real JUCE 9 browser API', () =
         if (!/\.(cpp|h)$/.test(rel)) continue;
         for (const api of gone) {
           // A comment explaining the removal is fine; a call is not.
-          const code = content.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+          const code = cppCode(content);
           assert.ok(!code.includes(api), `${s.name}/${rel}: ${api} is not part of the JUCE 9 API`);
         }
       }
@@ -417,6 +456,185 @@ describe('schema rejects format values JUCE cannot build', () => {
     const create = tools.find(t => t.name === 'audio_plugin_create');
     const allowed = create.inputSchema.properties.type.enum ?? [];
     assert.ok(!allowed.includes('ara'), `"ara" is still advertised: ${allowed.join(', ')}`);
-    assert.deepEqual(allowed, ['clap', 'vst3', 'juce']);
+    // Exact list on purpose: this is a snapshot of the tool's advertised schema,
+    // so adding or removing a type is a deliberate, reviewed change rather than
+    // something that slips in. 'standalone' was added for the app template.
+    assert.deepEqual(allowed, ['clap', 'vst3', 'juce', 'standalone']);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// type: 'standalone' scaffolds a JUCE **application** via juce_add_gui_app() —
+// one executable that owns its audio device — not a plugin a host loads. Every
+// assertion below is either about that difference or about the JUCE 9 API
+// changes the template has to get right.
+describe('standalone application template (juce_add_gui_app)', () => {
+  it('uses juce_add_gui_app and never juce_add_plugin', () => {
+    for (const s of appOnly()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      assert.ok(cmakeFirstArg(cm, 'juce_add_gui_app'),
+        `${s.name}: no juce_add_gui_app() call — an app target must be an executable`);
+      assert.ok(!cmakeFirstArg(cm, 'juce_add_plugin'),
+        `${s.name}: juce_add_plugin() in an app template would build a plugin library`);
+    }
+  });
+
+  it('passes no plugin-only keywords, which JUCE would silently drop', () => {
+    // juce_add_gui_app() has no UNPARSED_ARGUMENTS check, so a keyword that does
+    // not apply is dropped without a warning — the same silent-failure mode that
+    // made the original templates look correct while never configuring.
+    const pluginOnlyKeywords = ['FORMATS', 'PLUGIN_CODE', 'PLUGIN_MANUFACTURER_CODE',
+                                'IS_SYNTH', 'NEEDS_MIDI_INPUT', 'NEEDS_MIDI_OUTPUT',
+                                'IS_MIDI_EFFECT', 'COPY_PLUGIN_AFTER_BUILD', 'IS_ARA_EFFECT'];
+    for (const s of appOnly()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      for (const kw of pluginOnlyKeywords) {
+        assert.ok(!new RegExp(`(^|\\s)${kw}\\s`).test(cm),
+          `${s.name}: ${kw} is a juce_add_plugin keyword and is silently ignored by juce_add_gui_app`);
+      }
+    }
+  });
+
+  it('uses only keywords juce_add_gui_app actually parses', () => {
+    // From _juce_initialise_target() in JUCE 9.0.3's JUCEUtils.cmake.
+    const VALID = ['VERSION', 'BUILD_VERSION', 'PRODUCT_NAME', 'PLIST_TO_MERGE', 'BUNDLE_ID',
+                   'MICROPHONE_PERMISSION_ENABLED', 'MICROPHONE_PERMISSION_TEXT',
+                   'COMPANY_COPYRIGHT', 'COMPANY_NAME', 'COMPANY_WEBSITE', 'COMPANY_EMAIL',
+                   'NEEDS_CURL', 'NEEDS_WEB_BROWSER', 'NEEDS_WEBVIEW2',
+                   'ICON_BIG', 'ICON_SMALL', 'HARDENED_RUNTIME_ENABLED', 'APP_SANDBOX_ENABLED'];
+    for (const s of appOnly()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      const call = cm.match(/juce_add_gui_app\s*\(([\s\S]*?)\n\)/);
+      assert.ok(call, `${s.name}: could not isolate the juce_add_gui_app() argument list`);
+      const kws = call[1].split('\n')
+        .map(l => l.trim())
+        .filter(l => /^[A-Z_][A-Z0-9_]*\s/.test(l))
+        .map(l => l.split(/\s+/)[0]);
+      assert.ok(kws.length > 0, `${s.name}: no keywords parsed out of juce_add_gui_app()`);
+      for (const kw of kws) {
+        assert.ok(VALID.includes(kw),
+          `${s.name}: "${kw}" is not a keyword juce_add_gui_app parses (it would be silently dropped)`);
+      }
+    }
+  });
+
+  it('generates the JUCE header and links juce_audio_utils', () => {
+    for (const s of appOnly()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      assert.ok(cm.includes('juce_generate_juce_header'),
+        `${s.name}: Source/Main.cpp includes <JuceHeader.h>, which this call generates`);
+      assert.ok(cm.includes('juce::juce_audio_utils'),
+        `${s.name}: AudioAppComponent lives in juce_audio_utils`);
+      assert.ok(cm.includes('target_link_libraries'), `${s.name}: no modules linked`);
+    }
+  });
+
+  it('names the CMake target after the plugin name, not ${PROJECT_NAME}', () => {
+    for (const s of appOnly()) {
+      const target = cmakeFirstArg(cmakeCode(s.files.get('CMakeLists.txt')), 'juce_add_gui_app');
+      assert.equal(target, s.name,
+        `${s.name}: app target is "${target}" — it would inherit the host project's name`);
+    }
+  });
+
+  it('lists exactly the sources it scaffolds', () => {
+    for (const s of appOnly()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      const listed = cmakeListedFiles(cm, 'target_sources');
+      assert.deepEqual([...listed].sort(), ['Source/Main.cpp', 'Source/MainComponent.cpp', 'Source/MainComponent.h'],
+        `${s.name}: target_sources does not match the scaffolded files`);
+      for (const f of listed) assert.ok(s.files.has(f), `${s.name}: ${f} is listed but missing`);
+    }
+  });
+
+  it('START_JUCE_APPLICATION names the class that derives from JUCEApplication', () => {
+    for (const s of appOnly()) {
+      const main = s.files.get('Source/Main.cpp');
+      const started = main.match(/START_JUCE_APPLICATION\((\w+)\)/)?.[1];
+      assert.ok(started, `${s.name}: no START_JUCE_APPLICATION — there would be no main()`);
+      assert.ok(main.includes(`class ${started} final : public juce::JUCEApplication`),
+        `${s.name}: START_JUCE_APPLICATION(${started}) does not match a JUCEApplication subclass`);
+      // Exactly one main(); a second definition is a link error. Counted over
+      // comment-stripped source, because the template explains in a comment what
+      // START_JUCE_APPLICATION() does.
+      assert.equal((cppCode(main).match(/START_JUCE_APPLICATION/g) ?? []).length, 1,
+        `${s.name}: START_JUCE_APPLICATION appears more than once in code`);
+    }
+  });
+
+  it('calls shutdownAudio() in the destructor, as JUCE 9 requires', () => {
+    // AudioAppComponent's destructor jassert()s with "If you hit this then your
+    // derived class must call shutdown audio in destructor!" — so this is not
+    // optional cleanup, and a Debug build will abort without it.
+    for (const s of appOnly()) {
+      const cpp = s.files.get('Source/MainComponent.cpp');
+      const dtor = cpp.match(/::~\w+\(\)[\s\S]*?\n\}/)?.[0];
+      assert.ok(dtor, `${s.name}: no destructor definition found`);
+      assert.ok(dtor.includes('shutdownAudio()'),
+        `${s.name}: the destructor must call shutdownAudio() or JUCE asserts on teardown`);
+    }
+  });
+
+  it('does not call start() or stop(), which JUCE 9 removed from AudioAppComponent', () => {
+    // Older JUCE (and most tutorials still circulating) start the device with
+    // start() and stop it with stop(). Neither exists in JUCE 9: setAudioChannels()
+    // starts the callback and shutdownAudio() ends it.
+    for (const s of appOnly()) {
+      for (const [rel, content] of s.files) {
+        if (!/\.(cpp|h)$/.test(rel)) continue;
+        const code = cppCode(content);
+        assert.ok(!/\bstart\s*\(\s*\)/.test(code), `${s.name}/${rel}: start() no longer exists on AudioAppComponent`);
+        assert.ok(!/\bstop\s*\(\s*\)/.test(code), `${s.name}/${rel}: stop() no longer exists on AudioAppComponent`);
+      }
+    }
+  });
+
+  it('overrides all three pure-virtual AudioSource methods', () => {
+    for (const s of appOnly()) {
+      const h = s.files.get('Source/MainComponent.h');
+      assert.ok(/public\s+juce::AudioAppComponent/.test(h),
+        `${s.name}: the component must derive from juce::AudioAppComponent`);
+      for (const m of ['prepareToPlay', 'getNextAudioBlock', 'releaseResources']) {
+        assert.ok(new RegExp(`${m}[^;]*override`).test(h),
+          `${s.name}: ${m}() is pure virtual in AudioSource and must be overridden`);
+      }
+    }
+  });
+
+  it('shares the level between threads through an atomic', () => {
+    // The slider writes on the message thread and getNextAudioBlock reads on the
+    // audio thread. A plain float there is a data race.
+    for (const s of appOnly()) {
+      const h = s.files.get('Source/MainComponent.h');
+      assert.ok(/std::atomic<\s*float\s*>/.test(h),
+        `${s.name}: the shared level must be std::atomic — it crosses the message/audio thread boundary`);
+      assert.ok(h.includes('#include <atomic>'), `${s.name}: <atomic> is used but not included`);
+    }
+  });
+
+  it('ignores the ui parameter — an app ships its own UI', () => {
+    const generic = scaffolded.get('ToneGen');
+    const webview = scaffolded.get('tone_gen');
+    assert.ok(generic && webview, 'both standalone permutations must have scaffolded');
+    // Same file set: ui='webview' must not pull in a WebView editor for an app.
+    assert.deepEqual([...generic.files.keys()].sort(), [...webview.files.keys()].sort(),
+      'ui changed the file set for a standalone app');
+    for (const rel of generic.files.keys()) {
+      const a = generic.files.get(rel).replace(/ToneGen/g, '@');
+      const b = webview.files.get(rel).replace(/tone_gen|Tone Gen|tonegen/g, '@');
+      assert.equal(a, b, `${rel} differs between ui=generic and ui=webview`);
+    }
+  });
+
+  it('rejects a formats argument instead of silently ignoring it', async () => {
+    const name = 'AppWithFormats' + Date.now().toString(36).slice(-4);
+    const r = await call('audio_plugin_create',
+      { projectPath: PROJ, name, type: 'standalone', formats: 'VST3' });
+    assert.equal(r.isError, true,
+      'an app has no FORMATS, so the argument must be rejected rather than dropped');
+    assert.match(r.text, /standalone/i, r.text);
+    assert.match(r.text, /formats/i, r.text);
+    assert.ok(!fs.existsSync(path.join(PLUGINS, name)),
+      'a rejected scaffold must not leave a directory behind');
   });
 });

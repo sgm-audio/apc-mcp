@@ -23,14 +23,27 @@
 
 Works with any MCP client: Claude Code, OpenCode, VS Code with MCP, Continue.dev, and more.
 
-> **Project status.** This package is mid-remediation: a full build/QA/security
-> audit found 35 defects, of which the critical ones (a path traversal in
-> `audio_plugin_lint`, and scaffold templates that could neither configure nor
-> compile) are fixed on branch `arena/353ee88c-apc-mcp` as **2.0.0**, not yet
-> published. See [`AUDIT.md`](AUDIT.md) for findings and evidence and
-> [`HANDOFF.md`](HANDOFF.md) for what remains and how to verify it. **Note that
-> GitHub Actions on this repo are currently locked for billing, so the CI badge
-> above does not reflect the state of the code** — see `HANDOFF.md` §7.
+> **Project status.** A full build/QA/security audit found **36 defects** —
+> including a path traversal in `audio_plugin_lint` that allowed arbitrary writes
+> outside the project, scaffold templates that could neither configure nor
+> compile, and tools that reported success when the underlying command had failed.
+> All five remediation phases are **complete** on branch
+> `arena/353ee88c-apc-mcp`, released as **2.0.0** (not yet published):
+> `npm run check` exits 0 with 147 tests green, ESLint clean, no known
+> vulnerabilities and the license gate passing.
+>
+> Two caveats, stated plainly rather than buried:
+>
+> 1. **GitHub Actions on this repo are locked for billing, so the CI badge above
+>    does not reflect the state of the code** — and no CI job has ever run, which
+>    means `cmake -B build` on a scaffolded plugin is still unverified. See
+>    `HANDOFF.md` §7 and `AUDIT.md` Phase 6 item 41.
+> 2. **Versions 1.4.0 and 1.5.0 on npm are vulnerable** to that path traversal.
+>    Upgrade to 2.0.0 once published — see [`SECURITY.md`](SECURITY.md).
+>
+> [`AUDIT.md`](AUDIT.md) has the findings and evidence;
+> [`HANDOFF.md`](HANDOFF.md) has what remains and how to verify it;
+> [`TODO.md`](TODO.md) has the unbuilt feature scope (ARA, LV2).
 
 ---
 
@@ -136,6 +149,7 @@ audio_plugin_create(name="Phaser9000", type="clap")
 audio_plugin_create(name="MyVerb", type="juce", vendor="MyCompany", formats="VST3;AU")
 audio_plugin_create(name="SimpleDelay", type="clap", vendor="MyCompany", description="A simple delay effect")
 audio_plugin_create(name="MyVerb", type="juce", ui="webview", vendor="MyCompany")
+audio_plugin_create(name="ToneGen", type="standalone", vendor="MyCompany")
 ```
 
 Generates a working plugin stub: `CMakeLists.txt`, source files, and either a
@@ -149,6 +163,7 @@ modern CLAP entry (the `clap_entry` → plugin-factory chain) or a JUCE
 | `clap` *(default)* | `templates/clap/` | Plain C++ against the free-audio/clap headers. Vendors CLAP at `_tools/clap` or finds an installed `clap-config.cmake`. |
 | `juce` | `templates/juce/` or `templates/juce-webview/` | Full `juce_add_plugin` project. `formats` accepts any of JUCE's: `AU AUv3 AAX LV2 Standalone Unity VST VST3`. |
 | `vst3` | same JUCE templates | Convenience alias that defaults `formats` to VST3. |
+| `standalone` | `templates/standalone/` | A standalone audio **application**, not a plugin: `juce_add_gui_app` builds one executable that owns its audio device via `AudioAppComponent`. Scaffolds `Source/Main.cpp` (a `JUCEApplication` plus its `DocumentWindow`) and `Source/MainComponent.{h,cpp}` (a 440 Hz sine generator with a level slider). Has no `FORMATS`, so passing `formats` with this type is rejected rather than silently ignored. |
 
 > `type="ara"` was removed in 2.0.0. It emitted `FORMATS ARA`, which
 > `juce_add_plugin` does not accept, from a plain `juce::AudioProcessor` rather
@@ -162,6 +177,9 @@ modern CLAP entry (the `clap_entry` → plugin-factory chain) or a JUCE
 |---|---|
 | `generic` *(default)* | `juce::GenericAudioProcessorEditor` — sliders for every parameter, no UI code to write. |
 | `webview` | A `juce::WebBrowserComponent` editor serving an embedded HTML/CSS/JS UI from BinaryData, with a two-way bridge: C++ pushes state via `window.updateState(...)`, and JS calls back by navigating to `apc://callback?action=...&data=...`. Edit `Source/UI/{index.html,style.css,app.js}`. |
+
+`ui` applies to the JUCE *plugin* types only. `clap` ships its own editor and
+`standalone` ships its own window, so both ignore it.
 
 The webview template needs a browser backend, so its `CMakeLists.txt` sets
 `NEEDS_WEB_BROWSER TRUE` and `NEEDS_WEBVIEW2 TRUE` — WebView2 on Windows, WebKit
@@ -223,15 +241,17 @@ apc-mcp/
 ├── templates/
 │   ├── clap/                   # CLAP scaffold (modern factory/entry API)
 │   ├── juce/                   # JUCE scaffold, generic editor
-│   └── juce-webview/           # JUCE scaffold + WebBrowserComponent UI
-│       └── Source/UI/          # the HTML/CSS/JS you edit
-├── tests/                      # 119 tests, node:test, no framework
+│   ├── juce-webview/           # JUCE scaffold + WebBrowserComponent UI
+│   │   └── Source/UI/          # the HTML/CSS/JS you edit
+│   └── standalone/             # JUCE *application* (juce_add_gui_app), not a plugin
+├── tests/                      # 147 tests, node:test, no framework
 │   ├── helpers/mcp-client.mjs  # shared MCP stdio client (full handshake)
 │   ├── fixtures/juce-api-stub/ # transcribed JUCE 9 API, for compile checks
 │   ├── server.test.js          # happy path
 │   ├── security.test.js        # negative / rejection tests
 │   ├── tool-output.test.js     # config precedence, parsers, failure reporting
 │   ├── templates.test.js       # generated-project structure (no toolchain)
+│   ├── artefacts.test.js       # build-artefact discovery per JUCE's real layout
 │   ├── cpp-api.test.js         # real g++/clang++ over generated sources
 │   └── release.test.js         # versioning, CI pins, release guards
 ├── scripts/

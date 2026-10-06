@@ -53,6 +53,12 @@ const CASES = [
   { name: 'JuceWebView', type: 'juce', ui: 'webview', family: 'juce' },
   { name: 'Vst3WebView', type: 'vst3', ui: 'webview', family: 'juce' },
   { name: 'ClapPlugin',  type: 'clap', ui: 'generic', family: 'clap' },
+  // A standalone *application* (juce_add_gui_app), not a plugin: Main.cpp defines
+  // a JUCEApplication and START_JUCE_APPLICATION, and MainComponent.cpp derives
+  // from AudioAppComponent. It is checked against the same JUCE stub, which was
+  // extended with the application-side API (JUCEApplication, DocumentWindow,
+  // Slider, Label, Graphics, AudioAppComponent, MathConstants, ProjectInfo).
+  { name: 'StandaloneApp', type: 'standalone', ui: 'generic', family: 'juce' },
 ];
 
 function compile(cwd, file, includeDirs) {

@@ -445,11 +445,82 @@ function findFilesByExt(dir, exts) {
   return results;
 }
 
-// Scans <buildDir>/plugins/<name>/<name>_artefacts/<config>/<FORMAT>/ for built
-// artefacts. HYG-02: the leading `projectPath` parameter was never used in the
-// body — everything is derived from buildDir, which the caller has already joined
-// onto the project root — so a reader could not tell which argument anchored the
-// search. Removed rather than documented as unused.
+// JUCE's artefact layout, taken from `_juce_set_plugin_target_properties()` and
+// `_juce_get_platform_plugin_kinds()` in JUCE 9.0.3's
+// `extras/Build/CMake/JUCEUtils.cmake`:
+//
+//   <buildDir>/plugins/<target>/<target>_artefacts/<Config>/<Kind>/<artefact>
+//
+// Two details there broke discovery, and both are invisible in the README's own
+// examples because they happen to dodge them:
+//
+// 1. <Kind> is JUCE's own string — `AU`, **not** `AudioUnit` — so the previous
+//    lookup in an `AudioUnit` directory could never match anything JUCE built.
+// 2. <artefact> is named after PRODUCT_NAME via `_juce_set_output_name()`, which
+//    JUCE defaults to the target name but which a template may override. Ours
+//    does: `templates/juce/CMakeLists.txt` sets
+//    `PRODUCT_NAME "{{PLUGIN_DISPLAY_NAME}}"`, and displayName() title-cases the
+//    name and turns `_`/`-` into spaces. So `name="my_verb"` builds
+//    `My Verb.vst3` inside a directory called `my_verb`. Constructing
+//    `<dir>/<dir>.vst3` found nothing and the tool then told the user to run
+//    `audio_plugin_build` again — advice that was simply wrong.
+//
+// Artefacts are therefore found by scanning for the format's suffix, never by
+// constructing a filename. `AudioUnit` is kept as the user-facing name in
+// `apc-mcp.json` (so existing configs keep working) and mapped to JUCE's `AU`.
+const ARTEFACT_LAYOUT = {
+  VST3:       { dir: 'VST3',       suffix: '.vst3' },
+  CLAP:       { dir: 'CLAP',       suffix: '.clap' },
+  LV2:        { dir: 'LV2',        suffix: '.lv2' },
+  AudioUnit:  { dir: 'AU',         suffix: '.component' },
+  // Standalone has no fixed suffix: JUCE sets its artefact to TARGET_BUNDLE_DIR
+  // when the target is a bundle (macOS → "<Name>.app") and to TARGET_FILE
+  // otherwise (Windows → "<Name>.exe", Linux → an extension-less executable).
+  Standalone: { dir: 'Standalone', suffix: null },
+};
+
+function isExecutable(p) {
+  try { fs.accessSync(p, fs.constants.X_OK); return true; } catch { /* not executable */ return false; }
+}
+
+// Every entry whose name ends with `suffix`, sorted for deterministic output.
+// Directories count: a `.vst3` is a single file on Windows and a bundle
+// directory on macOS/Linux, and `.component` / `.clap` / `.lv2` are always
+// bundles.
+function artefactsWithSuffix(dir, suffix) {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .filter(n => n.toLowerCase().endsWith(suffix))
+    .sort((a, b) => a.localeCompare(b))
+    .map(n => path.join(dir, n));
+}
+
+// Standalone is matched by platform shape instead of by suffix, in JUCE's own
+// priority order. A bare executable is only accepted when it is actually
+// executable and has no extension, so a README, a .pdb or a manifest dropped
+// into the output directory is never reported as the binary.
+function standaloneArtefacts(dir) {
+  if (!fs.existsSync(dir)) return [];
+  const entries = fs.readdirSync(dir, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const app = entries.find(e => e.isDirectory() && e.name.toLowerCase().endsWith('.app'));
+  if (app) return [path.join(dir, app.name)];
+
+  const exe = entries.find(e => e.isFile() && e.name.toLowerCase().endsWith('.exe'));
+  if (exe) return [path.join(dir, exe.name)];
+
+  const bin = entries.find(e =>
+    e.isFile() && !path.extname(e.name) && isExecutable(path.join(dir, e.name)));
+  return bin ? [path.join(dir, bin.name)] : [];
+}
+
+// Scans <buildDir>/plugins/<target>/<target>_artefacts/<config>/ for built
+// artefacts of the requested formats. HYG-02: the leading `projectPath`
+// parameter was never used in the body — everything is derived from buildDir,
+// which the caller has already joined onto the project root — so a reader could
+// not tell which argument anchored the search. Removed rather than documented as
+// unused.
 function findPluginBinaries(config, buildDir, formats) {
   const outDir = path.join(buildDir, 'plugins');
   if (!fs.existsSync(outDir)) return [];
@@ -464,25 +535,15 @@ function findPluginBinaries(config, buildDir, formats) {
     if (!fs.existsSync(artDir)) continue;
 
     for (const fmt of formats) {
-      if (fmt === 'VST3') {
-        const p = path.join(artDir, 'VST3', `${plugin}.vst3`);
-        if (fs.existsSync(p)) results.push({ plugin, format: 'VST3', path: p });
-      } else if (fmt === 'CLAP') {
-        const d = path.join(artDir, 'CLAP');
-        if (fs.existsSync(d)) {
-          for (const f of fs.readdirSync(d).filter(f => f.endsWith('.clap')))
-            results.push({ plugin, format: 'CLAP', path: path.join(d, f) });
-        }
-      } else if (fmt === 'LV2') {
-        const p = path.join(artDir, 'LV2');
-        if (fs.existsSync(p)) results.push({ plugin, format: 'LV2', path: p });
-      } else if (fmt === 'AudioUnit') {
-        const p = path.join(artDir, 'AudioUnit', `${plugin}.component`);
-        if (fs.existsSync(p)) results.push({ plugin, format: 'AudioUnit', path: p });
-      } else if (fmt === 'Standalone') {
-        const p = path.join(artDir, 'Standalone');
-        if (fs.existsSync(p)) results.push({ plugin, format: 'Standalone', path: p });
-      }
+      const layout = ARTEFACT_LAYOUT[fmt];
+      if (!layout) continue;   // a format this server does not know how to locate
+
+      const fmtDir = path.join(artDir, layout.dir);
+      const found = layout.suffix
+        ? artefactsWithSuffix(fmtDir, layout.suffix)
+        : standaloneArtefacts(fmtDir);
+
+      for (const p of found) results.push({ plugin, format: fmt, path: p });
     }
   }
   return results;
@@ -508,6 +569,12 @@ function mapPluginType(type, ui) {
     case 'vst3': return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3' };
     case 'juce':
     default:     return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3;LV2;Standalone' };
+    // A standalone *application*: juce_add_gui_app() builds one executable that
+    // owns its audio device, so it has no plugin FORMATS at all. `formats: null`
+    // is what tells the create handler to skip format validation. `ui` is not
+    // consulted — the app template ships its own AudioAppComponent UI, and a
+    // webview variant would be a separate template.
+    case 'standalone': return { template: 'standalone', formats: null };
   }
 }
 
@@ -957,16 +1024,16 @@ registerTool(
       .describe('Parent project root where the plugins/ directory lives. Auto-detected from CWD.'),
     name: z.string().min(1).regex(SAFE_PLUGIN_NAME)
       .describe('Plugin name. Use kebab-case, snake_case, or CamelCase. Examples: "Phaser9000", "my-delay", "TapeEcho".'),
-    type: z.enum(['clap', 'vst3', 'juce']).default('clap')
-      .describe('Plugin format. "clap" generates a standalone CLAP plugin. "vst3" generates a JUCE plugin targeting VST3 only. "juce" generates a JUCE AudioProcessor for VST3;LV2;Standalone. (ARA is not offered yet — it needs a dedicated template.)'),
+    type: z.enum(['clap', 'vst3', 'juce', 'standalone']).default('clap')
+      .describe('What to scaffold. "clap" generates a CLAP plugin against the free-audio/clap headers. "vst3" generates a JUCE plugin targeting VST3 only. "juce" generates a JUCE AudioProcessor for VST3;LV2;Standalone. "standalone" generates a standalone audio APPLICATION (juce_add_gui_app) — one executable that owns its audio device, not a plugin a host loads. (ARA is not offered yet — it needs a dedicated template.)'),
     ui: z.enum(['generic', 'webview']).default('generic')
-      .describe('UI style for JUCE/VST3 plugins. "generic" (default) uses JUCE\'s GenericAudioProcessorEditor. "webview" uses an HTML/CSS/JS WebView with parameter controls embedded via BinaryData.'),
+      .describe('UI style for the JUCE plugin types. "generic" (default) uses JUCE\'s GenericAudioProcessorEditor. "webview" uses an HTML/CSS/JS WebView with parameter controls embedded via BinaryData. Ignored for "clap" and "standalone", which ship their own UI.'),
     vendor: z.string().regex(SAFE_VENDOR).default('apc-mcp')
       .describe('Vendor/company name embedded in plugin metadata.'),
     description: z.string().regex(SAFE_DESCRIPTION).default('An audio plugin')
       .describe('Short description for plugin metadata.'),
     formats: z.string().regex(SAFE_FORMATS).optional()
-      .describe('JUCE plugin formats override. Only for juce/vst3/ara types. Default: "VST3;LV2;Standalone".'),
+      .describe('JUCE plugin formats override, semicolon-separated. Only for the juce/vst3 types. Default: "VST3;LV2;Standalone". Rejected for "standalone", which builds an app and has no FORMATS.'),
   },
   async (params) => {
     const proj = requireProjectPath(params.projectPath);
@@ -991,8 +1058,18 @@ registerTool(
     // Validate the JUCE format list before writing anything to disk. `formats`
     // reaches juce_add_plugin(FORMATS ...) verbatim, and an unknown value is a
     // configure-time failure the user would otherwise discover much later.
+    if (typeInfo.formats === null && params.formats) {
+      return { content: [{ type: 'text', text:
+        `## audio_plugin_create failed\n` +
+        `type="standalone" builds a standalone application (juce_add_gui_app), which ` +
+        `produces a single executable and has no plugin FORMATS. Remove the \`formats\` ` +
+        `argument. To build a plugin that also runs standalone, use type="juce" — ` +
+        `Standalone is one of its FORMATS: ${JUCE_FORMATS.join(', ')}` }],
+        isError: true };
+    }
+
     const formats = params.formats || typeInfo.formats;
-    if (typeInfo.template !== 'clap') {
+    if (typeInfo.formats !== null && typeInfo.template !== 'clap') {
       const requested = String(formats).split(';').map(s => s.trim()).filter(Boolean);
       if (requested.length === 0) {
         return { content: [{ type: 'text', text:
@@ -1046,7 +1123,8 @@ registerTool(
     }
     listDir(pluginDir);
 
-    const text = [`## Created ${params.type} plugin: ${params.name}`, `Location: ${pluginDir}`, '', ...tree].join('\n');
+    const kind = typeInfo.formats === null ? 'standalone app' : `${params.type} plugin`;
+    const text = [`## Created ${kind}: ${params.name}`, `Location: ${pluginDir}`, '', ...tree].join('\n');
     return { content: [{ type: 'text', text }] };
   }
 );
