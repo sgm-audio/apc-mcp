@@ -82,6 +82,13 @@ jobs:
   # Configures the JUCE and JUCE+WebView templates against a real JUCE checkout.
   # This is the check that proves a scaffolded JUCE plugin actually configures,
   # which no amount of Node-side testing can do.
+  #
+  # CAVEAT: this job has never had a green run. The account's Actions are locked
+  # for billing (see AUDIT.md OPS-07), and cmake/apt are unreachable from the
+  # environment the templates were fixed in. The apt package names below are
+  # JUCE's documented Linux deps for ubuntu-24.04; `ubuntu-latest` becomes
+  # Ubuntu 26 on 2026-10-19, so re-check them on the first real run and pin this
+  # job to ubuntu-24.04 if the migration renames any of them.
   scaffold-juce:
     name: Scaffolded JUCE configures with real cmake
     runs-on: ubuntu-latest
