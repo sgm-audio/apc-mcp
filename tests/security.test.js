@@ -8,14 +8,10 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
-
-const PKG_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const INDEX = path.join(PKG_DIR, 'index.js');
+import { call, listTools } from './helpers/mcp-client.mjs';
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'apc-sec-'));
 const FAKE_BIN = path.join(ROOT, 'bin');      // instrumented fake toolchain
@@ -23,75 +19,6 @@ const EMPTY_BIN = path.join(ROOT, 'empty');   // a PATH with nothing in it
 const PROJ = path.join(ROOT, 'proj');
 const OUTSIDE = path.join(ROOT, 'outside');   // deliberately outside PROJ
 const CF_LOG = path.join(ROOT, 'clang-format.log');
-
-// ─── MCP stdio client (full lifecycle handshake, event-driven) ─────
-// Performs initialize → notifications/initialized → request, advancing on each
-// response rather than on fixed timers.
-function rpc(method, params, { env, wantId = 2 } = {}) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(process.execPath, [INDEX], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      cwd: PKG_DIR,
-      env: { ...process.env, ...(env || {}) },
-    });
-    let stderr = '';
-    let buf = '';
-    const send = o => { try { proc.stdin.write(JSON.stringify(o) + '\n'); } catch {} };
-    const killer = setTimeout(() => proc.kill('SIGKILL'), 20000);
-    let settled = false;
-
-    const done = (fn, arg) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(killer);
-      try { proc.stdin.end(); } catch {}
-      try { proc.kill(); } catch {}
-      fn(arg);
-    };
-
-    proc.stderr.on('data', d => stderr += d);
-    proc.on('error', e => done(reject, e));
-    proc.on('close', () => {
-      if (!settled) done(reject, new Error(`server exited before answering ${method}. stderr=${stderr.slice(0, 400)}`));
-    });
-
-    proc.stdout.on('data', d => {
-      buf += d;
-      let i;
-      while ((i = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, i).trim();
-        buf = buf.slice(i + 1);
-        if (!line) continue;
-        let msg;
-        try { msg = JSON.parse(line); } catch { continue; }
-
-        if (msg.id === 1) {
-          // Handshake accepted — announce initialization, then issue the real request.
-          send({ jsonrpc: '2.0', method: 'notifications/initialized' });
-          send({ jsonrpc: '2.0', id: wantId, method, params });
-        } else if (msg.id === wantId) {
-          done(resolve, { msg, stderr });
-        }
-      }
-    });
-
-    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {
-      protocolVersion: '2025-06-18', capabilities: {},
-      clientInfo: { name: 'apc-sec-tests', version: '1.0' } } });
-  });
-}
-
-async function call(toolName, args, opts = {}) {
-  const { msg, stderr } = await rpc('tools/call', { name: toolName, arguments: args }, opts);
-  if (msg.error) return { protocolError: msg.error, isError: true, text: '', stderr };
-  const res = msg.result || {};
-  return { isError: !!res.isError, text: res.content?.[0]?.text ?? '', stderr };
-}
-
-async function listTools() {
-  const { msg } = await rpc('tools/list', {});
-  return msg.result?.tools ?? [];
-}
 
 // A PATH containing only the instrumented fakes (+ nothing else).
 const FAKE_PATH = FAKE_BIN;

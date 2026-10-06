@@ -1,10 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [Unreleased] — 2.0.0
 
 > **Release note:** removing `ara` from the `audio_plugin_create` `type` enum is a
-> **breaking input-schema change**. Per this project's semver policy this must ship
-> as **2.0.0**, not 1.5.1.
+> **breaking input-schema change**, so this ships as **2.0.0**, not 1.5.1. The version
+> in `package.json` and in `index.js` has been bumped accordingly. (Those two strings
+> are still maintained by hand — collapsing them to one source is OPS-03.)
 
 ### Security
 
@@ -52,6 +53,77 @@
   `isError: true` tool result, so actionable messages reach the model instead of an
   opaque JSON-RPC protocol error.
 
+#### Scaffold templates (the `audio_plugin_create` output)
+
+The templates were the largest cluster of defects found in the audit, and the whole
+class went unnoticed because the test suite only asserted that the tool's reply
+*mentioned* a filename — never that the generated project was valid. A scaffolded
+plugin could not configure or compile. Every shape below was verified against
+JUCE 9.0.3 and free-audio/clap sources.
+
+- **Unparseable CMake on the default path (critical).** `templates/juce/CMakeLists.txt`
+  emitted a literal `{{#WEBVIEW}}…{{/WEBVIEW}}` block. `replaceTemplateVars()` does
+  simple `{{KEY}}` substitution and has no notion of Mustache sections, so with the
+  default `ui: "generic"` those tags reached the file verbatim and CMake could not
+  parse it. The block is gone; the two templates now differ only where they need to.
+- **`juce_add_webview_ui()` does not exist.** Zero matches anywhere in JUCE. Replaced
+  with the real `juce_add_binary_data(<id>_WebData NAMESPACE <id>_UI SOURCES …)`.
+- **`BINARY_DATA_ID` is not a `juce_add_binary_data` keyword** (it takes only
+  `NAMESPACE`, `HEADER_NAME`, `SOURCES`). `juce_add_plugin` has no unparsed-argument
+  check, so unknown keywords are silently dropped rather than reported — this one hid
+  for two releases. It is now `NAMESPACE`, and it matches the BinaryData namespace
+  forward-declared in `WebViewEditor.cpp`.
+- **`COPYRIGHT` is not a `juce_add_plugin` keyword** — silently ignored. Now
+  `COMPANY_COPYRIGHT`.
+- **Neither JUCE template called `target_link_libraries` at all**, so every `juce::`
+  symbol in the generated sources would have been undefined at link time. Both now link
+  `juce::juce_audio_utils` PRIVATE plus the three `juce_recommended_*_flags` PUBLIC,
+  matching JUCE's own AudioPlugin example; the WebView template additionally links
+  `juce::juce_gui_extra` and its binary-data target.
+- **`${PROJECT_NAME}` used as the plugin target name without a `project()` call.**
+  These files are subdirectories of the user's project, so `PROJECT_NAME` belongs to
+  the *host* project and every scaffolded plugin collided on one target name. Targets
+  are now the literal plugin name.
+- **Unguarded `add_subdirectory(JUCE)` per plugin.** A second plugin in the same
+  project defined every `juce::*` target twice. Now guarded by
+  `if(NOT TARGET juce::juce_audio_utils)`, autodetecting a vendored `_tools/JUCE`,
+  and failing with an actionable `FATAL_ERROR` when neither is present. The CLAP
+  template has the same guard around `_tools/clap`.
+- **Non-reproducible plugin IDs.** `juce_add_plugin` defaults `PLUGIN_CODE` to a
+  *random* four-character code, so re-scaffolding the same plugin produced a different
+  binary identity. `index.js` now derives a stable `PLUGIN_MANUFACTURER_CODE` and
+  `PLUGIN_CODE` from the vendor and plugin name via `fourCharCode()`.
+- **`FORMATS` values were never validated.** Any string reached the template, so an
+  invalid format surfaced only as a confusing CMake error. The accepted set is now
+  checked at the tool boundary and the error lists the valid formats.
+- **The CLAP template targeted a pre-1.0 CLAP API.** `find_package(CLAP CONFIG
+  REQUIRED)` cannot resolve `clap-config.cmake` on a case-sensitive filesystem, and
+  `CLAP::clap` does not exist — free-audio/clap exports a plain INTERFACE target named
+  `clap`. Separately, `PluginEntry.cpp` put `get_plugin_count` / `get_plugin_descriptor`
+  / `create_plugin` directly on `clap_plugin_entry`, a layout removed before CLAP 1.0,
+  and exported the entry as `entry` rather than the `clap_entry` symbol hosts resolve.
+  `PluginProcessor.cpp` used `clap_process::frames`, now `frames_count`, and called
+  `strcmp` without including `<cstring>`. The template now implements the modern
+  `clap_entry -> get_factory(CLAP_PLUGIN_FACTORY_ID) -> clap_plugin_factory_t ->
+  create_plugin()` chain and the full `clap_plugin_t` vtable, and compiles clean with
+  `-Wall -Wextra` against the real CLAP headers.
+- **Scaffolded CLAP plugins could never be validated.** The template emitted
+  `<build>/<name>.clap` while `audio_plugin_validate` scans
+  `<build>/plugins/<name>/<name>_artefacts/<config>/CLAP/*.clap`. Output directories
+  now match what the validator looks for.
+- **The WebView C++ called five things that do not exist in JUCE 9.**
+  `WebBrowserComponent::loadHTMLString()` (no such method — JUCE serves UI through a
+  `ResourceProvider`), `m_webView.onPageAboutToLoad = …` (no such member;
+  `pageAboutToLoad()` is *virtual*, so it needs a subclass), a `URLParser` helper used
+  before its declaration, `new juce::DynamicObject{{"type", …}}` (`DynamicObject` has
+  no such aggregate initialiser, and the nesting leaked), and
+  `XmlDocument::storeXmlAsString()` (zero matches in all of JUCE 9 — state now uses
+  `AudioProcessor::copyXmlToBinary()` / `getXmlFromBinary()`). `WebViewEditor` was
+  rewritten around `Options{}.withBackend(…).withResourceProvider(…)` +
+  `goToURL(getResourceProviderRoot())`, following JUCE's own WebViewPluginDemo, and it
+  now matches the `window.updateState(array)` / `apc://callback?action=…` contract the
+  generated `app.js` already expected.
+
 ### Added
 
 - **Dependency license gate, ported to GitHub Actions.** `npm run licenses` runs
@@ -65,6 +137,17 @@
   Individual packages can be accepted via a `reviewed_packages:` list in the decisions
   file. Wired into `npm run check` and into a new `license` CI job that `publish` now
   depends on.
+- **`npm run smoke` / `scripts/smoke-scaffold.mjs`.** Scaffolds every
+  `type` x `ui` combination through the real MCP server into a throwaway project,
+  checks that no placeholders survive and that each plugin gets its own CMake target,
+  and writes a host `CMakeLists.txt` so several plugins configure together (the
+  multi-plugin collision case). `--configure` additionally runs real `cmake -B build`
+  when `APC_JUCE_DIR` / `APC_CLAP_DIR` point at checkouts. Now part of `npm run check`.
+- **CI: three new jobs.** `compile-scaffold` compiles every scaffolded source with a
+  real C++ front end (JUCE against the committed API stub, CLAP against real headers);
+  `scaffold-clap` and `scaffold-juce` run `cmake -B build` on scaffolded plugins
+  against real dependencies. `publish` now also depends on `compile-scaffold` and
+  `scaffold-clap`.
 
 ### Removed
 
@@ -90,6 +173,24 @@
   exact argv it receives), 10 shell-metacharacter rejection cases across 4 tools,
   missing-toolchain messaging, bogus-`projectPath` rejection with a no-side-effect
   assertion, malformed-config handling, and the `ara` removal.
+- **New `tests/templates.test.js` — 30 structural tests over the generated project.**
+  Runs with no cmake, JUCE or CLAP present. Asserts no leftover `{{…}}` or Mustache
+  tags, per-plugin target names with no collisions, only real `juce_add_plugin`
+  keywords and formats, `target_link_libraries` present, guarded
+  `add_subdirectory(JUCE)`, deterministic four-char IDs, balanced parentheses, every
+  file named by `target_sources` / `juce_add_binary_data SOURCES` actually existing,
+  the C++ BinaryData namespace matching CMake's, and the CLAP template's modern
+  factory/entry layout plus its artefact path matching what `audio_plugin_validate`
+  scans. **Against the pre-fix templates 25 of these 30 fail.**
+- **New `tests/cpp-api.test.js` — compiles the scaffolded C++.** Runs
+  `g++/clang++ -std=c++20 -fsyntax-only -Wall` over every generated source. JUCE
+  sources check against `tests/fixtures/juce-api-stub/JuceHeader.h`, a transcription of
+  the JUCE 9 API surface (each signature annotated with the JUCE header it came from);
+  CLAP sources check against real free-audio/clap headers when `APC_CLAP_INCLUDE` is
+  set. Skips cleanly when no compiler is available, so `npm test` still works on a
+  Node-only machine.
+- **The MCP stdio client moved to `tests/helpers/mcp-client.mjs`** and is shared by all
+  three test files instead of being duplicated.
 - Tests use `os.tmpdir()` fixtures rather than writing into `tests/fixtures/`.
 - The test client performs a full MCP `initialize` handshake and advances on responses
   rather than fixed timers — the suite runs in ~14s instead of ~126s.
@@ -98,12 +199,15 @@
 
 ### Known issues still open
 
-Tracked in `AUDIT.md`. Notably **the default JUCE scaffold still emits unparseable
-CMake** (`{{#WEBVIEW}}` tags, FUNC-01), both JUCE templates call the non-existent
-`juce_add_webview_ui()` (FUNC-02) and use `${PROJECT_NAME}` without a `project()` call
-(FUNC-03); `cfg.config` is still shadowed by the zod default (FUNC-06); `lint(fix=true)`
-still reports success on failure (QA-01); and the ctest and build-output parsers still
-miscount (QA-02/03/04). These are Phase 2 and Phase 3.
+Tracked in `AUDIT.md`. The template defects above are fixed, and `scaffold-juce` is the
+job that will confirm a scaffolded JUCE plugin configures end to end — **it has not had
+a green run yet**, because neither cmake nor apt is reachable from the environment the
+fixes were developed in, and `publish` deliberately does not depend on it until it has.
+Still open: `cfg.config` is shadowed by the zod default (FUNC-06); `lint(fix=true)`
+reports success when clang-format fails (QA-01); the ctest and build-output parsers
+miscount (QA-02/03/04); `npm publish` has `continue-on-error: true` (OPS-02); the
+version string is duplicated (OPS-03); and CI actions are pinned to mutable tags
+(OPS-06). These are Phase 3 and Phase 4.
 
 ## [1.5.0] — 2026-06-17
 

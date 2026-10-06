@@ -45,13 +45,17 @@ juce::AudioProcessorEditor *{{PLUGIN_CLASS_NAME}}::createEditor() {
 void {{PLUGIN_CLASS_NAME}}::getStateInformation(juce::MemoryBlock &destData) {
     auto state = juce::ValueTree("state");
     state.setProperty("gain", (double)m_gain->get(), nullptr);
-    juce::XmlDocument::storeXmlAsString(state.createXml(), destData);
+
+    // XmlDocument::storeXmlAsString does not exist in JUCE 9; copyXmlToBinary is
+    // the supported helper for serialising state into a MemoryBlock.
+    if (auto xml = state.createXml())
+        copyXmlToBinary(*xml, destData);
 }
 
 void {{PLUGIN_CLASS_NAME}}::setStateInformation(const void *data, int sizeInBytes) {
-    auto xml = juce::XmlDocument::parse(juce::String::createStringFromData(data, sizeInBytes));
-    if (xml) {
+    if (auto xml = getXmlFromBinary(data, sizeInBytes)) {
         auto state = juce::ValueTree::fromXml(*xml);
+
         if (state.isValid())
             *m_gain = (float)state.getProperty("gain", 0.75);
     }

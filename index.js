@@ -419,8 +419,34 @@ function mapPluginType(type, ui) {
   }
 }
 
-function slugName(name) { return name.replace(/[^a-zA-Z0-9]/g, '').replace(/^(\d)/, '_$1'); }
+// Falls back to 'Plugin' when the name has no alphanumerics at all, so a name
+// like "_" cannot produce an empty PLUGIN_ID and a class called just "Processor".
+function slugName(name) {
+  const alnum = String(name).replace(/[^a-zA-Z0-9]/g, '');
+  return alnum.replace(/^(\d)/, '_$1') || 'Plugin';
+}
 function displayName(name) { return name.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).trim(); }
+
+// JUCE four-character plugin IDs. Left unset, JUCE assigns PLUGIN_CODE
+// randomly, which makes builds non-reproducible and can differ between
+// configures — so derive stable codes instead.
+//   manufacturer: 4 chars, at least one upper-case
+//   plugin code:  4 chars, exactly one upper-case (the first), the rest lower —
+//                 GarageBand requires that exact shape.
+function fourCharCode(str, { exactlyOneUpper = false } = {}) {
+  const alnum = String(str).replace(/[^a-zA-Z0-9]/g, '');
+  let code = (alnum || 'apcm').slice(0, 4);
+  if (code.length < 4) code = code.padEnd(4, exactlyOneUpper ? 'x' : 'X');
+  return exactlyOneUpper
+    ? code[0].toUpperCase() + code.slice(1).toLowerCase()
+    : (/[A-Z]/.test(code) ? code : code[0].toUpperCase() + code.slice(1));
+}
+
+// Formats juce_add_plugin() actually accepts (verified against JUCE's
+// _juce_get_plugin_kind_name). Rejecting anything else at the schema boundary
+// is what stops the FUNC-07 class of bug — an advertised value that scaffolds a
+// plugin which can never configure.
+const JUCE_FORMATS = ['AU', 'AUv3', 'AAX', 'LV2', 'Standalone', 'Unity', 'VST', 'VST3'];
 
 // Security: ensure plugin dir is within project boundary.
 // Delegates to the shared guard so create and lint cannot drift apart.
@@ -431,7 +457,7 @@ function checkPluginPath(projectPath, pluginDir) {
 // ─── Server ─────────────────────────────────────────────────────────
 const server = new McpServer({
   name: 'apc-mcp',
-  version: '1.5.0',
+  version: '2.0.0',
 });
 
 // Every handler runs inside this wrapper so that a thrown Error becomes a
@@ -800,14 +826,36 @@ registerTool(
     }
 
     const id = slugName(params.name);
+
+    // Validate the JUCE format list before writing anything to disk. `formats`
+    // reaches juce_add_plugin(FORMATS ...) verbatim, and an unknown value is a
+    // configure-time failure the user would otherwise discover much later.
+    const formats = params.formats || typeInfo.formats;
+    if (typeInfo.template !== 'clap') {
+      const requested = String(formats).split(';').map(s => s.trim()).filter(Boolean);
+      if (requested.length === 0) {
+        return { content: [{ type: 'text', text:
+          `## audio_plugin_create failed\nformats must list at least one format. Valid: ${JUCE_FORMATS.join(', ')}` }],
+          isError: true };
+      }
+      const unknown = requested.filter(f => !JUCE_FORMATS.includes(f));
+      if (unknown.length) {
+        return { content: [{ type: 'text', text:
+          `## audio_plugin_create failed\nUnknown JUCE format${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}.\n` +
+          `Valid formats: ${JUCE_FORMATS.join(', ')}.` }], isError: true };
+      }
+    }
+
     const vars = {
       PLUGIN_NAME: params.name,
       PLUGIN_ID: id,
       PLUGIN_CLASS_NAME: id + 'Processor',
       PLUGIN_DISPLAY_NAME: displayName(params.name),
       PLUGIN_DESCRIPTION: params.description,
-      PLUGIN_FORMATS: params.formats || typeInfo.formats,
+      PLUGIN_FORMATS: formats,
       VENDOR: params.vendor,
+      MANUFACTURER_CODE: fourCharCode(params.vendor),
+      PLUGIN_CODE: fourCharCode(params.name, { exactlyOneUpper: true }),
     };
 
     function copyDir(src, dest) {
