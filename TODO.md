@@ -4,7 +4,7 @@
 
 `audio_plugin_create(name="X", type="juce", ui="webview")` now scaffolds a complete JUCE plugin with:
 - `WebViewEditor` — `juce::WebBrowserComponent` with JS↔C++ message bridge
-- Embedded HTML/CSS/JS UI via `juce_add_webview_ui()` BinaryData
+- Embedded HTML/CSS/JS UI as BinaryData via `juce_add_binary_data()`, served to the browser through a JUCE 9 `ResourceProvider`
 - Gain slider control with bidirectional parameter sync
 - Dark theme matching common DAW aesthetics
 - `ui` parameter: `generic` (default) or `webview`

@@ -19,9 +19,18 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/sgm-audio/apc-mcp" alt="License"></a>
 </p>
 
-**apc-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server for audio plugin development. It wraps the tools you already use — **CMake**, **ctest**, **clang-format**, **pluginval**, **clap-validator** — into a clean MCP tool interface for building, testing, linting, validating, and scaffolding plugin projects across JUCE, CLAP, VST3, and ARA formats.
+**apc-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server for audio plugin development. It wraps the tools you already use — **CMake**, **ctest**, **clang-format**, **pluginval**, **clap-validator** — into a clean MCP tool interface for building, testing, linting, validating, and scaffolding plugin projects across JUCE, CLAP and VST3 formats.
 
 Works with any MCP client: Claude Code, OpenCode, VS Code with MCP, Continue.dev, and more.
+
+> **Project status.** This package is mid-remediation: a full build/QA/security
+> audit found 35 defects, of which the critical ones (a path traversal in
+> `audio_plugin_lint`, and scaffold templates that could neither configure nor
+> compile) are fixed on branch `arena/353ee88c-apc-mcp` as **2.0.0**, not yet
+> published. See [`AUDIT.md`](AUDIT.md) for findings and evidence and
+> [`HANDOFF.md`](HANDOFF.md) for what remains and how to verify it. **Note that
+> GitHub Actions on this repo are currently locked for billing, so the CI badge
+> above does not reflect the state of the code** — see `HANDOFF.md` §7.
 
 ---
 
