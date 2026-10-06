@@ -6,6 +6,27 @@
 **Environment:** Node v22.22.3, npm 10.9.8, Linux x64
 **Native toolchain (cmake/ctest/clang-format/pluginval/clap-validator):** NOT installed — substituted with instrumented fake binaries on `PATH` to exercise real end-to-end code paths.
 
+> ### Status (updated as remediation progresses)
+>
+> This report is the **audit as run** against `3e38426` / v1.5.0 and is kept as a
+> record — the gate table in §1 and the findings below describe the state *at that
+> commit*, not the current one. For what has since been fixed and what remains, read
+> **[`HANDOFF.md`](HANDOFF.md)**; it is the live document. Phase status:
+>
+> | Phase | Scope | Status |
+> |---|---|---|
+> | 0 | Unblock release gates | ✅ complete — `0164482` |
+> | 1 | Security | ✅ complete — `a52a869` |
+> | 2 | Template correctness | ✅ complete — `2fb81da`, `d5e7dda` |
+> | 3 | Parsing & failure reporting | ✅ complete — see §7 Phase 3 |
+> | 4 | CI / release engineering | ⬜ open |
+> | 5 | QA tooling & docs | ⬜ open |
+> | — | Feature scope (`TODO.md`) | ⬜ open |
+>
+> Finding counts below are the original 34 plus **QA-07**, discovered while writing
+> the Phase 3 tests. Fixed findings are annotated **[FIXED]** in place rather than
+> deleted, so the evidence trail survives.
+
 ---
 
 ## 1. Executive summary
@@ -316,6 +337,7 @@ The schema advertises an enum value that always produces a broken project and re
 | **SEC-03** | **`loadProjectConfig` performs no validation.** `JSON.parse` output is spread blindly over defaults. A non-array `validateFormats` breaks `formats.join()`; an object `buildDir` makes `path.join` throw uncaught; `generator` sourced from config **bypasses the `SAFE_GENERATOR` regex** applied to the parameter (spawnSync limits this to argument confusion, not injection). Add a zod schema for the config file. |
 | **QA-05** | **`build` accepts a non-existent `projectPath` and creates directories.** **Proven:** `projectPath: '/tmp/apc-audit/does-not-exist-<ts>'` → `isError:false`, and the harness confirmed the path *and* `<path>/build` were created. `requireProjectPath` resolves but never checks existence. Validate that the path exists and contains `CMakeLists.txt` before `mkdirSync`. |
 | **QA-06** | **`validate` checks prerequisites in the wrong place.** `checkOptionalTool()`'s return value is discarded, then `requireTool()` is called *inside* the per-binary results loop — once FUNC-04 is fixed, a missing validator would throw mid-loop after partial work. Hoist all prereq checks to the top. |
+| **QA-07** | *(new — found while writing the Phase 3 tests)* **Compiler diagnostics on stderr are never parsed.** `trySpawn` returns stdout as `output` and stderr separately, but the build handler called `parseBuildOutput(r.output)` only. Compilers write diagnostics to **stderr**, so on a failing build the report read `## Build failed` / `Errors: 0` with an empty `### Errors` section — the errors were missing precisely when they mattered. **Proven:** shim cmake exiting 2 with `error: use of undeclared identifier` on stderr reported `Errors: 0`. Fixed by parsing `output + stderr`. |
 | **OPS-01** | **GitLab CI is broken.** (a) `test` declares `artifacts:reports:junit: junit.xml` but nothing generates it — `node --test` emits TAP; verified no `junit.xml`. (b) `coverage: '/^ℹ tests\s+(\d+)/'` never matches: verified **0** matches, because non-TTY output is `# tests 11`, not `ℹ tests 11`. (c) `license_scanning` runs `npm ci` inside `image: docker:27-cli`, which has no npm. (d) `secret_detection` ends with `\|\| true` — a security scan that can never fail. (e) Ultimate scanners are hand-rolled as `docker run` invocations instead of `include: - template: …`. (f) No `node --check` and no `npm audit` step, so GitLab's gates diverge from GitHub's. |
 | **OPS-02** | **`npm publish` uses `continue-on-error: true`.** A failed publish leaves CI green while the tag looks released. Remove it and rely on `NPM_TOKEN` being present, or gate on an explicit `if: github.event_name == 'push' && startsWith(github.ref,'refs/tags/v')` with a real failure. |
 | **OPS-03** | **Version is duplicated.** `package.json:3` and `index.js:304` both hardcode `1.5.0`. CONTRIBUTING's release checklist mentions only `package.json` → guaranteed drift, and `initialize` would report a stale server version. Read it instead: `JSON.parse(fs.readFileSync(path.join(PKG_DIR,'package.json'),'utf8')).version`. |
@@ -396,13 +418,36 @@ The schema advertises an enum value that always produces a broken project and re
 15. **Add the missing regression test:** scaffold every `type × ui` permutation and assert (a) no `{{…}}` remains in any generated file, (b) `CMakeLists.txt` names the plugin target after the plugin, (c) webview output references only files that exist.
 16. **Highest-value new check:** install cmake (`apt install cmake`) in CI and actually run `cmake -B build` against a scaffolded CLAP plugin. This is the only way to prove the scaffold works — it would have caught FUNC-01/02/03 on day one. Gate on configure success.
 
-### Phase 3 — Correctness of parsing & failure reporting *(~1.5 h)*
-17. Rewrite `parseTestOutput()` to use the ctest summary line. *(QA-02.)*
-18. Extend `parseBuildOutput()` with MSVC patterns (`error C\d+:`, `fatal error`, `LNK\d+:`) and tighten the warning regex. *(QA-03, QA-04.)*
-19. Handle the `fix=true` failure path in `audio_plugin_lint`. *(QA-01.)*
-20. Drop `.default('Debug')` from the four `config` schemas so `cfg.config` is reachable. *(FUNC-06.)*
-21. Hoist prerequisite checks in `audio_plugin_validate` above the results loop. *(QA-06.)*
-22. **Add unit tests for both parsers** with fixture strings covering GCC, Clang, MSVC, ctest-with-a-test-named-Failed, and timeout output. These are pure functions — no subprocess needed.
+### Phase 3 — Correctness of parsing & failure reporting ✅ COMPLETE
+
+22 tests in `tests/tool-output.test.js`; **13 of them fail against the pre-Phase-3
+code** in a throwaway worktree, all 22 pass after. Driven end to end through the MCP
+interface with PATH shims emitting canned output and chosen exit codes.
+
+17. ✅ `parseTestOutput()` rewritten around ctest's summary line, falling back to
+    per-test result lines. *(QA-02.)*
+18. ✅ `parseBuildOutput()` now classifies via four anchored diagnostic shapes
+    (clang/gcc `file:line[:col]: severity:`, MSVC `file(line): severity C####:`,
+    `CMake Error|Warning`, and tool-prefixed `ld: error:`) and counts `note`/`remark`
+    as context rather than diagnostics. *(QA-03, QA-04.)*
+19. ✅ `audio_plugin_lint` has an explicit `fix=true` failure branch that reports
+    `isError: true`, names the file count, and warns that files may be partially
+    reformatted. *(QA-01.)*
+20. ✅ `.default('Debug')` dropped from all four `config` schemas → `.optional()`,
+    resolved as `params.config ?? cfg.config ?? 'Debug'`; precedence documented in
+    each `.describe()`. *(FUNC-06.)*
+21. ✅ Validator availability hoisted above the results loop; missing validators now
+    produce a `SKIPPED` entry with an install hint instead of throwing mid-loop, and
+    `isError` is true whenever validation is incomplete. This also closed **HYG-03** —
+    `cfg.validateCommand` / `cfg.clapValidatorCommand` are now actually honoured
+    instead of being validated and ignored. *(QA-06.)*
+22. ✅ **Correction to this plan:** the parsers are *not* unit-testable as pure
+    functions, because importing `index.js` starts the MCP server. They are tested
+    through the tool interface with shims, which has the advantage of also covering
+    the handlers' use of the parsed result — that is how **QA-07** and **HYG-12**
+    (build ignoring its own `errorCount`) were caught.
+23. ✅ Build now parses `output + stderr` *(QA-07)* and sets
+    `isError: !r.ok || parsed.errorCount > 0` *(HYG-12)*.
 
 ### Phase 4 — CI / release engineering *(~1.5 h)*
 23. **GitHub Actions:** add `npm run security`; add Node 24 to the matrix and drop 18; add the cmake-install + scaffold-configure job from step 16; remove `continue-on-error` from `npm publish`. *(OPS-02, OPS-04.)*

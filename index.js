@@ -307,6 +307,44 @@ function stripAnsi(text) {
   return text.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
 }
 
+// Compiler/linker diagnostic shapes, in priority order. Each captures the
+// severity as group 1.
+//
+// The previous implementation was `includes(': error:')` for errors and
+// `/^.*warning:/` for warnings. The warning branch was literally equivalent to
+// `includes('warning:')`, so it counted any line containing that substring —
+// including source lines the compiler echoes *underneath* a diagnostic — while
+// missing every MSVC diagnostic, which uses `error C2065:` / `warning C4244:`
+// rather than a trailing colon (AUDIT QA-03, QA-04).
+const DIAGNOSTIC_PATTERNS = [
+  // clang / gcc:  /src/Foo.cpp:12:34: error: msg   (column optional)
+  /^(?:[A-Za-z]:[\\/])?\S+?:\d+(?::\d+)?:\s*(fatal error|error|warning|note|remark)\s*:/i,
+  // MSVC:         C:\src\Foo.cpp(12): error C2065: msg
+  //               Foo.cpp(12,34): warning C4244: msg
+  //               LINK : fatal error LNK1181  (handled by the tool-prefix rule)
+  /^[^\s(]+\(\d+(?:,\d+)?\)\s*:\s*(fatal error|error|warning)\s+[A-Z]+\d*\s*:/i,
+  // CMake:        CMake Error at CMakeLists.txt:12 (message):
+  /^CMake\s+(Error|Warning)\b/i,
+  // Tool-prefixed, no file:line — e.g. `ld: error: undefined symbol: foo`.
+  // The colon must directly follow a single token, so prose and echoed source
+  // lines (which contain spaces before the colon) cannot match.
+  /^\S{1,64}:\s*(error|warning)\s*:/i,
+];
+
+// Returns 'error' | 'warning' | null. `note`/`remark` lines are context for a
+// diagnostic already counted, so counting them would double-report.
+function classifyDiagnostic(line) {
+  for (const re of DIAGNOSTIC_PATTERNS) {
+    const m = line.match(re);
+    if (!m) continue;
+    const kind = m[1].toLowerCase();
+    if (kind === 'error' || kind === 'fatal error') return 'error';
+    if (kind === 'warning') return 'warning';
+    return null;
+  }
+  return null;
+}
+
 function parseBuildOutput(text) {
   const clean = stripAnsi(text);
   const lines = clean.split('\n');
@@ -316,11 +354,9 @@ function parseBuildOutput(text) {
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    if (trimmed.includes(': error:') || trimmed.match(/: error\d*\s*\(/)) {
-      errors.push(trimmed);
-    } else if (trimmed.includes(': warning:') || trimmed.match(/^.*warning:/)) {
-      warnings.push(trimmed);
-    }
+    const kind = classifyDiagnostic(trimmed);
+    if (kind === 'error') errors.push(trimmed);
+    else if (kind === 'warning') warnings.push(trimmed);
   }
 
   return {
@@ -332,12 +368,46 @@ function parseBuildOutput(text) {
   };
 }
 
+// Parses ctest output.
+//
+// The previous implementation counted occurrences of the words "passed" and
+// "failed" anywhere in the stream, which meant ctest's own summary line
+// ("100% tests passed, 0 tests failed out of 3") was counted as an extra pass
+// AND an extra fail — a genuinely clean 3/0/3 run was reported as 4/1/5. Its
+// total, `/^tests? (\d+)/im`, never matches ctest at all (AUDIT QA-02).
+//
+// Returns `recognized: false` when neither the summary nor any per-test line is
+// found. Inventing numbers was the original bug; the caller reports the counts
+// as unknown and lets ctest's exit status drive isError.
 function parseTestOutput(text) {
   const clean = stripAnsi(text);
-  const passed = (clean.match(/\bPassed\b/gi) || []).length;
-  const failed = (clean.match(/\bFailed\b/gi) || []).length;
-  const total = (clean.match(/^tests? (\d+)/im) || [])[1] || (passed + failed);
-  return { total: parseInt(total) || passed + failed, passed, failed };
+
+  // ctest's own summary is authoritative when present.
+  const summary = clean.match(/(\d+)% tests passed,\s*(\d+) tests? failed out of (\d+)/);
+  if (summary) {
+    const failed = parseInt(summary[2], 10);
+    const total = parseInt(summary[3], 10);
+    return { total, passed: Math.max(total - failed, 0), failed, recognized: true };
+  }
+
+  // Otherwise count the per-test result lines, e.g.
+  //   1/3 Test #1: FooTest ..........   Passed    0.02 sec
+  //   2/3 Test #2: BarTest ..........***Failed    0.01 sec
+  let passed = 0;
+  let failed = 0;
+  for (const line of clean.split('\n')) {
+    const m = line.match(
+      /^\s*\d+\/\d+ Test #\d+:.*?\b(Passed|Failed|\*\*\*Failed|\*\*\*Timeout|\*\*\*Not Run|\*\*\*Subprocess aborted|\*\*\*Exception)\b/
+    );
+    if (!m) continue;
+    if (m[1] === 'Passed') passed++;
+    else failed++;
+  }
+  if (passed + failed > 0) {
+    return { total: passed + failed, passed, failed, recognized: true };
+  }
+
+  return { total: 0, passed: 0, failed: 0, recognized: false };
 }
 
 function findFilesByExt(dir, exts) {
@@ -484,8 +554,8 @@ registerTool(
   {
     projectPath: z.string().optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD if you have apc-mcp.json or CMakeLists.txt in a parent directory.'),
-    config: z.enum(['Debug', 'Release']).default('Debug')
-      .describe('Build configuration. Debug includes symbols and assertions; Release is optimized.'),
+    config: z.enum(['Debug', 'Release']).optional()
+      .describe('Build configuration. Debug includes symbols and assertions; Release is optimized. Falls back to "config" in apc-mcp.json, else Debug.'),
     target: z.string().regex(SAFE_TARGET).optional()
       .describe('Build only this CMake target (e.g. "MyPlugin_VST3", "MyPlugin_Standalone"). Omit to build all.'),
     clean: z.boolean().default(false)
@@ -495,7 +565,7 @@ registerTool(
     const proj = requireProjectPath(params.projectPath);
     requireTool('cmake');
     const cfg = loadProjectConfig(proj);
-    const config = params.config || cfg.config;
+    const config = params.config ?? cfg.config ?? 'Debug';
     const buildDir = path.join(proj, cfg.buildDir);
 
     // Auto-configure if needed
@@ -512,7 +582,10 @@ registerTool(
     if (params.target) args.push('--target', params.target);
     const r = trySpawn('cmake', args, { cwd: proj });
 
-    const parsed = parseBuildOutput(r.output);
+    // Compilers write diagnostics to stderr and trySpawn keeps the streams
+    // separate, so parsing only r.output left the "### Errors" section empty
+    // precisely on the builds that failed (AUDIT QA-07).
+    const parsed = parseBuildOutput(r.output + (r.stderr ? `\n${r.stderr}` : ''));
     const text = [
       `## Build ${r.ok ? 'succeeded' : 'failed'}`,
       `Config: ${config}${params.target ? ` | Target: ${params.target}` : ''}`,
@@ -522,7 +595,10 @@ registerTool(
       ...(parsed.truncated ? ['', '_(truncated to first 20 items)_'] : []),
     ].join('\n');
 
-    return { content: [{ type: 'text', text }], isError: !r.ok };
+    // errorCount was already computed and printed above but never reached
+    // isError, so a build that emitted compiler errors could report success when
+    // cmake itself exited 0 (AUDIT HYG-12).
+    return { content: [{ type: 'text', text }], isError: !r.ok || parsed.errorCount > 0 };
   }
 );
 
@@ -532,8 +608,8 @@ registerTool(
   {
     projectPath: z.string().optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
-    config: z.enum(['Debug', 'Release']).default('Debug')
-      .describe('Build configuration.'),
+    config: z.enum(['Debug', 'Release']).optional()
+      .describe('Build configuration. Falls back to "config" in apc-mcp.json, else Debug.'),
     generator: z.string().regex(SAFE_GENERATOR).optional()
       .describe('CMake generator. Defaults to "Unix Makefiles". Common: "Ninja", "Unix Makefiles", "Xcode".'),
     options: z.string().regex(SAFE_OPTIONS).optional()
@@ -543,7 +619,7 @@ registerTool(
     const proj = requireProjectPath(params.projectPath);
     requireTool('cmake');
     const cfg = loadProjectConfig(proj);
-    const config = params.config || cfg.config;
+    const config = params.config ?? cfg.config ?? 'Debug';
     const generator = params.generator || cfg.generator;
     const buildDir = path.join(proj, cfg.buildDir);
     fs.mkdirSync(buildDir, { recursive: true });
@@ -566,8 +642,8 @@ registerTool(
   {
     projectPath: z.string().optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
-    config: z.enum(['Debug', 'Release']).default('Debug')
-      .describe('Build configuration for the test executable.'),
+    config: z.enum(['Debug', 'Release']).optional()
+      .describe('Build configuration for the test executable. Falls back to "config" in apc-mcp.json, else Debug.'),
     testName: z.string().regex(SAFE_REGEX).optional()
       .describe('Run only tests matching this regex. Example: "MyPluginTest.*" to run a subset.'),
   },
@@ -575,7 +651,7 @@ registerTool(
     const proj = requireProjectPath(params.projectPath);
     requireTool('ctest');
     const cfg = loadProjectConfig(proj);
-    const config = params.config || cfg.config;
+    const config = params.config ?? cfg.config ?? 'Debug';
     const buildDir = path.join(proj, cfg.buildDir);
 
     const args = ['--test-dir', buildDir, '-C', config, '--output-on-failure'];
@@ -585,8 +661,16 @@ registerTool(
     const parsed = parseTestOutput(r.output);
     const text = [
       `## Tests ${r.ok ? 'passed' : 'failed'}`,
-      `Passed: ${parsed.passed}, Failed: ${parsed.failed}, Total: ${parsed.total}`,
-      ...(parsed.failed > 0 ? ['', '### Details', r.output.slice(-2000)] : []),
+      // Reporting invented counts was the original bug (QA-02). When neither
+      // ctest's summary nor its per-test lines are recognized, say so instead.
+      parsed.recognized
+        ? `Passed: ${parsed.passed}, Failed: ${parsed.failed}, Total: ${parsed.total}`
+        : 'Passed: unknown, Failed: unknown, Total: unknown _(ctest output was not in a recognized format)_',
+      // Include the raw tail when tests failed, when the run failed, or when the
+      // output could not be parsed — otherwise the model has nothing to act on.
+      ...((parsed.failed > 0 || !r.ok || !parsed.recognized)
+        ? ['', '### Details', r.output.slice(-2000)]
+        : []),
     ].join('\n');
 
     return { content: [{ type: 'text', text }], isError: !r.ok };
@@ -649,7 +733,24 @@ registerTool(
     const args = params.fix ? ['-i', ...files] : ['--dry-run', '-Werror', ...files];
     const r = trySpawn('clang-format', args, { cwd: proj, timeout: files.length > 100 ? 120 : 60 });
 
-    if (!r.ok && !params.fix) {
+    // QA-01: with fix=true the exit status was never inspected, so a failing
+    // clang-format reported "No formatting issues" — after it had already been
+    // handed `-i` and rewritten files in place. That is the worst combination:
+    // a destructive operation reported as a clean success.
+    if (!r.ok && params.fix) {
+      const text = [
+        '## Lint could not apply fixes',
+        `clang-format exited non-zero while writing in place across ${files.length} file(s).`,
+        'Files may have been partially reformatted before it failed — review the diff.',
+        '',
+        '```',
+        (r.stderr || r.output).slice(0, 2000),
+        '```',
+      ].join('\n');
+      return { content: [{ type: 'text', text }], isError: true };
+    }
+
+    if (!r.ok) {
       // Extract filenames from stderr for the report
       const badFiles = files.filter(f => r.stderr.includes(f) || r.output.includes(f));
       const relative = badFiles.map(f => path.relative(proj, f));
@@ -726,22 +827,33 @@ registerTool(
   {
     projectPath: z.string().optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
-    config: z.enum(['Debug', 'Release']).default('Debug')
-      .describe('Build configuration (matches the build you ran).'),
+    config: z.enum(['Debug', 'Release']).optional()
+      .describe('Build configuration (matches the build you ran). Falls back to "config" in apc-mcp.json, else Debug.'),
     format: z.enum(['VST3', 'CLAP', 'all']).default('all')
       .describe('Which format to validate. "all" validates every format the project built for.'),
   },
   async (params) => {
     const proj = requireProjectPath(params.projectPath);
     const cfg = loadProjectConfig(proj);
-    const config = params.config || cfg.config;
+    const config = params.config ?? cfg.config ?? 'Debug';
     const buildDir = path.join(proj, cfg.buildDir);
 
     const formats = params.format === 'all' ? cfg.validateFormats : [params.format];
 
+    // QA-06 + HYG-03: the validator binaries come from the project config —
+    // validateCommand and clapValidatorCommand were previously schema-validated
+    // and then ignored in favour of hardcoded names. Availability is checked
+    // ONCE, up front: the old code discarded checkOptionalTool()'s return value
+    // and then called requireTool() from *inside* the results loop, so one
+    // missing optional validator threw away every result already computed and
+    // surfaced as an opaque tool error.
+    const validatorFor = { VST3: cfg.validateCommand, CLAP: cfg.clapValidatorCommand };
+    const validatorPresent = {};
     for (const fmt of formats) {
-      if (fmt === 'VST3') checkOptionalTool('pluginval');
-      if (fmt === 'CLAP') checkOptionalTool('clap-validator');
+      const bin = validatorFor[fmt];
+      if (bin && validatorPresent[bin] === undefined) {
+        validatorPresent[bin] = checkOptionalTool(bin);
+      }
     }
 
     const binaries = findPluginBinaries(proj, config, buildDir, formats);
@@ -755,36 +867,57 @@ registerTool(
 
     const results = [];
     for (const b of binaries) {
-      let r;
-      if (b.format === 'VST3') {
-        requireTool('pluginval');
-        r = trySpawn('pluginval', ['--strictness', '10', '--validate-in-new-process', b.path], { timeout: 120 });
-      } else if (b.format === 'CLAP') {
-        requireTool('clap-validator');
-        r = trySpawn('clap-validator', [b.path], { timeout: 120 });
-      } else {
-        r = { ok: false, output: '', stderr: `No validator for ${b.format}` };
+      const bin = validatorFor[b.format];
+
+      // No validator configured for this format at all (LV2, AudioUnit,
+      // Standalone). Report it as skipped rather than as a failure — the binary
+      // is not bad, we simply cannot check it.
+      if (!bin) {
+        results.push({ ...b, passed: null, skipped: true,
+          reason: `No validator is configured for ${b.format}.` });
+        continue;
       }
+
+      if (!validatorPresent[bin]) {
+        results.push({ ...b, passed: null, skipped: true, reason: installHint(bin) });
+        continue;
+      }
+
+      const args = b.format === 'VST3'
+        ? ['--strictness', '10', '--validate-in-new-process', b.path]
+        : [b.path];
+      const r = trySpawn(bin, args, { timeout: 120 });
       results.push({
-        plugin: b.plugin,
-        format: b.format,
-        path: b.path,
+        ...b,
         passed: r.ok,
         output: r.ok ? '' : (r.stderr || r.output.slice(0, 1000)),
       });
     }
 
-    const passed = results.filter(r => r.passed).length;
-    const failed = results.filter(r => !r.passed).length;
+    const passed = results.filter(r => r.passed === true).length;
+    const failed = results.filter(r => r.passed === false).length;
+    const skipped = results.filter(r => r.skipped).length;
 
-    const lines = [`## Validation results — ${passed} passed, ${failed} failed`];
+    const lines = [
+      `## Validation results — ${passed} passed, ${failed} failed` +
+        (skipped ? `, ${skipped} skipped` : ''),
+    ];
     for (const r of results) {
-      lines.push(`\n### ${r.plugin} [${r.format}] — ${r.passed ? 'PASS' : 'FAIL'}`);
+      const status = r.skipped ? 'SKIPPED' : (r.passed ? 'PASS' : 'FAIL');
+      lines.push(`\n### ${r.plugin} [${r.format}] — ${status}`);
       lines.push(`\`${r.path}\``);
-      if (!r.passed) lines.push(`\`\`\`\n${r.output}\n\`\`\``);
+      if (r.skipped) lines.push(`_${r.reason}_`);
+      else if (!r.passed) lines.push(`\`\`\`\n${r.output}\n\`\`\``);
+    }
+    if (skipped > 0) {
+      lines.push('', 'Validation is **incomplete** — install the missing validator(s) above and re-run.');
     }
 
-    return { content: [{ type: 'text', text: lines.join('\n') }], isError: failed > 0 };
+    // An incomplete validation must never read as a clean one.
+    return {
+      content: [{ type: 'text', text: lines.join('\n') }],
+      isError: failed > 0 || skipped > 0,
+    };
   }
 );
 

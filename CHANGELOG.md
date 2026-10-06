@@ -124,6 +124,55 @@ JUCE 9.0.3 and free-audio/clap sources.
   now matches the `window.updateState(array)` / `apc://callback?action=…` contract the
   generated `app.js` already expected.
 
+
+#### Tool output & failure reporting
+
+Every defect here made the server *report success or wrong numbers* while the
+underlying tool had failed or disagreed — worse than crashing, because the model
+acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
+
+- **`config` in `apc-mcp.json` was dead.** All four tools declared
+  `config: z.enum([...]).default('Debug')`, so zod filled the value in whenever the
+  caller omitted it and `params.config || cfg.config` never reached the project
+  file. A project configured for Release silently built Debug. The field is now
+  `.optional()`, resolved as `params.config ?? cfg.config ?? 'Debug'`, and the
+  precedence is documented in each parameter description.
+- **`lint(fix=true)` reported success when clang-format failed.** The exit status
+  was never inspected, so a crashing formatter returned "No formatting issues" —
+  *after* being handed `-i` and rewriting files in place. It now reports
+  `isError: true`, the file count, and warns that files may be partially reformatted.
+- **The ctest parser counted its own summary prose.** `parseTestOutput` counted
+  occurrences of the words "passed" and "failed" anywhere in the stream, so ctest's
+  `100% tests passed, 0 tests failed out of 3` added a phantom pass *and* a phantom
+  fail: a clean 3/0/3 run was reported as **4/1/5**. Its total, `/^tests? (\d+)/im`,
+  never matched ctest at all. It now reads the summary line, falls back to ctest's
+  per-test result lines, and — rather than inventing numbers for an unrecognized
+  harness — reports `unknown` and includes the raw output tail.
+- **MSVC diagnostics were invisible.** `parseBuildOutput` matched only `: error:`
+  and `: error\d*\s*\(`, so `Bar.cpp(17): error C2065:` counted as nothing and a
+  failing Windows build could report `Errors: 0`. The warning test
+  `/^.*warning:/` was literally equivalent to `includes('warning:')`, counting any
+  line with that substring — including source lines compilers echo *underneath* a
+  diagnostic. Classification now uses four anchored shapes (clang/gcc, MSVC,
+  `CMake Error|Warning`, tool-prefixed `ld: error:`) and treats `note`/`remark` as
+  context rather than diagnostics.
+- **Compiler output on stderr was never parsed.** `trySpawn` returns stdout as
+  `output` and stderr separately, but the build handler parsed only `r.output` —
+  and compilers write diagnostics to stderr, so the `### Errors` section was empty
+  precisely on the builds that failed. It now parses both streams.
+- **A build that emitted errors reported success.** `errorCount` was computed and
+  printed, then ignored by `isError: !r.ok`. Now `isError` also reflects it.
+- **A missing optional validator aborted the whole report.**
+  `audio_plugin_validate` discarded `checkOptionalTool()`'s return value and then
+  called `requireTool()` from *inside* the per-binary results loop, so one absent
+  validator threw away every result already computed and surfaced as an opaque tool
+  error. Availability is now checked once up front; a missing validator yields a
+  `SKIPPED` entry with an install hint, and `isError` is true whenever validation is
+  incomplete — an unfinished validation must never read as a clean one.
+- **`validateCommand` / `clapValidatorCommand` are honoured.** Both were accepted
+  and regex-validated in `apc-mcp.json` and then ignored in favour of hardcoded
+  binary names.
+
 ### Added
 
 - **Dependency license gate, ported to GitHub Actions.** `npm run licenses` runs
@@ -189,6 +238,13 @@ JUCE 9.0.3 and free-audio/clap sources.
   CLAP sources check against real free-audio/clap headers when `APC_CLAP_INCLUDE` is
   set. Skips cleanly when no compiler is available, so `npm test` still works on a
   Node-only machine.
+- **New `tests/tool-output.test.js` — 22 tests over config precedence, failure
+  reporting and both output parsers.** Drives the real handlers through the MCP
+  interface using PATH shims that emit canned stdout/stderr and a chosen exit code,
+  so no cmake, ctest or clang-format needs to be installed. Covers GCC, clang and
+  MSVC diagnostic shapes, a clean ctest run, a failing one, a run with no summary,
+  errors arriving on stderr, a build that emits errors but exits 0, and a validator
+  that is missing while another succeeds.
 - **The MCP stdio client moved to `tests/helpers/mcp-client.mjs`** and is shared by all
   three test files instead of being duplicated.
 - Tests use `os.tmpdir()` fixtures rather than writing into `tests/fixtures/`.
@@ -203,11 +259,12 @@ Tracked in `AUDIT.md`. The template defects above are fixed, and `scaffold-juce`
 job that will confirm a scaffolded JUCE plugin configures end to end — **it has not had
 a green run yet**, because neither cmake nor apt is reachable from the environment the
 fixes were developed in, and `publish` deliberately does not depend on it until it has.
-Still open: `cfg.config` is shadowed by the zod default (FUNC-06); `lint(fix=true)`
-reports success when clang-format fails (QA-01); the ctest and build-output parsers
-miscount (QA-02/03/04); `npm publish` has `continue-on-error: true` (OPS-02); the
-version string is duplicated (OPS-03); and CI actions are pinned to mutable tags
-(OPS-06). These are Phase 3 and Phase 4.
+Phase 3 (parsing and failure reporting) is complete. Still open: `npm publish` has
+`continue-on-error: true` (OPS-02); the version string is duplicated (OPS-03); Node 18
+is EOL but still in `engines` and the CI matrix (OPS-04); `ship` pushes `main`
+unconditionally (OPS-05); CI actions are pinned to mutable tags (OPS-06); **and Actions
+cannot run at all until the account's billing lock is cleared (OPS-07)**. Then Phase 5
+hygiene and the unbuilt `TODO.md` features. See `HANDOFF.md` for file:line detail.
 
 ## [1.5.0] — 2026-06-17
 

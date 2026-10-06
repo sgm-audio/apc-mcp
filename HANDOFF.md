@@ -25,13 +25,14 @@ A full audit found **35 defects**. Phases 0–2 are **done, committed and pushed
 | `a52a869` | P1 | Security: closed the critical `audio_plugin_lint` path traversal (arbitrary out-of-project write), fixed `findBinary()` always returning true, dead `ENOENT`/timeout handling, unvalidated config loading, removed `type:'ara'`, event-driven test client (126s → 14s), 30 new negative tests |
 | `2fb81da` | P2 | **Templates**: the scaffold output could not configure or compile at all. Rewrote all three CMakeLists and the whole `juce-webview` + `clap` C++ layer against verified JUCE 9 / CLAP APIs. 36 new tests |
 | `d5e7dda` | P2 | Recorded that `scaffold-juce` has never had a green run |
+| *(this commit)* | P3 | **Output correctness**: `config` from `apc-mcp.json` was dead (zod's `.default()` shadowed it), `lint(fix=true)` reported success when clang-format failed, both output parsers miscounted, build ignored its own `errorCount`, and `validate` aborted mid-loop on a missing optional validator. 22 new tests |
 
 **Version is `2.0.0`** (both `package.json:3` and `index.js:460`) because
 removing `type:'ara'` is a breaking input-schema change. It has **not been
 published**.
 
-**Phases 3, 4 and 5 remain**, plus the unfinished feature scope in `TODO.md`.
-Estimated ~4.5 h of focused work. Everything below is verified against the code
+**Phases 4 and 5 remain**, plus the unfinished feature scope in `TODO.md`.
+Estimated ~3 h of focused work. Everything below is verified against the code
 as of `d5e7dda`; line numbers are current.
 
 ---
@@ -47,7 +48,7 @@ Expected:
 
 ```
 node --check index.js   → clean
-npm test                → # tests 77  # pass 75  # fail 0  # skipped 2
+npm test                → # tests 99  # pass 97  # fail 0  # skipped 2
 npm run smoke           → smoke-scaffold: PASS (5/5 scaffolded, 0 failures)
 npm audit               → ✅ No known vulnerabilities   (0 vulnerabilities)
 npm run licenses        → ✅ All distributed dependencies are under an allowed license.
@@ -120,6 +121,8 @@ tests/helpers/mcp-client.mjs   shared MCP stdio client: rpc(), call(), listTools
                                spawns index.js, does the full initialize handshake,
                                advances on responses (no fixed timers)
 tests/server.test.js      11   original happy-path coverage
+tests/tool-output.test.js 22   config precedence, failure reporting, and the
+                               build/test output parsers (Phase 3)
 tests/security.test.js    30   NEGATIVE tests: traversal PoCs, metacharacter
                                rejection, missing-toolchain messages, bogus paths
 tests/templates.test.js   30   structural checks over the *generated project*;
@@ -163,22 +166,34 @@ Do the same for P3: the parser fixes should fail against today's code first.
 
 ---
 
-## 5. Remaining work — Phase 3: output correctness
+## 5. Phase 3 — DONE (output correctness)
 
-These are all in `index.js`, all locally testable with PATH shims (no cmake
-needed — fake the tool and feed it canned output). **~1.5 h.**
+Kept here as a record of what changed and why, so the behaviour is not
+"cleaned up" back into a bug by someone who did not see the original.
 
-| ID | Location | Defect | Fix |
+| ID | Where | What it did | What it does now |
 |---|---|---|---|
-| **FUNC-06** | `:487`, `:535`, `:569` (`config: z.enum([...]).default('Debug')`), defaults at `:187`, `CONFIG_SCHEMA` at `:210` | zod's `.default()` fires whenever the caller omits `config`, so `params.config` is *always* set and `cfg.config` from `apc-mcp.json` is dead. **Proven:** with `"config": "Release"` in the config file, cmake still received `-DCMAKE_BUILD_TYPE=Debug`. `generator` is *not* affected (it's `.optional()`). | Make the field `.optional()` and resolve `params.config ?? cfg.config ?? 'Debug'` at each of the three sites. Test: write a config file with `Release`, call with no `config`, assert the shimmed cmake saw `-DCMAKE_BUILD_TYPE=Release`. |
-| **QA-01** | `:650`–`:668` | `trySpawn('clang-format', …)` result's exit status is never inspected; a failing clang-format still yields `"No formatting issues in …"` and `isError: false`. | If `r.status !== 0`, return `isError: true` with stderr. Test with a shim that exits 1. |
-| **QA-02** | `:335`–`:340` `parseTestOutput` | Word-counts `/\bPassed\b/gi` and `/\bFailed\b/gi` over the whole output, so ctest's own summary prose inflates the numbers. Real ctest output of 3 passed / 0 failed / 3 total is reported as **4 / 1 / 5**. The `/^tests? (\d+)/im` total never matches ctest at all. | Parse ctest's actual summary (`100% tests passed, 0 tests failed out of 3`) and per-test lines (`Test #1: foo ... Passed`). Write the parser against real captured ctest text, not guesses. |
-| **QA-03** | `:319` | Error regex is `': error:'` or `/: error\d*\s*\(/`. MSVC emits `Bar.cpp(17): error C2065: …` → unmatched, so 2 real errors report as `Errors: 1`. | Add an `error C\d+:` alternative. |
-| **QA-04** | `:321` | `trimmed.match(/^.*warning:/)` is *equivalent* to `includes('warning:')`, so it counts summary prose ("0 warnings") as a warning. | Match compiler-shaped diagnostics only (`file:line:col: warning:` / MSVC `file(line): warning C\d+:`). |
-| **QA-06** | `:743`–`:744` | `checkOptionalTool('pluginval')` / `('clap-validator')` return values are **discarded**, then `requireTool` throws *inside* the results loop — so a missing optional validator aborts the whole report after partial output. | Capture the booleans before the loop; report "pluginval not installed — skipped" as a line rather than throwing. |
-| **HYG-12** | `:525` | Build sets `isError: !r.ok` and ignores the `parsed.errorCount` it just computed. cmake can exit 0 while the compiler emitted errors. | `isError: !r.ok || parsed.errorCount > 0`. |
+| **FUNC-06** | `index.js` × 4 `config` schemas | zod `.default('Debug')` fired whenever the caller omitted `config`, so `params.config || cfg.config` never reached the project file — `config` in `apc-mcp.json` was dead. Proven: cmake got `-DCMAKE_BUILD_TYPE=Debug` with `"config": "Release"` on disk. | `.optional()`, resolved as `params.config ?? cfg.config ?? 'Debug'`; precedence documented in each `.describe()`. |
+| **QA-01** | `audio_plugin_lint` | The `fix=true` path never inspected clang-format's exit status, so a failing formatter reported "No formatting issues" *after* being handed `-i`. | Explicit failure branch: `isError: true`, file count, and a warning that files may be partially reformatted. |
+| **QA-02** | `parseTestOutput` | Word-counted `Passed`/`Failed`, so ctest's own summary line counted as an extra pass *and* fail: a clean 3/0/3 reported as **4/1/5**. The `/^tests? (\d+)/im` total never matched ctest at all. | Uses ctest's `N% tests passed, M tests failed out of T` summary; falls back to per-test result lines; returns `recognized: false` rather than inventing numbers, and the handler then prints `unknown` plus the raw tail. |
+| **QA-03/04** | `parseBuildOutput` | Errors matched only `: error:` / `: error\d*\s*\(`, so MSVC's `error C2065:` was missed. The warning test `/^.*warning:/` was literally equivalent to `includes('warning:')`, counting any line with that substring — including source lines the compiler echoes under a diagnostic. | Four anchored shapes: clang/gcc `file:line[:col]: severity:`, MSVC `file(line): severity C####:`, `CMake Error\|Warning`, tool-prefixed `ld: error:`. `note`/`remark` are treated as context, not diagnostics. |
+| **QA-07** *(new)* | build handler | `trySpawn` returns stdout as `output` and stderr separately, but only `r.output` was parsed. Compilers write diagnostics to **stderr**, so `### Errors` was empty precisely on failing builds. | Parses `output + stderr`. Found while writing these tests; not in the original 34. |
+| **HYG-12** | build handler | Computed and printed `Errors: N`, then set `isError: !r.ok` and ignored it. | `isError: !r.ok || parsed.errorCount > 0`. |
+| **QA-06** | `audio_plugin_validate` | Discarded `checkOptionalTool()`'s return, then called `requireTool()` *inside* the results loop — a missing optional validator threw away every result already computed. | Availability checked once up front; missing validators produce a `SKIPPED` entry with an install hint, and `isError` is true whenever validation is incomplete. |
+| **HYG-03** | `audio_plugin_validate` | `validateCommand` / `clapValidatorCommand` were schema-validated and then ignored in favour of hardcoded names. | Now honoured — closed as a side effect of QA-06. |
 
----
+**Note on testing these:** the parsers look like pure functions but are *not*
+unit-testable in isolation, because importing `index.js` starts the MCP server.
+Test them through the tool interface with PATH shims — which is better anyway,
+since it also covers how the handlers *use* the parsed result (that is how QA-07
+and HYG-12 surfaced).
+
+**Shim trap that cost time:** a shim on a `PATH` containing only the fake bin dir
+cannot run `cat`, so it silently produced no output and tests passed or failed for
+the wrong reason. `tests/tool-output.test.js` appends a minimal `/usr/bin:/bin`,
+deliberately *not* `process.env.PATH` — `pluginval` and `clap-validator` are exactly
+what an audio developer has installed, and QA-06 depends on one being genuinely
+absent.
 
 ## 6. Remaining work — Phases 4 and 5
 
@@ -198,7 +213,7 @@ needed — fake the tool and feed it canned output). **~1.5 h.**
 | ID | Location | Defect |
 |---|---|---|
 | **HYG-02** | `index.js:361` | `findPluginBinaries(projectPath, config, buildDir, formats)` — `projectPath` is never used in the body. |
-| **HYG-03** | `index.js:191`–`192`, `:214`–`215` | `validateCommand` and `clapValidatorCommand` are accepted and regex-validated config keys that nothing ever reads; the binaries are hardcoded at `:743`–`744`. Either honour them or remove them from the schema. |
+| ✅ **HYG-03 done in P3** | `audio_plugin_validate` | `validateCommand` / `clapValidatorCommand` are now honoured. |
 | **HYG-04** | — | No ESLint config. `npm run lint` is just `node --check`. |
 | **HYG-07** | `tests/server.test.js` | Deep property access without optional chaining; a shape change throws instead of failing an assertion. |
 | **HYG-10** | `SECURITY.md:23`–`25` | Predates the P1 fixes: claims "`validatePath()` rejects non-alphanumeric path components", which was never true (`SAFE_PATH` permits `.` — that *was* SEC-01) and omits the `assertWithinProject()` boundary check that actually closed it. Rewrite the defence-in-depth table against the current code. |
@@ -275,6 +290,18 @@ whatever new artefact layouts these introduce — keep them consistent with what
 - `cmd1 && cmd2` silently aborts when `grep -c` returns 0 matches → use `;`.
 - `$?` after a pipe is the **last** command's status, not the first. Use `${PIPESTATUS[0]}`.
 - Cannot `import index.js` to unit-test its helpers — importing starts the server. Test through stdio JSON-RPC.
+
+**PATH shims**
+
+- A shim whose `PATH` contains *only* the fake bin dir cannot run `cat`, `printf`
+  etc., so it silently produces no output and tests then pass or fail for the wrong
+  reason. Append a minimal `/usr/bin:/bin`.
+- Do **not** append `process.env.PATH` for the validator shims: `pluginval` and
+  `clap-validator` are exactly what an audio developer has installed, and the
+  missing-validator tests depend on one being genuinely absent.
+- `audio_plugin_build` auto-configures when `build/CMakeCache.txt` is missing and
+  returns early if that fails, so a shim's non-zero exit code gets consumed by the
+  *configure* step. Plant a stub cache when testing the `--build` invocation.
 
 **Assertions**
 
