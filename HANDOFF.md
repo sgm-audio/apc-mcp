@@ -26,13 +26,14 @@ A full audit found **35 defects**. Phases 0–2 are **done, committed and pushed
 | `2fb81da` | P2 | **Templates**: the scaffold output could not configure or compile at all. Rewrote all three CMakeLists and the whole `juce-webview` + `clap` C++ layer against verified JUCE 9 / CLAP APIs. 36 new tests |
 | `d5e7dda` | P2 | Recorded that `scaffold-juce` has never had a green run |
 | `7716749` | P3 | **Output correctness**: `config` from `apc-mcp.json` was dead (zod's `.default()` shadowed it), `lint(fix=true)` reported success when clang-format failed, both output parsers miscounted, build ignored its own `errorCount`, and `validate` aborted mid-loop on a missing optional validator. 22 new tests |
+| *(latest)* | P4 | **Release engineering**: version had two sources of truth, `npm publish` had `continue-on-error: true`, both Node 18 *and* 20 are EOL, `ship` pushed `main` from any branch, and actions were on mutable tags. 19 new tests |
 
 **Version is `2.0.0`** (both `package.json:3` and `index.js:460`) because
 removing `type:'ara'` is a breaking input-schema change. It has **not been
 published**.
 
-**Phases 4 and 5 remain**, plus the unfinished feature scope in `TODO.md`.
-Estimated ~3 h of focused work. Everything below is verified against the code
+**Phase 5 remains**, plus the unfinished feature scope in `TODO.md`.
+Estimated ~1.5 h of focused work. Everything below is verified against the code
 as of `d5e7dda`; line numbers are current.
 
 ---
@@ -48,7 +49,7 @@ Expected:
 
 ```
 node --check index.js   → clean
-npm test                → # tests 99  # pass 97  # fail 0  # skipped 2
+npm test                → # tests 118  # pass 116  # fail 0  # skipped 2
 npm run smoke           → smoke-scaffold: PASS (5/5 scaffolded, 0 failures)
 npm audit               → ✅ No known vulnerabilities   (0 vulnerabilities)
 npm run licenses        → ✅ All distributed dependencies are under an allowed license.
@@ -123,6 +124,8 @@ tests/helpers/mcp-client.mjs   shared MCP stdio client: rpc(), call(), listTools
 tests/server.test.js      11   original happy-path coverage
 tests/tool-output.test.js 22   config precedence, failure reporting, and the
                                build/test output parsers (Phase 3)
+tests/release.test.js     19   version single-sourcing, no continue-on-error,
+                               SHA-pinned actions, no EOL Node, ship guards (Phase 4)
 tests/security.test.js    30   NEGATIVE tests: traversal PoCs, metacharacter
                                rejection, missing-toolchain messages, bogus paths
 tests/templates.test.js   30   structural checks over the *generated project*;
@@ -132,6 +135,7 @@ tests/fixtures/juce-api-stub/JuceHeader.h   the JUCE 9 API stub (test fixture,
                                             NOT shipped — package.json "files"
                                             is ["index.js","templates/"])
 scripts/smoke-scaffold.mjs      npm run smoke / smoke:configure
+scripts/ship.mjs                npm run ship — guarded tag + push
 scripts/check-licenses.mjs      npm run licenses (zero-dep license gate)
 ```
 
@@ -195,31 +199,32 @@ deliberately *not* `process.env.PATH` — `pluginval` and `clap-validator` are e
 what an audio developer has installed, and QA-06 depends on one being genuinely
 absent.
 
-## 6. Remaining work — Phases 4 and 5
+## 6. Phase 4 — DONE (release engineering); Phase 5 remains
 
-### Phase 4 — release engineering (~1.5 h)
+19 tests in `tests/release.test.js`; 11 of them fail against the pre-Phase-4 repo.
 
-| ID | Location | Defect | Fix |
-|---|---|---|---|
-| **OPS-02** | `.github/workflows/publish.yml`, publish job | `npm publish --provenance` has **`continue-on-error: true`**. A failed publish reports the workflow green. | Remove it. |
-| **OPS-03** | `package.json:3` + `index.js:460` | Version string duplicated; they can silently diverge. | Read it at runtime: `createRequire(import.meta.url)('./package.json').version`. Safe — npm always includes `package.json` in the tarball regardless of `files`. |
-| **OPS-04** | `package.json` `engines`, CI matrix `[18,20,22]` | Node 18 went EOL in April 2025. | Drop to `>=20` and remove 18 from the matrix. |
-| **OPS-05** | `package.json:23` | `ship` does `git push origin main` unconditionally. | Push the current branch, or require an explicit arg. |
-| **OPS-06** | all workflows | Actions pinned to mutable tags. Verified SHAs: `actions/checkout@v7` = `3d3c42e5aac5ba805825da76410c181273ba90b1`, `actions/setup-node@v7` = `820762786026740c76f36085b0efc47a31fe5020`, `github/codeql-action@v4` = `7999b86c43a865dc79d8923397f35af22de63401`. **Re-verify before pinning** — these were resolved in Oct 2026. | Dependabot already manages `github-actions`, so SHA pins stay updated. |
-| — | `.github/workflows/publish.yml:133` | `publish.needs` deliberately **excludes** `scaffold-juce` because that job has never run. | Add it once it has one green run. |
+| ID | What it did | What it does now |
+|---|---|---|
+| **OPS-02** | `npm publish --provenance` had `continue-on-error: true`, so a rejected or partial publish left CI green while the tag looked released. | Removed. A publish failure is a red run. |
+| **OPS-03** | Version hardcoded in `package.json` *and* `index.js`; `CONTRIBUTING.md`'s checklist mentioned only the former, so drift was guaranteed. | `index.js` reads `package.json` at startup (npm always includes it in the tarball regardless of `files`), falling back to `0.0.0-unknown` if run detached. Verified live: `initialize` returns the file's version. |
+| **OPS-04** | `engines: >=18` and a `[18, 20, 22]` matrix. | `engines: >=22`, matrix `[22, 24]`, single-version jobs on 24. **The audit's own advice was stale** — it said "drop 18", but Node 20 *also* hit EOL on 2026-04-30. Re-check the release schedule before trusting any EOL claim, including this one. |
+| **OPS-05** | `ship` ran `git tag … && git push origin main --tags` from whatever branch you were on, tagging a commit `main` did not contain. | `scripts/ship.mjs`: runs `npm run check` itself, then refuses with a specific reason unless HEAD is `main`, the tree is clean, the tag is absent, and `CHANGELOG.md` has a `## [<version>]` heading rather than `[Unreleased]`. `--dry-run` exercises every guard without changing anything; `--branch=<name>` is the explicit escape hatch. |
+| **OPS-06** | Actions on mutable `@v7` / `@v4` tags. | Pinned to 40-char commit SHAs, re-verified with `git ls-remote`. **Trap:** `github/codeql-action@v4` is an *annotated* tag — `7999b86c…` is the tag **object**, and GitHub resolves `uses:` to a commit, so the peeled `2892aa5e…` is the value that works. `checkout@v7` and `setup-node@v7` are lightweight tags, so their SHAs are already commits. Always check for a `^{}` peeled line before pinning. |
+| **HYG-11** | `index.js` was mode 644 despite its shebang (npm chmods on publish, so the `bin` worked but `./index.js` did not). | Mode 755, executable bit recorded in git. |
+| — | Nothing in CI gated on `npm audit`; the scaffold smoke test ran only locally. | `test` job now runs `npm run smoke` and `npm audit --audit-level=high`. |
 
 ### Phase 5 — hygiene (~1.5 h)
 
 | ID | Location | Defect |
 |---|---|---|
-| **HYG-02** | `index.js:361` | `findPluginBinaries(projectPath, config, buildDir, formats)` — `projectPath` is never used in the body. |
+| **HYG-02** | `index.js:445` | `findPluginBinaries(projectPath, config, buildDir, formats)` — `projectPath` is never used in the body. |
 | ✅ **HYG-03 done in P3** | `audio_plugin_validate` | `validateCommand` / `clapValidatorCommand` are now honoured. |
 | **HYG-04** | — | No ESLint config. `npm run lint` is just `node --check`. |
 | **HYG-07** | `tests/server.test.js` | Deep property access without optional chaining; a shape change throws instead of failing an assertion. |
 | **HYG-10** | `SECURITY.md:23`–`25` | Predates the P1 fixes: claims "`validatePath()` rejects non-alphanumeric path components", which was never true (`SAFE_PATH` permits `.` — that *was* SEC-01) and omits the `assertWithinProject()` boundary check that actually closed it. Rewrite the defence-in-depth table against the current code. |
-| **HYG-10b** | `README.md` badges, `package.json` `engines` | The CI badge points at `main`, which is red for billing reasons (OPS-07), and the Node badge says `18+` while OPS-04 wants `>=20`. Reconcile after OPS-04/OPS-07. |
+| **HYG-10b** | `README.md:16` CI badge | The Node badge was corrected to `22+` in P4. The **CI badge still points at `main`**, which is red for billing reasons (OPS-07), so it currently advertises a failure that is not the code's fault. Either leave it and rely on the status note, or point it at the branch once billing is cleared. |
 | ✅ done | `README.md:22`, `TODO.md:7` | The stale "and ARA formats" claim and the reference to the non-existent `juce_add_webview_ui()` were corrected while writing this handoff. |
-| **HYG-11** | `index.js` | Mode `644` despite a `#!/usr/bin/env node` shebang. npm chmods it 755 on publish so the `bin` works, but `./index.js` fails locally. `chmod +x`. |
+| ✅ **HYG-11 done in P4** | `index.js` | Now mode 755 with the executable bit recorded in git; `./index.js` answers an `initialize` request directly. |
 | — | `.gitlab/merge_request_templates/Default.md` | Orphaned since `.gitlab-ci.yml` was deleted in P0. Delete the directory. |
 | **HYG-05** | ✅ **done in P2** | `tests/fixtures/test-project/` is now gitignored. |
 
@@ -371,10 +376,13 @@ Do not publish until:
 3. ☐ `scaffold-juce` has had **one green run** → add it to `publish.needs`.
 4. ☐ `scaffold-juce`'s apt packages re-checked against whatever
    `ubuntu-latest` is by then; pin to `ubuntu-24.04` if they moved.
-5. ☐ `OPS-02` fixed — remove `continue-on-error: true` from `npm publish`.
+5. ✅ `OPS-02` fixed — `continue-on-error` is gone and a test now asserts no
+   workflow step reintroduces it.
 6. ☐ `README.md` and `SECURITY.md` no longer claim ARA support or describe
    pre-P1 defences.
-7. ☐ `CHANGELOG.md` `## [Unreleased] — 2.0.0` renamed to a dated heading.
+7. ☐ `CHANGELOG.md` `## [Unreleased] — 2.0.0` renamed to a dated `## [2.0.0] — <date>`
+   heading. **`scripts/ship.mjs` refuses to release until this is done** — that guard
+   is the reason the step cannot be forgotten.
 8. ☐ Tag `v2.0.0` (the workflow publishes on `v*` tags).
 
 `AUDIT.md` is committed here deliberately. It documents a path-traversal
@@ -399,5 +407,5 @@ git clone --depth 1 --branch 9.0.3 https://github.com/juce-framework/JUCE.git /t
 git clone --depth 1 https://github.com/free-audio/clap.git /tmp/clap
 export APC_CLAP_INCLUDE=/tmp/clap/include APC_CLAP_DIR=/tmp/clap APC_JUCE_DIR=/tmp/JUCE
 
-# then start Phase 4 at §6, red test first (§5 records what P3 already changed)
+# then start Phase 5 at §6, red test first (§5 and §6 record what P3/P4 changed)
 ```

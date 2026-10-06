@@ -2,10 +2,19 @@
 
 ## [Unreleased] — 2.0.0
 
-> **Release note:** removing `ara` from the `audio_plugin_create` `type` enum is a
-> **breaking input-schema change**, so this ships as **2.0.0**, not 1.5.1. The version
-> in `package.json` and in `index.js` has been bumped accordingly. (Those two strings
-> are still maintained by hand — collapsing them to one source is OPS-03.)
+> **Release note — two breaking changes**, so this ships as **2.0.0**, not 1.5.1:
+>
+> 1. `ara` was removed from the `audio_plugin_create` `type` enum. It scaffolded
+>    `FORMATS ARA`, which `juce_add_plugin` rejects, from a plain
+>    `juce::AudioProcessor` — a plugin that could never configure.
+> 2. `engines.node` is now `>=22`. Node 18 ended 2025-04-30 and Node 20 ended
+>    2026-04-30, so neither receives security patches. Installations still on
+>    Node 20 must upgrade.
+>
+> The version now lives **only** in `package.json`; `index.js` reads it at startup
+> (OPS-03), so the two cannot drift. Several tools also now return `isError` in
+> cases where they previously reported success — see *Tool output & failure
+> reporting* below.
 
 ### Security
 
@@ -173,6 +182,40 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
   and regex-validated in `apc-mcp.json` and then ignored in favour of hardcoded
   binary names.
 
+
+#### Release engineering
+
+- **A failed publish could not fail CI.** `npm publish --provenance` carried
+  `continue-on-error: true`, so a rejected or partial publish left the workflow
+  green while the tag looked released. Removed — a publish failure is now a red
+  run.
+- **The version had two sources of truth.** It was hardcoded in `package.json`
+  *and* in `index.js`, and `CONTRIBUTING.md`'s release checklist mentioned only
+  the former, so drift was guaranteed and `initialize` would have reported a
+  stale server version. `index.js` now reads `package.json` at startup (which npm
+  always includes in the tarball regardless of the `files` allowlist), falling
+  back to `0.0.0-unknown` only if run detached from it.
+- **Both Node 18 and Node 20 are end of life.** Node 18 ended 2025-04-30 and
+  Node 20 ended **2026-04-30** — so the audit's original "drop 18" recommendation
+  was already out of date by the time it was implemented. `engines.node` is now
+  `>=22` (maintenance LTS to 2027-04-30), the CI matrix is `[22, 24]`, and the
+  single-version jobs run on 24 (active LTS to 2028-04-30).
+- **`npm run ship` pushed `main` from whatever branch you were on.** It ran
+  `git tag v$npm_package_version && git push origin main --tags`, so from a
+  feature branch it tagged a commit `main` did not contain and then pushed a
+  `main` that did not have the tag. Replaced by `scripts/ship.mjs`, which refuses
+  — with a specific reason — unless HEAD is `main`, the tree is clean, the tag
+  does not already exist, and `CHANGELOG.md` has a `## [<version>]` heading
+  rather than `[Unreleased]`. `--dry-run` exercises every guard without changing
+  anything.
+- **Actions were pinned to mutable major tags.** `@v7` / `@v4` let an upstream
+  push change what CI runs. All refs are now 40-character commit SHAs, verified
+  with `git ls-remote` at the time of pinning; Dependabot already manages
+  `github-actions`, so it will keep them current. Note that `codeql-action@v4` is
+  an **annotated** tag: `7999b86c…` is the *tag object* and GitHub Actions
+  resolves `uses:` to a commit, so the peeled `2892aa5e…` is the value pinned —
+  pinning the tag object would not have resolved.
+
 ### Added
 
 - **Dependency license gate, ported to GitHub Actions.** `npm run licenses` runs
@@ -192,6 +235,10 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
   and writes a host `CMakeLists.txt` so several plugins configure together (the
   multi-plugin collision case). `--configure` additionally runs real `cmake -B build`
   when `APC_JUCE_DIR` / `APC_CLAP_DIR` point at checkouts. Now part of `npm run check`.
+- **`scripts/ship.mjs` — a guarded release.** `npm run ship` now runs the checks
+  itself (so invoking the script directly cannot bypass them) and refuses to tag
+  unless the branch, working tree, tag and CHANGELOG heading are all correct.
+  `CONTRIBUTING.md` documents the process and the `--dry-run` preview.
 - **CI: three new jobs.** `compile-scaffold` compiles every scaffolded source with a
   real C++ front end (JUCE against the committed API stub, CLAP against real headers);
   `scaffold-clap` and `scaffold-juce` run `cmake -B build` on scaffolded plugins
@@ -245,6 +292,14 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
   MSVC diagnostic shapes, a clean ctest run, a failing one, a run with no summary,
   errors arriving on stderr, a build that emits errors but exits 0, and a validator
   that is missing while another succeeds.
+- **New `tests/release.test.js` — 19 tests over release engineering.** Static
+  checks with no network: `initialize` reports the `package.json` version and
+  `index.js` holds no second copy of it; no workflow step uses
+  `continue-on-error`; every `uses:` is a 40-hex SHA, consistently across files
+  and across `codeql-action` sub-paths; `engines` and the CI matrix contain no
+  EOL Node major; and `ship.mjs` refuses a branch mismatch, rejects unknown
+  options with exit 2, and leaves no tag behind in a dry run. **11 of these fail
+  against the pre-fix repo.**
 - **The MCP stdio client moved to `tests/helpers/mcp-client.mjs`** and is shared by all
   three test files instead of being duplicated.
 - Tests use `os.tmpdir()` fixtures rather than writing into `tests/fixtures/`.
@@ -259,12 +314,14 @@ Tracked in `AUDIT.md`. The template defects above are fixed, and `scaffold-juce`
 job that will confirm a scaffolded JUCE plugin configures end to end — **it has not had
 a green run yet**, because neither cmake nor apt is reachable from the environment the
 fixes were developed in, and `publish` deliberately does not depend on it until it has.
-Phase 3 (parsing and failure reporting) is complete. Still open: `npm publish` has
-`continue-on-error: true` (OPS-02); the version string is duplicated (OPS-03); Node 18
-is EOL but still in `engines` and the CI matrix (OPS-04); `ship` pushes `main`
-unconditionally (OPS-05); CI actions are pinned to mutable tags (OPS-06); **and Actions
-cannot run at all until the account's billing lock is cleared (OPS-07)**. Then Phase 5
-hygiene and the unbuilt `TODO.md` features. See `HANDOFF.md` for file:line detail.
+Phases 3 and 4 are complete. The remaining blocker is **OPS-07: GitHub Actions
+cannot run at all until the account's billing lock is cleared**, so none of the new CI
+jobs — including `scaffold-juce`, the only check that can prove a scaffolded JUCE plugin
+configures against real JUCE — has ever executed. `publish` therefore still does not
+depend on `scaffold-juce`, and its apt package list is unverified against whatever
+`ubuntu-latest` is by the time it first runs (`ubuntu-latest` becomes Ubuntu 26 on
+2026-10-19). Then Phase 5 hygiene and the unbuilt `TODO.md` features. See `HANDOFF.md`
+for file:line detail.
 
 ## [1.5.0] — 2026-06-17
 

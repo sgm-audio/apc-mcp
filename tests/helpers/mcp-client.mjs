@@ -87,3 +87,50 @@ export async function listTools(opts = {}) {
   const { msg } = await rpc('tools/list', {}, opts);
   return msg.result?.tools ?? [];
 }
+
+// Returns the server's `initialize` result (serverInfo, protocolVersion,
+// capabilities). rpc() resolves on the *second* request, so this drives the
+// handshake separately and stops at the initialize response.
+export function initializeInfo({ env, cwd, timeoutMs = 20000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(process.execPath, [INDEX], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: cwd ?? PKG_DIR,
+      env: { ...process.env, ...(env || {}) },
+    });
+    let buf = '';
+    let settled = false;
+    const killer = setTimeout(() => proc.kill('SIGKILL'), timeoutMs);
+    const done = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killer);
+      try { proc.stdin.end(); } catch {}
+      try { proc.kill(); } catch {}
+      fn(arg);
+    };
+    proc.on('error', e => done(reject, e));
+    proc.on('close', () => { if (!settled) done(reject, new Error('server exited before initialize')); });
+    proc.stdout.on('data', d => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (!line) continue;
+        let msg;
+        try { msg = JSON.parse(line); } catch { continue; }
+        if (msg.id === 1) return done(resolve, msg.result ?? msg.error);
+      }
+    });
+    try {
+      proc.stdin.write(JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18', capabilities: {},
+          clientInfo: { name: 'apc-mcp-tests', version: '1.0' },
+        },
+      }) + '\n');
+    } catch (e) { done(reject, e); }
+  });
+}

@@ -40,11 +40,32 @@ Tests use Node's built-in `node:test` runner — no test framework dependency.
 
 ## Release process
 
-1. Update version in `package.json`
-2. Update `CHANGELOG.md`
-3. Commit: `git commit -m "release: v1.0.1"`
-4. Tag: `git tag v1.0.1 && git push origin v1.0.1`
-5. CI publishes to npm automatically
+`npm run ship` performs the release and **refuses** if any precondition is unmet.
+It runs `npm run check` (syntax, tests, scaffold smoke, `npm audit`, license
+gate), then verifies that HEAD is `main`, the working tree is clean, the version
+tag does not already exist, and `CHANGELOG.md` has a `## [<version>]` heading —
+then tags `v<version>` and pushes the branch and the tag. CI publishes to npm on
+`v*` tags.
+
+The human steps are therefore just:
+
+1. Bump `version` in `package.json`. That is the **only** place the version
+   lives — `index.js` reads it at startup, so `initialize` reports it
+   automatically and the two cannot drift.
+2. Rename the `## [Unreleased]` heading in `CHANGELOG.md` to
+   `## [<version>] — <date>` and complete the entry.
+3. `npm run ship`
+
+Preview everything without changing anything:
+
+```sh
+node scripts/ship.mjs --dry-run
+```
+
+Each guard prints why it stopped. If you genuinely mean to tag a branch other
+than `main`, pass `--branch=<name>` — but understand that the tag then points at
+work which is not on `main`, which is exactly the mistake the guard exists to
+prevent.
 
 ## License
 

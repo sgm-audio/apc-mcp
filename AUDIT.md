@@ -19,8 +19,8 @@
 > | 1 | Security | ✅ complete — `a52a869` |
 > | 2 | Template correctness | ✅ complete — `2fb81da`, `d5e7dda` |
 > | 3 | Parsing & failure reporting | ✅ complete — see §7 Phase 3 |
-> | 4 | CI / release engineering | ⬜ open |
-> | 5 | QA tooling & docs | ⬜ open |
+> | 4 | CI / release engineering | ✅ complete |
+> | 5 | QA tooling & docs | ⬜ open (HYG-03/05/11 already closed early) |
 > | — | Feature scope (`TODO.md`) | ⬜ open |
 >
 > Finding counts below are the original 34 plus **QA-07**, discovered while writing
@@ -449,14 +449,37 @@ interface with PATH shims emitting canned output and chosen exit codes.
 23. ✅ Build now parses `output + stderr` *(QA-07)* and sets
     `isError: !r.ok || parsed.errorCount > 0` *(HYG-12)*.
 
-### Phase 4 — CI / release engineering *(~1.5 h)*
-23. **GitHub Actions:** add `npm run security`; add Node 24 to the matrix and drop 18; add the cmake-install + scaffold-configure job from step 16; remove `continue-on-error` from `npm publish`. *(OPS-02, OPS-04.)*
-24. Pin actions to commit SHAs. *(OPS-06.)*
+### Phase 4 — CI / release engineering ✅ COMPLETE
+
+19 tests in `tests/release.test.js`; **11 of them fail against the pre-Phase-4 repo**.
+
+23. ✅ **GitHub Actions:** `npm audit --audit-level=high` added to the `test` job
+    (nothing gated on advisories before), plus an `npm run smoke` step; matrix is
+    `[22, 24]`; `continue-on-error` removed from `npm publish`; the
+    cmake-install + scaffold-configure jobs from step 16 landed in Phase 2 as
+    `compile-scaffold` / `scaffold-clap` / `scaffold-juce`. *(OPS-02, OPS-04.)*
+    **Correction to this plan:** it says "drop 18" — Node **20** also reached EOL on
+    2026-04-30, so `engines.node` is `>=22`, not `>=20`. The plan was written from
+    an older release schedule.
+24. ✅ Pinned to commit SHAs, re-verified with `git ls-remote` at pin time.
+    **Correction:** `github/codeql-action@v4` is an **annotated** tag —
+    `7999b86c…` is the *tag object* and GitHub resolves `uses:` to a commit, so the
+    peeled `2892aa5e…` is what must be pinned. `actions/checkout@v7` and
+    `actions/setup-node@v7` are lightweight tags, so their listed SHAs are commits.
+    *(OPS-06.)*
 25. **GitLab CI — decide first: keep or delete?** The repo is hosted on GitHub and README badges point at GitHub Actions; `.gitlab-ci.yml` references a different org (`gitlab.com/sgmstudios`) and is broken in six places (OPS-01). *Recommendation: delete it* unless GitLab mirroring is genuinely in use. If keeping: replace hand-rolled docker scanner jobs with `include: - template:`, drop the bogus `junit.xml` report or generate one, fix the coverage regex to `/^# tests\s+(\d+)/` (or force the spec reporter), move `npm ci` out of the `docker:27-cli` image, and remove `|| true` from secret detection.
-26. Make the version single-source in `index.js`. *(OPS-03.)*
-27. Replace `ship`'s direct push to `main` with tag-only. *(OPS-05.)*
-28. Add `.gitignore` entry for `tests/fixtures/`. *(HYG-05.)*
-29. `chmod 755 index.js`. *(HYG-11.)*
+26. ✅ `index.js` reads the version from `package.json` at startup; verified live —
+    `initialize` returns `serverInfo.version` matching the file. *(OPS-03.)*
+27. ✅ Replaced by `scripts/ship.mjs`, which runs the checks itself and refuses —
+    with a specific reason — unless HEAD is `main`, the tree is clean, the tag does
+    not exist, and `CHANGELOG.md` has a `## [<version>]` heading. `--dry-run`
+    exercises every guard. Tag-only pushing would not have caught tagging from the
+    wrong branch. *(OPS-05.)*
+28. ✅ Done in Phase 2 — `.gitignore` has `tests/fixtures/test-project/`, which is the
+    only path under it that tests generate. The sibling `juce-api-stub/` is a
+    committed fixture and must stay tracked. *(HYG-05.)*
+29. ✅ `index.js` is mode 755 and the executable bit is recorded in git; `./index.js`
+    now answers an `initialize` request directly. *(HYG-11.)*
 
 ### Phase 5 — QA tooling & docs *(~1.5 h)*
 30. Add ESLint (`eslint:recommended` + `no-unused-vars`, `no-useless-escape`) as the real `npm run lint`; keep `node --check` in `quality`. Catches HYG-02, HYG-03, QA-04. *(HYG-04.)*

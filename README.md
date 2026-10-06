@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/sgm-audio/apc-mcp/actions"><img src="https://img.shields.io/github/actions/workflow/status/sgm-audio/apc-mcp/publish.yml?branch=main&logo=github&label=CI" alt="CI"></a>
   <a href="https://github.com/sgm-audio/apc-mcp/releases"><img src="https://img.shields.io/github/v/release/sgm-audio/apc-mcp?logo=github&label=Release" alt="Release"></a>
-  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-18+-339933?logo=node.js&logoColor=white" alt="Node"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-22+-339933?logo=node.js&logoColor=white" alt="Node"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/sgm-audio/apc-mcp" alt="License"></a>
 </p>
 
@@ -54,7 +54,7 @@ That's it. `npx` handles fetching and caching. Updates automatically when you re
 
 ### Requirements
 
-- **Node.js 18+**
+- **Node.js 22+** (Node 18 and 20 are both end of life)
 - **CMake 3.22+** — required for build/configure tools
 - **clang-format** — required for lint tool
 - **pluginval** — required for VST3 validation

@@ -18,6 +18,20 @@ import { fileURLToPath } from 'url';
 
 // ─── Paths ──────────────────────────────────────────────────────────
 const PKG_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+// OPS-03: the version was hardcoded here *and* in package.json, so the two could
+// drift and `initialize` would report a stale server version. npm always includes
+// package.json in the tarball regardless of the "files" allowlist, so reading it at
+// runtime is correct both from a checkout and from an installed package.
+const PKG_VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(PKG_DIR, 'package.json'), 'utf8')).version;
+  } catch {
+    // Only reachable if index.js is run detached from its package.json. Reporting a
+    // placeholder is better than crashing the server at import time.
+    return '0.0.0-unknown';
+  }
+})();
 const TEMPLATES_DIR = path.join(PKG_DIR, 'templates');
 const CONFIG_FILE = 'apc-mcp.json';
 
@@ -527,7 +541,7 @@ function checkPluginPath(projectPath, pluginDir) {
 // ─── Server ─────────────────────────────────────────────────────────
 const server = new McpServer({
   name: 'apc-mcp',
-  version: '2.0.0',
+  version: PKG_VERSION,
 });
 
 // Every handler runs inside this wrapper so that a thrown Error becomes a
