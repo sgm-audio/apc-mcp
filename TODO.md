@@ -42,7 +42,44 @@ Two JUCE 9 details the template gets right and older example code does not:
 
 ---
 
+## ~~LV2 template~~ ✅ DONE
+
+`audio_plugin_create(name="X", type="lv2")` scaffolds a **native** LV2 plugin —
+unrelated to JUCE's `LV2` format string, and with no JUCE dependency at all.
+`templates/lv2/`:
+
+- `Source/plugin.c` — the `LV2_Descriptor` plus `instantiate` / `connect_port` /
+  `activate` / `run` / `deactivate` / `cleanup` / `extension_data`, and the
+  exported `lv2_descriptor()`. A stereo gain stage with one control port.
+- `Source/manifest.ttl` + `Source/plugin.ttl` — Turtle metadata
+- `CMakeLists.txt` — a `MODULE` library emitted into the same
+  `<build>/plugins/<name>/<name>_artefacts/<config>/LV2/<name>.lv2/` bundle layout
+  that `audio_plugin_validate` already scans, with the `.ttl` files copied in
+  beside the binary so the build output is a loadable bundle
+
+Verified against the real LV2 sources (`lv2/core.lv2/lv2core.ttl` for the
+vocabulary, `include/lv2/core/lv2.h` for the struct), and `plugin.c` is compiled
+against the **real** upstream headers in CI (`APC_LV2_INCLUDE`), not a stub.
+
+Three invariants that are easy to break silently, now enforced by tests:
+
+1. The plugin URI is derived once in `index.js` and written into all three files,
+   so the C descriptor, `manifest.ttl` and `plugin.ttl` cannot disagree.
+2. Every `lv2:index`/`lv2:symbol` pair in `plugin.ttl` is checked against the
+   enum and the `connect_port()` switch in `plugin.c` — a mismatch makes the host
+   connect the gain value to an audio buffer, with no error anywhere.
+3. `manifest.ttl`'s `rdfs:seeAlso` must name a file that was actually scaffolded.
+   The first version of this template pointed at `<name>.ttl` while shipping
+   `plugin.ttl`, so a host would have loaded the plugin with no metadata and
+   reported nothing wrong; the test caught it.
+
+---
+
+---
+
 ## Template Expansion — remaining
+
+Only one item is left.
 
 ### ARA template
 
@@ -79,32 +116,15 @@ Verified against JUCE 9.0.3 (`extras/Build/CMake/JUCEUtils.cmake`,
   the ARA SDK present, so either the job fetches it or the ARA case is skipped
   with a reason. Plan for that before writing the template.
 
-### LV2 template
-
-**Goal:** `audio_plugin_create(name="X", type="lv2")` scaffolds a native LV2 plugin.
-
-Unrelated to JUCE's `LV2` format string (which JUCE already builds from
-`templates/juce`). This is pure C against the LV2 headers plus Turtle metadata:
-
-- `Source/lv2/plugin.c` — descriptor + `instantiate` / `connect_port` / `run` /
-  `cleanup` / `extension_data`
-- `Source/lv2/manifest.ttl` and `Source/lv2/plugin.ttl` — Turtle metadata; the
-  plugin URI must match across both files and the C descriptor
-- `CMakeLists.txt` — a `MODULE` library named `<uri>.so`, installed as a `.lv2`
-  bundle directory
-- No JUCE dependency
-
----
-
 ## Implementation order
 
 1. ~~WebView UI template~~ ✅
 2. ~~`ui` parameter~~ ✅
 3. ~~Standalone application template~~ ✅
-4. **ARA template** — medium effort, but blocked on an external SDK for both the
-   template and its CI job
-5. **LV2 template** — highest effort; no JUCE, so it also needs its own compile
-   check (LV2 headers) in `tests/cpp-api.test.js`
+4. ~~LV2 template~~ ✅ — done, and compile-checked against the real headers
+5. **ARA template** — the only one left. Blocked on an external SDK for both the
+   template and its CI job, and on a large extension to
+   `tests/fixtures/juce-api-stub` before it can be compile-checked at all
 
 ## Standing constraint on all template work
 

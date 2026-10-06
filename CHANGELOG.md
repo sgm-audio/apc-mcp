@@ -16,8 +16,8 @@
 > cases where they previously reported success — see *Tool output & failure
 > reporting* below.
 >
-> `audio_plugin_create` also **gains** `type: "standalone"` — an additive enum
-> value, not a breaking one.
+> `audio_plugin_create` also **gains** `type: "standalone"` and `type: "lv2"` —
+> additive enum values, not breaking ones.
 
 ### Security
 
@@ -219,6 +219,16 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
   resolves `uses:` to a commit, so the peeled `2892aa5e…` is the value pinned —
   pinning the tag object would not have resolved.
 
+#### Native LV2 metadata
+
+- **A bug the new tests caught in the template before it shipped:** the first
+  version of `manifest.ttl` declared `rdfs:seeAlso <{{PLUGIN_NAME}}.ttl>` while the
+  scaffolded file was named `plugin.ttl`. A host would have loaded the plugin with
+  **no metadata at all** — no name, no ports, no licence — and reported nothing
+  wrong while doing it. `rdfs:seeAlso` now names the file that is actually
+  scaffolded, and a test asserts it exists.
+
+
 #### Artefact discovery (`audio_plugin_validate`)
 
 - **`audio_plugin_validate` could not find most build artefacts (FUNC-21).** Two
@@ -312,6 +322,30 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
 
 ### Added
 
+- **`type: "lv2"` on `audio_plugin_create` — a new `templates/lv2/`.** A **native**
+  LV2 plugin: pure C against `lv2/core/lv2.h` plus Turtle metadata, with no JUCE
+  dependency. This is not the LV2 that `type="juce"` emits from a C++
+  `AudioProcessor`; the two share only a name. You get `Source/plugin.c` (the
+  `LV2_Descriptor`, its eight callbacks and the exported `lv2_descriptor()`, as a
+  stereo gain stage with one control port), `Source/manifest.ttl` and
+  `Source/plugin.ttl`, and a `CMakeLists.txt` that builds a `MODULE` library into
+  the same `<build>/plugins/<name>/<name>_artefacts/<config>/LV2/<name>.lv2/`
+  bundle layout `audio_plugin_validate` already scans, copying the `.ttl` files in
+  beside the binary so the build output is a loadable bundle rather than a stray
+  shared object. `PREFIX ""` and `SUFFIX ".so"` pin the filename on every platform,
+  because `manifest.ttl` names it literally and a host loads it through the
+  platform's dynamic loader, which does not care about the extension.
+  - The plugin URI is derived **once** in `index.js` and written into all three
+    files, so the C descriptor and the two Turtle subjects cannot disagree.
+  - The descriptor uses **designated initialisers**. A positional initialiser
+    compiles happily in the wrong order because `run` and `connect_port` are
+    similar enough in shape to swap unnoticed.
+  - `description` is escaped for Turtle before being written: `SAFE_DESCRIPTION`
+    allows `"` and `\`, and either one would terminate the string literal early
+    and leave the host with unparseable metadata.
+  - `formats` is rejected for this type with a message that explains the
+    difference from JUCE's LV2 output, rather than being silently dropped.
+
 - **`type: "standalone"` on `audio_plugin_create` — a new `templates/standalone/`.**
   It scaffolds a standalone audio **application**, not a plugin: `juce_add_gui_app()`
   builds one executable that owns its audio device through `juce::AudioAppComponent`.
@@ -343,6 +377,14 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
 - **`eslint.config.js`** and `eslint` + `@eslint/js` as devDependencies (both under
   allowlisted licenses). `BlueOak-1.0.0` was added to `license_decisions.yml` — a
   permissive license in ESLint's dev tree that the gate was warning about.
+- **A `scaffold-lv2` CI job** that configures a scaffolded LV2 plugin with real
+  cmake against real LV2 headers, and `compile-scaffold` now clones `lv2/lv2` as
+  well as `free-audio/clap`. `publish` is gated on `scaffold-lv2`: the policy, now
+  encoded in `tests/release.test.js`, is that a scaffold job gates the release when
+  it needs nothing but cmake, a compiler and a git clone — no apt packages whose
+  names can move when `ubuntu-latest` is rebased. `scaffold-clap` and
+  `scaffold-lv2` qualify; `scaffold-juce` installs JUCE's Linux dependency list and
+  does not, so it stays out until it has one green run.
 
 - **Dependency license gate, ported to GitHub Actions.** `npm run licenses` runs
   `scripts/check-licenses.mjs`, which verifies every package in `package-lock.json`
@@ -393,6 +435,33 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
   see **Added** above.
 
 ### Tests
+
+- **`tests/templates.test.js` grew 44 → 58** with a 14-test native-LV2 suite: the
+  URI agrees across `plugin.c`, `manifest.ttl` and `plugin.ttl` and is a valid URN;
+  **every `lv2:index`/`lv2:symbol` pair in the Turtle is checked against the enum
+  and the `connect_port()` switch in the C** (a mismatch makes the host connect a
+  gain value to an audio buffer with no error anywhere); indices are contiguous
+  `0..n-1`; each port has exactly one `lv2:symbol` and at least one `lv2:name`, as
+  `lv2core.ttl` requires; each declares a direction and a port type; control ports
+  carry `lv2:default`/`minimum`/`maximum`; `lv2:minorVersion`/`microVersion` are
+  integers not strings; `manifest.ttl`'s binary name matches what CMake builds;
+  `rdfs:seeAlso` names a file that exists; the bundle lands where `validate` scans;
+  `MODULE` not `SHARED`, with a `FATAL_ERROR` when the headers are missing and no
+  `target_link_libraries` (LV2 core is header-only); designated initialisers and
+  `LV2_SYMBOL_EXPORT`; the template is C, not C++; a `"`-and-`\`-laden description
+  is escaped; and `ui` is ignored while `formats` is rejected.
+- **`tests/cpp-api.test.js` now compiles C as well as C++** (7 → 9 tests) and is
+  configured by a per-family table rather than a chain of conditionals. The LV2
+  case compiles `plugin.c` with a C compiler and `-std=c11` against the **real**
+  upstream LV2 headers via `APC_LV2_INCLUDE`, so its result is genuine rather than
+  stub-level. A second guard test asserts the LV2 headers were actually present, so
+  "the compile checks passed" cannot quietly mean "the compile checks were
+  skipped". `-Wextra` was added to every compile invocation.
+- **Three existing tests were re-scoped.** They used `if (s.type === 'clap')
+  continue;` to mean "JUCE templates"; with `lv2` added that predicate is wrong, so
+  they now select on the JUCE family explicitly.
+- **Total 147 → 163 tests.** `scripts/smoke-scaffold.mjs` grew 7 → 9 cases with an
+  `lv2` family for the optional `--configure` step.
 
 - **New `tests/artefacts.test.js` — 13 tests** driving the real tool over stdio
   against planted build trees, so no cmake is needed. Red phase confirmed: 9 of 13

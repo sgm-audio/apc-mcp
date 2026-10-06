@@ -34,6 +34,7 @@ const INDEX = path.join(PKG_DIR, 'index.js');
 const CONFIGURE = process.argv.includes('--configure');
 const JUCE_DIR = process.env.APC_JUCE_DIR || '';
 const CLAP_DIR = process.env.APC_CLAP_DIR || '';
+const LV2_DIR = process.env.APC_LV2_DIR || '';
 
 const CASES = [
   { name: 'SmokeClap',      type: 'clap', ui: 'generic', family: 'clap' },
@@ -47,6 +48,10 @@ const CASES = [
   // derived from `type` below rather than from `family`.
   { name: 'SmokeStandalone', type: 'standalone', ui: 'generic', family: 'juce' },
   { name: 'smoke_app',       type: 'standalone', ui: 'generic', family: 'juce' },
+  // A native LV2 plugin: C, not C++, and it needs the LV2 headers rather than
+  // JUCE or CLAP, so it is its own family for the configure step.
+  { name: 'SmokeLv2',        type: 'lv2', ui: 'generic', family: 'lv2' },
+  { name: 'smoke-lv2_gain',  type: 'lv2', ui: 'generic', family: 'lv2' },
 ];
 
 // The CMake command each scaffold type must define its target with. One table,
@@ -57,6 +62,7 @@ const CMAKE_COMMAND_FOR_TYPE = {
   juce: 'juce_add_plugin',
   vst3: 'juce_add_plugin',
   standalone: 'juce_add_gui_app', // an executable, not a plugin library
+  lv2: 'add_library',             // a MODULE library, dlopen'd by the host
 };
 
 let failures = 0;
@@ -219,15 +225,25 @@ if (!CONFIGURE) {
 
     // Configure the families separately so a missing dependency in one does not
     // hide a real failure in the other.
+    const lv2Ready = LV2_DIR !== '' && fs.existsSync(LV2_DIR);
+
+    // Per-family configure arguments. LV2's CMakeLists finds its headers with
+    // find_path(), so pointing it at a checkout is a -D rather than a
+    // add_subdirectory() the way JUCE and CLAP need.
+    const extraArgsFor = family =>
+      family === 'lv2' ? [`-DLV2_INCLUDE_DIR=${LV2_DIR}`] : [];
+
     for (const [family, ready, depName] of [['clap', clapReady, 'APC_CLAP_DIR'],
-                                             ['juce', juceReady, 'APC_JUCE_DIR']]) {
+                                             ['juce', juceReady, 'APC_JUCE_DIR'],
+                                             ['lv2', lv2Ready, 'APC_LV2_DIR']]) {
       const names = created.filter(c => c.family === family).map(c => c.name);
       if (names.length === 0) continue;
       if (!ready) { console.log(`  skip ${family}: ${depName} not set`); continue; }
 
       writeRootCMake(names);
       fs.rmSync(BUILD, { recursive: true, force: true });
-      const res = spawnSync('cmake', ['-S', PROJ, '-B', BUILD, '-DCMAKE_BUILD_TYPE=Debug'],
+      const res = spawnSync('cmake',
+        ['-S', PROJ, '-B', BUILD, '-DCMAKE_BUILD_TYPE=Debug', ...extraArgsFor(family)],
         { encoding: 'utf-8', timeout: 600000 });
       if (res.status === 0) {
         ok(`${family}: configure succeeded (${names.join(', ')})`);
