@@ -11,19 +11,20 @@
     "templates/"
   ],
   "scripts": {
-    "test": "node --test tests/server.test.js",
+    "test": "node --test",
     "lint": "node --check index.js",
     "audit": "npm audit && echo '✅ No known vulnerabilities'",
+    "licenses": "node scripts/check-licenses.mjs",
     "quality": "node --check index.js && npm test",
     "security": "npm audit --audit-level=high && echo '✅ Security gate passed'",
-    "check": "npm run quality && npm run audit",
+    "check": "npm run quality && npm run audit && npm run licenses",
     "ship": "npm run check && git tag v$npm_package_version && git push origin main --tags"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "zod": "^4.6.5"
   },
   "repository": {
