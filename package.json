@@ -1,7 +1,7 @@
 {
   "name": "@sgm-audio/apc-mcp",
-  "version": "1.5.0",
-  "description": "MCP server for audio plugin development — CMake build, test, lint, and project management for JUCE, CLAP, VST3, and ARA plugin projects",
+  "version": "2.0.0",
+  "description": "MCP server for audio plugin development \u2014 CMake build, test, lint, and project management for JUCE, CLAP and VST3 plugin projects",
   "type": "module",
   "bin": {
     "apc-mcp": "./index.js"
@@ -11,19 +11,22 @@
     "templates/"
   ],
   "scripts": {
-    "test": "node --test tests/server.test.js",
-    "lint": "node --check index.js",
-    "audit": "npm audit && echo '✅ No known vulnerabilities'",
-    "quality": "node --check index.js && npm test",
-    "security": "npm audit --audit-level=high && echo '✅ Security gate passed'",
-    "check": "npm run quality && npm run audit",
-    "ship": "npm run check && git tag v$npm_package_version && git push origin main --tags"
+    "test": "node --test",
+    "lint": "eslint . && node --check index.js",
+    "audit": "npm audit && echo '\u2705 No known vulnerabilities'",
+    "licenses": "node scripts/check-licenses.mjs",
+    "smoke": "node scripts/smoke-scaffold.mjs",
+    "smoke:configure": "node scripts/smoke-scaffold.mjs --configure",
+    "quality": "npm run lint && npm test",
+    "security": "npm audit --audit-level=high && echo '\u2705 Security gate passed'",
+    "check": "npm run quality && npm run smoke && npm run audit && npm run licenses",
+    "ship": "node scripts/ship.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "zod": "^4.6.5"
   },
   "repository": {
@@ -43,5 +46,9 @@
     "audio",
     "dsp",
     "modelcontextprotocol"
-  ]
+  ],
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.12.0"
+  }
 }

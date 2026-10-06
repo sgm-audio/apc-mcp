@@ -10,3 +10,7 @@ allowed_licenses:
   - CC0-1.0
   - Unlicense
   - 0BSD
+  # Blue Oak Model License 1.0 — a modernised MIT/BSD-style permissive license
+  # used by npm's own tooling (e.g. minimatch, pulled in by ESLint). Permissive
+  # and dev-only here, but listed so `npm run licenses` stays quiet.
+  - BlueOak-1.0.0

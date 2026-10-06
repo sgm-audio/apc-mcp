@@ -11,19 +11,28 @@ jobs:
   test:
     strategy:
       matrix:
-        node-version: [18, 20, 22]
+        node-version: [22, 24]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
       - name: Lint
-        run: node --check index.js
+        # `npm run lint` is ESLint over the whole repo plus a parse check. It used
+        # to be `node --check index.js` alone, which only proves the file parses.
+        run: npm run lint
       - name: Test
         run: npm test
+      - name: Scaffold smoke (every type x ui)
+        run: npm run smoke
+      # `npm run check` runs audit + licenses locally; CI has a separate `license`
+      # job for the allowlist, but nothing gated on `npm audit` — a new advisory
+      # in the dependency tree would not have failed the build.
+      - name: Security advisories
+        run: npm audit --audit-level=high
       - name: Smoke test — all 7 tools register
         run: |
           echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | timeout 5 node index.js | python3 -c "
@@ -38,22 +47,112 @@ jobs:
           print(f'OK: {len(names)} tools registered')
           "
 
+  # Compiles the scaffolded C++ with a real front end. This is what catches
+  # templates calling JUCE/CLAP API that does not exist — the structural tests
+  # alone cannot. JUCE sources go against tests/fixtures/juce-api-stub (a
+  # transcription of the JUCE 9 API, no JUCE download needed); CLAP sources go
+  # against the real free-audio/clap headers.
+  compile-scaffold:
+    name: Scaffolded C++ compiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Clone free-audio/clap headers
+        run: git clone --depth 1 https://github.com/free-audio/clap.git "${RUNNER_TEMP}/clap"
+      - name: Compile-check every scaffolded source file
+        env:
+          APC_CLAP_INCLUDE: ${{ runner.temp }}/clap/include
+        run: node --test tests/cpp-api.test.js
+
+  # The default scaffold type. Needs only cmake + a compiler, both preinstalled on
+  # ubuntu-latest, so this job is fast and has no apt surface to drift.
+  scaffold-clap:
+    name: Scaffolded CLAP configures with real cmake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Vendor free-audio/clap at _tools/clap
+        run: git clone --depth 1 https://github.com/free-audio/clap.git "${RUNNER_TEMP}/clap"
+      - name: cmake -B build on every scaffolded CLAP plugin
+        env:
+          APC_CLAP_DIR: ${{ runner.temp }}/clap
+        run: node scripts/smoke-scaffold.mjs --configure
+
+  # Configures the JUCE and JUCE+WebView templates against a real JUCE checkout.
+  # This is the check that proves a scaffolded JUCE plugin actually configures,
+  # which no amount of Node-side testing can do.
+  #
+  # CAVEAT: this job has never had a green run. The account's Actions are locked
+  # for billing (see AUDIT.md OPS-07), and cmake/apt are unreachable from the
+  # environment the templates were fixed in. The apt package names below are
+  # JUCE's documented Linux deps for ubuntu-24.04; `ubuntu-latest` becomes
+  # Ubuntu 26 on 2026-10-19, so re-check them on the first real run and pin this
+  # job to ubuntu-24.04 if the migration renames any of them.
+  scaffold-juce:
+    name: Scaffolded JUCE configures with real cmake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Install JUCE's Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libjack-jackd2-dev libcurl4-openssl-dev \
+            libfreetype6-dev libx11-dev libxcomposite-dev libxcursor-dev \
+            libxext-dev libxinerama-dev libxrandr-dev libxrender-dev \
+            libwebkit2gtk-4.1-dev libglu1-mesa-dev
+      - name: Clone JUCE 9
+        run: git clone --depth 1 --branch 9.0.3 https://github.com/juce-framework/JUCE.git "${RUNNER_TEMP}/JUCE"
+      - name: cmake -B build on every scaffolded JUCE plugin
+        env:
+          APC_JUCE_DIR: ${{ runner.temp }}/JUCE
+        run: node scripts/smoke-scaffold.mjs --configure
+
+  license:
+    name: License check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      # Reads package-lock.json directly — no install needed.
+      - name: Verify dependency licenses against license_decisions.yml
+        run: node scripts/check-licenses.mjs
+
   publish:
-    needs: test
+    # scaffold-juce is intentionally NOT in `needs` yet: its apt dependency list
+    # has never had a green run, and a wrong package name would block releases.
+    # Add it once it has passed once on main.
+    needs: [test, license, compile-scaffold, scaffold-clap]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
       - run: npm ci
       - run: npm publish --provenance --access public
-        continue-on-error: true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

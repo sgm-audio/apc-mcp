@@ -3,3 +3,6 @@ npm-debug.log*
 .DS_Store
 *.swp
 *.swo
+# Safety net: no test writes here any more (server.test.js moved to os.tmpdir()
+# in Phase 5), but keep it ignored so a future fixture cannot become repo litter.
+tests/fixtures/test-project/

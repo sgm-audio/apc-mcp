@@ -2,53 +2,114 @@
 
 ## ~~WebView UI Template~~ ✅ DONE
 
-`audio_plugin_create(name="X", type="juce", ui="webview")` now scaffolds a complete JUCE plugin with:
-- `WebViewEditor` — `juce::WebBrowserComponent` with JS↔C++ message bridge
-- Embedded HTML/CSS/JS UI via `juce_add_webview_ui()` BinaryData
+`audio_plugin_create(name="X", type="juce", ui="webview")` scaffolds a complete JUCE plugin with:
+- `WebViewEditor` — `juce::WebBrowserComponent` with a JS↔C++ message bridge
+- Embedded HTML/CSS/JS UI as BinaryData via `juce_add_binary_data()`, served to the browser through a JUCE 9 `ResourceProvider`
 - Gain slider control with bidirectional parameter sync
 - Dark theme matching common DAW aesthetics
-- `ui` parameter: `generic` (default) or `webview`
+
+## ~~`ui` parameter on `audio_plugin_create`~~ ✅ DONE
+
+`generic` (default) or `webview`. Ignored by `clap` and `standalone`, which ship their own UI.
+
+## ~~Standalone template~~ ✅ DONE
+
+`audio_plugin_create(name="X", type="standalone")` scaffolds a standalone audio
+**application** — `templates/standalone/`:
+
+- `Source/Main.cpp` — a `juce::JUCEApplication` subclass plus its `DocumentWindow`,
+  and `START_JUCE_APPLICATION()` (which generates `main()`; there is no other)
+- `Source/MainComponent.{h,cpp}` — a `juce::AudioAppComponent` driving a 440 Hz
+  sine generator with a level slider, sharing the level between the message and
+  audio threads through a `std::atomic<float>`
+- `CMakeLists.txt` — `juce_add_gui_app()`, which builds an **executable**
+  (`add_executable` + `JUCE_STANDALONE_APPLICATION=1`), not a plugin library
+
+Two JUCE 9 details the template gets right and older example code does not:
+
+1. **`AudioAppComponent` has no `start()` and no `stop()` any more.**
+   `setAudioChannels()` both initialises the device and starts the callback, and
+   its counterpart is `shutdownAudio()`, which *must* be called from the derived
+   destructor — the base class `jassert()`s otherwise ("If you hit this then your
+   derived class must call shutdown audio in destructor!"). Most tutorials still
+   circulating show `start()`/`stop()` and will not compile.
+2. **An app target accepts no plugin keywords.** `juce_add_gui_app()` has no
+   `UNPARSED_ARGUMENTS` check, so `FORMATS`, `PLUGIN_CODE` and `IS_SYNTH` would be
+   dropped silently rather than reported. They are absent from the template, and
+   `audio_plugin_create(type="standalone", formats=...)` is **rejected** rather
+   than ignored — silently dropping an argument the user typed is the exact
+   failure mode JUCE's CMake API has and this project refuses to copy.
 
 ---
 
-## Template Expansion
+## Template Expansion — remaining
 
 ### ARA template
 
 **Goal:** `audio_plugin_create(name="X", type="ara")` scaffolds a JUCE ARA plugin.
 
-ARA plugins have a different base class (`juce::ARAAudioProcessor`) and need:
-- `Source/PluginProcessor.h` — extends `ARAAudioProcessor` with `ARADocument`/`ARARegion` support
-- `Source/PluginProcessor.cpp` — ARA lifecycle methods
-- `Source/ARAEditor.h` — ARA-aware editor stub
-- `CMakeLists.txt` — adds `JuceHeader` with `JUCE_ARRA_MODULE` enabled
+`type: 'ara'` was **removed in 2.0.0** because it emitted `FORMATS ARA` — not a
+valid `juce_add_plugin` format — from a plain `juce::AudioProcessor`, so it
+reported success while scaffolding a plugin that could never configure. Do not
+restore the enum value until the template below exists.
+
+Verified against JUCE 9.0.3 (`extras/Build/CMake/JUCEUtils.cmake`,
+`extras/Build/CMake/JUCEModuleSupport.cmake`,
+`modules/juce_audio_processors_headless/utilities/ARA/`):
+
+- **ARA is an effect mode, not a format.** Pass `IS_ARA_EFFECT TRUE` to
+  `juce_add_plugin` alongside a real `FORMATS` list (typically `VST3;AU`). JUCE
+  defaults it to `FALSE`. The related keywords are `ARA_FACTORY_ID`,
+  `ARA_DOCUMENT_ARCHIVE_ID`, `ARA_COMPATIBLE_ARCHIVE_IDS`, `ARA_CONTENT_TYPES`
+  and `ARA_TRANSFORMATION_FLAGS`; they become the `JucePlugin_ARA*` definitions.
+- **There is no `juce::ARAAudioProcessor` and no `JUCE_ARRA_MODULE`** — both names
+  appeared in this file before it was checked against the source, and neither
+  exists. The real API is in `juce_AudioProcessor_ARAExtensions.h`: the processor
+  derives from `juce::AudioProcessorARAExtension` (itself an
+  `ARA::PlugIn::PlugInExtension`), the editor from
+  `juce::AudioProcessorEditorARAExtension`, and you also provide an
+  `ARADocumentControllerSpecialisation`. `ARAPlaybackRenderer`,
+  `ARAEditorRenderer` and `ARAEditorView` are the roles to implement.
+- **ARA needs an external SDK.** `juce_set_ara_sdk_path(<path>)` must be called
+  *before* `juce_add_plugin`, or JUCE raises a fatal
+  "Use juce_set_ara_sdk_path to specify the ARA SDK location." So the template
+  needs an SDK-discovery block with a clear `FATAL_ERROR` message, mirroring how
+  `templates/juce/CMakeLists.txt` handles `JUCE_DIR`.
+- **Consequence for CI:** `scaffold-juce` cannot validate an ARA template without
+  the ARA SDK present, so either the job fetches it or the ARA case is skipped
+  with a reason. Plan for that before writing the template.
 
 ### LV2 template
 
-**Goal:** `audio_plugin_create(name="X", type="lv2")` scaffolds an LV2 plugin.
+**Goal:** `audio_plugin_create(name="X", type="lv2")` scaffolds a native LV2 plugin.
 
-LV2 uses a C API with Turtle metadata:
-- `Source/lv2/plugin.c` — LV2 descriptor + instantiate/connect_port/run
-- `Source/lv2/manifest.ttl` — LV2 Turtle manifest
-- `Source/lv2/plugin.ttl` — LV2 Turtle plugin description
-- `CMakeLists.txt` — builds as shared lib, installs bundle
-- No JUCE dependency — pure LV2
+Unrelated to JUCE's `LV2` format string (which JUCE already builds from
+`templates/juce`). This is pure C against the LV2 headers plus Turtle metadata:
 
-### Standalone template
-
-**Goal:** `audio_plugin_create(name="X", type="standalone")` scaffolds a standalone (non-plugin) audio app.
-
-- `Source/Main.cpp` — `juce::JUCEApplication` or raw audio I/O
-- `Source/MainComponent.h/cpp` — Main content component
-- `CMakeLists.txt` — builds as executable (not plugin)
-- Uses JUCE's `juce::AudioAppComponent` for quick audio i/o
+- `Source/lv2/plugin.c` — descriptor + `instantiate` / `connect_port` / `run` /
+  `cleanup` / `extension_data`
+- `Source/lv2/manifest.ttl` and `Source/lv2/plugin.ttl` — Turtle metadata; the
+  plugin URI must match across both files and the C descriptor
+- `CMakeLists.txt` — a `MODULE` library named `<uri>.so`, installed as a `.lv2`
+  bundle directory
+- No JUCE dependency
 
 ---
 
-## Implementation Order
+## Implementation order
 
-1. **WebView UI template** (highest value — modern standard for plugin UIs)
-2. **`ui` parameter on `audio_plugin_create`** — wires webview vs generic choice
-3. **Standalone template** (lowest effort — reuses JUCE scaffold)
-4. **ARA template** (medium effort — different base class, ARA SDK dependency)
-5. **LV2 template** (highest effort — no JUCE, pure LV2 C API + Turtle)
+1. ~~WebView UI template~~ ✅
+2. ~~`ui` parameter~~ ✅
+3. ~~Standalone application template~~ ✅
+4. **ARA template** — medium effort, but blocked on an external SDK for both the
+   template and its CI job
+5. **LV2 template** — highest effort; no JUCE, so it also needs its own compile
+   check (LV2 headers) in `tests/cpp-api.test.js`
+
+## Standing constraint on all template work
+
+Every claim about a CMake keyword or a C++ API in a template must be checked
+against real source, not memory. Two of this project's worst defects were
+APIs that sound right and do not exist (`juce_add_webview_ui()`,
+`WebBrowserComponent::loadHTMLString`). `HANDOFF.md` §3 has the clone commands
+and §4 the red-phase method; `AUDIT.md` Phase 2 records what was wrong before.
