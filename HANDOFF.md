@@ -30,7 +30,7 @@ A full audit found **35 defects**, and one more (**FUNC-21**) turned up while bu
 | `f462446` | P5 | **QA tooling & docs**: added ESLint as the real linter (15 findings, all fixed), removed the dead `findPluginBinaries` param, rewrote the materially-false `SECURITY.md`, corrected `CONTRIBUTING.md`/`README.md`/the FAQ against the code, migrated the orphaned GitLab MR checklist to `.github/pull_request_template.md`, made `index.js` executable, added `npm run smoke` + `npm audit` to CI, and put `server.test.js` on the shared handshaking client. 119 tests |
 | `d1a353b` | FUNC-21 | **Artefact discovery**: `validate` could not find any artefact whose `PRODUCT_NAME` differed from its directory name (4 of 6 plausible names), looked for Audio Units in an `AudioUnit/` dir JUCE never creates (it is `AU`), and returned Standalone/LV2 *directories* instead of artefacts. 13 new tests |
 | `d1a353b` | feature | **`type="standalone"`**: a JUCE *application* template (`juce_add_gui_app`) with `AudioAppComponent`, built against the verified JUCE 9 API. 147 tests total |
-| *(this commit)* | feature | **`type="lv2"`**: a native LV2 plugin — C against the real `lv2/core/lv2.h`, Turtle metadata, `MODULE` library emitted into the bundle layout `validate` scans. Compile-checked against **real** upstream headers in CI, not a stub. 163 tests total |
+| `728eb7a` | feature | **`type="lv2"`**: a native LV2 plugin — C against the real `lv2/core/lv2.h`, Turtle metadata, `MODULE` library emitted into the bundle layout `validate` scans. Compile-checked against **real** upstream headers in CI, not a stub. 163 tests total |
 
 **Version is `2.0.0`** — `package.json:3` is the only source of truth;
 `index.js:26` reads it at startup and `index.js:619` reports it in
