@@ -25,7 +25,7 @@ A full audit found **35 defects**. Phases 0–2 are **done, committed and pushed
 | `a52a869` | P1 | Security: closed the critical `audio_plugin_lint` path traversal (arbitrary out-of-project write), fixed `findBinary()` always returning true, dead `ENOENT`/timeout handling, unvalidated config loading, removed `type:'ara'`, event-driven test client (126s → 14s), 30 new negative tests |
 | `2fb81da` | P2 | **Templates**: the scaffold output could not configure or compile at all. Rewrote all three CMakeLists and the whole `juce-webview` + `clap` C++ layer against verified JUCE 9 / CLAP APIs. 36 new tests |
 | `d5e7dda` | P2 | Recorded that `scaffold-juce` has never had a green run |
-| *(this commit)* | P3 | **Output correctness**: `config` from `apc-mcp.json` was dead (zod's `.default()` shadowed it), `lint(fix=true)` reported success when clang-format failed, both output parsers miscounted, build ignored its own `errorCount`, and `validate` aborted mid-loop on a missing optional validator. 22 new tests |
+| `7716749` | P3 | **Output correctness**: `config` from `apc-mcp.json` was dead (zod's `.default()` shadowed it), `lint(fix=true)` reported success when clang-format failed, both output parsers miscounted, build ignored its own `errorCount`, and `validate` aborted mid-loop on a missing optional validator. 22 new tests |
 
 **Version is `2.0.0`** (both `package.json:3` and `index.js:460`) because
 removing `type:'ara'` is a breaking input-schema change. It has **not been
@@ -399,5 +399,5 @@ git clone --depth 1 --branch 9.0.3 https://github.com/juce-framework/JUCE.git /t
 git clone --depth 1 https://github.com/free-audio/clap.git /tmp/clap
 export APC_CLAP_INCLUDE=/tmp/clap/include APC_CLAP_DIR=/tmp/clap APC_JUCE_DIR=/tmp/JUCE
 
-# then start Phase 3 at §5, red test first
+# then start Phase 4 at §6, red test first (§5 records what P3 already changed)
 ```
