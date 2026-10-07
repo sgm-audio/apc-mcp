@@ -32,6 +32,18 @@ if(NOT LV2_INCLUDE_DIR)
     endif()
 endif()
 
+# ── Language ─────────────────────────────────────────────────────────
+# This file may be add_subdirectory()'d into a host whose project() only
+# enables CXX (a JUCE host would never enable C), but plugin.c is C — without
+# this, configuring under such a host fails with "Cannot determine link
+# language for target". CMake normally enables C and CXX from an implicit
+# project(), so standalone scaffolds already have C; only the embedded case
+# needs the explicit enable_language.
+get_property(_lv2_host_langs GLOBAL PROPERTY ENABLED_LANGUAGES)
+if(NOT C IN_LIST _lv2_host_langs)
+    enable_language(C)
+endif()
+
 # ── Plugin target ────────────────────────────────────────────────────
 # MODULE, not SHARED: an LV2 binary is dlopen'd by the host and never linked
 # against, so there is no import library to produce.
