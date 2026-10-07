@@ -144,9 +144,12 @@ function writeRootCMake(names) {
   // One project() at the root, then every plugin as a subdirectory. Configuring
   // several plugins at once is deliberate: it is the multi-plugin collision case
   // (duplicate juce::* / clap targets) that an unguarded add_subdirectory causes.
+  // Languages belong to the host's project(): C is needed for templates/lv2
+  // (Source/plugin.c), CXX for everything else. Without C, a CXX-only host
+  // configuring an LV2 plugin dies with "Cannot determine link language".
   const lines = [
     'cmake_minimum_required(VERSION 3.22)',
-    'project(apc_smoke_host CXX)',
+    'project(apc_smoke_host C CXX)',
     'set(CMAKE_CXX_STANDARD 20)',
     '',
   ];
