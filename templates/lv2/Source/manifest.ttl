@@ -1,0 +1,22 @@
+# LV2 manifest — the small file a host reads first, for every bundle in a
+# directory. It must stay cheap to parse: it declares the plugin's type, names
+# the binary to load, and points at the file holding the real description.
+# Everything else lives in plugin.ttl, which is only parsed once the host has
+# decided it wants this plugin.
+#
+# Two things in this file are load-bearing and both are checked by
+# tests/templates.test.js:
+#   * the subject URI must be byte-identical to the one in plugin.ttl and to
+#     {{PLUGIN_ID}}_URI in Source/plugin.c;
+#   * rdfs:seeAlso must name a file that is actually in the bundle. The filename
+#     is arbitrary as far as the spec is concerned, but a seeAlso that points at
+#     a missing file means the host loads the plugin with no metadata at all —
+#     no name, no ports, no licence — and reports no error while doing it.
+
+@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<{{PLUGIN_URI}}>
+  a lv2:Plugin ;
+  lv2:binary <{{PLUGIN_NAME}}.so> ;
+  rdfs:seeAlso <plugin.ttl> .

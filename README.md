@@ -29,7 +29,7 @@ Works with any MCP client: Claude Code, OpenCode, VS Code with MCP, Continue.dev
 > compile, and tools that reported success when the underlying command had failed.
 > All five remediation phases are **complete** on branch
 > `arena/353ee88c-apc-mcp`, released as **2.0.0** (not yet published):
-> `npm run check` exits 0 with 147 tests green, ESLint clean, no known
+> `npm run check` exits 0 with 163 tests green, ESLint clean, no known
 > vulnerabilities and the license gate passing.
 >
 > Two caveats, stated plainly rather than buried:
@@ -150,6 +150,7 @@ audio_plugin_create(name="MyVerb", type="juce", vendor="MyCompany", formats="VST
 audio_plugin_create(name="SimpleDelay", type="clap", vendor="MyCompany", description="A simple delay effect")
 audio_plugin_create(name="MyVerb", type="juce", ui="webview", vendor="MyCompany")
 audio_plugin_create(name="ToneGen", type="standalone", vendor="MyCompany")
+audio_plugin_create(name="my-gain", type="lv2", vendor="MyCompany")
 ```
 
 Generates a working plugin stub: `CMakeLists.txt`, source files, and either a
@@ -163,6 +164,7 @@ modern CLAP entry (the `clap_entry` → plugin-factory chain) or a JUCE
 | `clap` *(default)* | `templates/clap/` | Plain C++ against the free-audio/clap headers. Vendors CLAP at `_tools/clap` or finds an installed `clap-config.cmake`. |
 | `juce` | `templates/juce/` or `templates/juce-webview/` | Full `juce_add_plugin` project. `formats` accepts any of JUCE's: `AU AUv3 AAX LV2 Standalone Unity VST VST3`. |
 | `vst3` | same JUCE templates | Convenience alias that defaults `formats` to VST3. |
+| `lv2` | `templates/lv2/` | A **native LV2 plugin**: pure C against `lv2/core/lv2.h` plus Turtle metadata (`manifest.ttl`, `plugin.ttl`). A stereo gain stage with one control port. Unrelated to the LV2 that `type="juce"` emits from a C++ `AudioProcessor` — this one has no JUCE dependency at all. |
 | `standalone` | `templates/standalone/` | A standalone audio **application**, not a plugin: `juce_add_gui_app` builds one executable that owns its audio device via `AudioAppComponent`. Scaffolds `Source/Main.cpp` (a `JUCEApplication` plus its `DocumentWindow`) and `Source/MainComponent.{h,cpp}` (a 440 Hz sine generator with a level slider). Has no `FORMATS`, so passing `formats` with this type is rejected rather than silently ignored. |
 
 > `type="ara"` was removed in 2.0.0. It emitted `FORMATS ARA`, which
@@ -243,8 +245,9 @@ apc-mcp/
 │   ├── juce/                   # JUCE scaffold, generic editor
 │   ├── juce-webview/           # JUCE scaffold + WebBrowserComponent UI
 │   │   └── Source/UI/          # the HTML/CSS/JS you edit
-│   └── standalone/             # JUCE *application* (juce_add_gui_app), not a plugin
-├── tests/                      # 147 tests, node:test, no framework
+│   ├── standalone/             # JUCE *application* (juce_add_gui_app), not a plugin
+│   └── lv2/                    # native LV2 plugin: C + Turtle metadata, no JUCE
+├── tests/                      # 163 tests, node:test, no framework
 │   ├── helpers/mcp-client.mjs  # shared MCP stdio client (full handshake)
 │   ├── fixtures/juce-api-stub/ # transcribed JUCE 9 API, for compile checks
 │   ├── server.test.js          # happy path
@@ -252,7 +255,7 @@ apc-mcp/
 │   ├── tool-output.test.js     # config precedence, parsers, failure reporting
 │   ├── templates.test.js       # generated-project structure (no toolchain)
 │   ├── artefacts.test.js       # build-artefact discovery per JUCE's real layout
-│   ├── cpp-api.test.js         # real g++/clang++ over generated sources
+│   ├── cpp-api.test.js         # real gcc/g++ over generated C and C++
 │   └── release.test.js         # versioning, CI pins, release guards
 ├── scripts/
 │   ├── smoke-scaffold.mjs      # npm run smoke — scaffold every type x ui

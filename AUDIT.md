@@ -21,7 +21,7 @@
 > | 3 | Parsing & failure reporting | ✅ complete — see §7 Phase 3 |
 > | 4 | CI / release engineering | ✅ complete |
 > | 5 | QA tooling & docs | ✅ complete — see §7 Phase 5 |
-> | — | Feature scope (`TODO.md`) | ◐ Standalone ✅ done; ARA and LV2 remain — see §8 |
+> | — | Feature scope (`TODO.md`) | ◐ Standalone ✅ and LV2 ✅ done; **ARA is the last one** — see HANDOFF §8 |
 >
 > Finding counts below are the original 34 plus **QA-07** (found while writing the
 > Phase 3 tests) and **FUNC-21** (found while building the Standalone feature, after
