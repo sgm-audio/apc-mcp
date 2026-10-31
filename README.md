@@ -13,7 +13,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/sgm-audio/apc-mcp/actions"><img src="https://img.shields.io/github/actions/workflow/status/sgm-audio/apc-mcp/publish.yml?branch=main&logo=github&label=CI" alt="CI"></a>
   <a href="https://github.com/sgm-audio/apc-mcp/releases"><img src="https://img.shields.io/github/v/release/sgm-audio/apc-mcp?logo=github&label=Release" alt="Release"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-22+-339933?logo=node.js&logoColor=white" alt="Node"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/sgm-audio/apc-mcp" alt="License"></a>
@@ -27,19 +26,22 @@ Works with any MCP client: Claude Code, OpenCode, VS Code with MCP, Continue.dev
 > including a path traversal in `audio_plugin_lint` that allowed arbitrary writes
 > outside the project, scaffold templates that could neither configure nor
 > compile, and tools that reported success when the underlying command had failed.
-> All five remediation phases are **complete** on branch
-> `arena/353ee88c-apc-mcp`, released as **2.0.0** (not yet published):
-> `npm run check` exits 0 with 147 tests green, ESLint clean, no known
-> vulnerabilities and the license gate passing.
+> `package.json` on `main` is version **2.0.0**, but there is no `v2.0.0` tag or
+> release (latest tag: `v1.5.0`) and it is not on npm.
 >
-> Two caveats, stated plainly rather than buried:
+> Checked 2026-10-31 on Linux, Node 24: `npm test` runs 147 tests — 141 pass,
+> 2 skip, 4 fail. The 4 failures are the C++ compile checks; with no system
+> C++ compiler they cannot pass, and with the zig-clang wrapper used for this
+> check they failed on a toolchain cache error, so those checks remain
+> unverified. `npm run lint` passes.
 >
-> 1. **GitHub Actions on this repo are locked for billing, so the CI badge above
->    does not reflect the state of the code** — and no CI job has ever run, which
->    means `cmake -B build` on a scaffolded plugin is still unverified. See
->    `HANDOFF.md` §7 and `AUDIT.md` Phase 6 item 41.
-> 2. **Versions 1.4.0 and 1.5.0 on npm are vulnerable** to that path traversal.
->    Upgrade to 2.0.0 once published — see [`SECURITY.md`](SECURITY.md).
+> CI: GitHub Actions does run on this repo (100 most recent runs: 64 success,
+> 36 failure). The recent `CI` and `CodeQL` runs since 2026-10-20 have failed.
+>
+> Releases: `v1.4.0`, `v1.4.1` and `v1.5.0` exist as git tags.
+> [`SECURITY.md`](SECURITY.md) states that 1.4.0 and 1.5.0 have the path traversal.
+> `@sgm-audio/apc-mcp` is not on npm. An npm package named `apc-mcp`
+> exists (0.1.0, 0.2.0); its link to this repo was not checked.
 >
 > [`AUDIT.md`](AUDIT.md) has the findings and evidence;
 > [`HANDOFF.md`](HANDOFF.md) has what remains and how to verify it;
@@ -63,7 +65,7 @@ Add one entry to your MCP config — no npm, no clone, no setup:
 }
 ```
 
-That's it. `npx` handles fetching and caching. Updates automatically when you restart your client.
+`npx` fetches the repo and caches it.
 
 ### Requirements
 
@@ -229,7 +231,7 @@ my-plugin/
 git clone https://github.com/sgm-audio/apc-mcp.git
 cd apc-mcp
 npm install
-npm test          # 11 tests, node:test, zero deps
+npm test          # 147 tests, node:test (compile checks need g++ or clang++)
 npm run lint      # syntax check on the server code itself
 ```
 
@@ -320,7 +322,7 @@ scaffold can supply.
 A: Yes — any MCP client works. Point it at `npx github:sgm-audio/apc-mcp` using whatever MCP config format that client uses.
 
 **Q: How do I update to a new version?**  
-A: If using `npx github:...`, clear the npx cache: `npx --cache clear github:sgm-audio/apc-mcp` — or just restart your MCP client, npx checks for updates automatically.
+A: `npx` may reuse its cached copy. Delete the cache (`rm -rf ~/.npm/_npx` on macOS/Linux, `%LocalAppData%\npm-cache\_npx` on Windows) and restart your MCP client.
 
 **Q: Can I use this with non-JUCE projects?**  
 A: Yes. `audio_plugin_build`, `audio_plugin_configure`, `audio_plugin_test`, and `audio_plugin_lint` work with any CMake-based C++ project. Only `audio_plugin_create` and `audio_plugin_validate` are plugin-format-specific.
