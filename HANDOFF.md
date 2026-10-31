@@ -556,7 +556,7 @@ by anyone via npm. If 2.0.0 is delayed significantly, revisit whether to keep
 ## 12. Quick start for the next session
 
 ```bash
-cd /home/user/apc-mcp                 # or wherever the checkout lives
+cd ~/apc-mcp                          # or wherever the checkout lives
 git status                            # should be clean except nothing
 npm ci
 npm run check                         # confirm the §2 baseline
