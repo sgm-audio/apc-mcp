@@ -140,7 +140,7 @@ function writeRootCMake(names) {
   // (duplicate juce::* / clap targets) that an unguarded add_subdirectory causes.
   const lines = [
     'cmake_minimum_required(VERSION 3.22)',
-    'project(apc_smoke_host CXX)',
+    'project(apc_smoke_host C CXX)',  // JUCE 9 requires C in LANGUAGES
     'set(CMAKE_CXX_STANDARD 20)',
     '',
   ];
