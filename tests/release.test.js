@@ -102,6 +102,15 @@ describe('OPS-02 · a failed publish must fail the workflow', () => {
     // comment in the workflow and HANDOFF.md §7.
     assert.ok(!needs.includes('scaffold-juce'),
       'scaffold-juce has never had a green run; do not gate publishing on it yet');
+    // The gating policy, stated as a test rather than as a comment nobody reads:
+    // a scaffold job gates the release when it needs nothing but cmake, a
+    // compiler and a git clone — no apt packages whose names can move when
+    // ubuntu-latest is rebased. scaffold-clap and scaffold-lv2 qualify;
+    // scaffold-juce installs JUCE's Linux dependency list and does not.
+    for (const cheap of ['scaffold-clap', 'scaffold-lv2']) {
+      assert.ok(needs.includes(cheap),
+        `${cheap} has no apt surface to drift, so publishing should be gated on it: ${needs.join(', ')}`);
+    }
   });
 });
 

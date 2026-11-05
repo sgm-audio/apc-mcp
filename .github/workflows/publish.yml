@@ -53,7 +53,7 @@ jobs:
   # transcription of the JUCE 9 API, no JUCE download needed); CLAP sources go
   # against the real free-audio/clap headers.
   compile-scaffold:
-    name: Scaffolded C++ compiles
+    name: Scaffolded C/C++ compiles
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -64,10 +64,42 @@ jobs:
       - run: npm ci
       - name: Clone free-audio/clap headers
         run: git clone --depth 1 https://github.com/free-audio/clap.git "${RUNNER_TEMP}/clap"
+      - name: Clone lv2/lv2 headers
+        run: git clone --depth 1 https://github.com/lv2/lv2.git "${RUNNER_TEMP}/lv2"
+      # Both env vars must be set or the corresponding compile checks skip rather
+      # than run — tests/cpp-api.test.js has a guard test per header set so a
+      # silent skip cannot read as a pass.
       - name: Compile-check every scaffolded source file
         env:
           APC_CLAP_INCLUDE: ${{ runner.temp }}/clap/include
+          APC_LV2_INCLUDE: ${{ runner.temp }}/lv2/include
         run: node --test tests/cpp-api.test.js
+
+  # Configures the native LV2 template against real cmake and the real LV2
+  # headers. Like scaffold-clap this needs only cmake + a compiler (both
+  # preinstalled) plus a git clone, so there is no apt surface to drift — which
+  # is the property that makes it safe to gate publishing on.
+  #
+  # CAVEAT: first green on 2026-10-08, but LOCAL (WSL Ubuntu 26.04, cmake
+  # 4.1.2, lv2/lv2 headers) -- GitHub Actions remain billing-locked, so it has
+  # still never run on a real runner (AUDIT.md OPS-07). LV2 core is
+  # header-only, so the only system requirement is a C compiler.
+  scaffold-lv2:
+    name: Scaffolded LV2 configures with real cmake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Clone lv2/lv2 for the headers
+        run: git clone --depth 1 https://github.com/lv2/lv2.git "${RUNNER_TEMP}/lv2"
+      - name: cmake -B build on every scaffolded LV2 plugin
+        env:
+          APC_LV2_DIR: ${{ runner.temp }}/lv2/include
+        run: node scripts/smoke-scaffold.mjs --configure
 
   # The default scaffold type. Needs only cmake + a compiler, both preinstalled on
   # ubuntu-latest, so this job is fast and has no apt surface to drift.
@@ -92,12 +124,13 @@ jobs:
   # This is the check that proves a scaffolded JUCE plugin actually configures,
   # which no amount of Node-side testing can do.
   #
-  # CAVEAT: this job has never had a green run. The account's Actions are locked
-  # for billing (see AUDIT.md OPS-07), and cmake/apt are unreachable from the
-  # environment the templates were fixed in. The apt package names below are
-  # JUCE's documented Linux deps for ubuntu-24.04; `ubuntu-latest` becomes
-  # Ubuntu 26 on 2026-10-19, so re-check them on the first real run and pin this
-  # job to ubuntu-24.04 if the migration renames any of them.
+  # CAVEAT: first green on 2026-10-08, but LOCAL (WSL Ubuntu 26.04, cmake
+  # 4.1.2, JUCE 9.0.3, five JUCE/standalone scaffolds configured) -- GitHub
+  # Actions remain billing-locked, so it has still never run on a real runner
+  # (AUDIT.md OPS-07). The apt package names below were validated on Ubuntu
+  # 26.04 during that run (including libwebkit2gtk-4.1-dev), so they are known
+  # good for the `ubuntu-latest` to Ubuntu 26 migration on 2026-10-19; no need
+  # to pin to ubuntu-24.04.
   scaffold-juce:
     name: Scaffolded JUCE configures with real cmake
     runs-on: ubuntu-latest
@@ -136,10 +169,11 @@ jobs:
         run: node scripts/check-licenses.mjs
 
   publish:
-    # scaffold-juce is intentionally NOT in `needs` yet: its apt dependency list
-    # has never had a green run, and a wrong package name would block releases.
-    # Add it once it has passed once on main.
-    needs: [test, license, compile-scaffold, scaffold-clap]
+    # scaffold-juce is intentionally NOT in `needs` yet: it has passed locally
+    # (2026-10-08, Ubuntu 26.04 + exactly the apt list below) but never on a
+    # real runner — add it once it has passed once on main. (Blocked on
+    # AUDIT.md OPS-07 either way: Actions are billing-locked.)
+    needs: [test, license, compile-scaffold, scaffold-clap, scaffold-lv2]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

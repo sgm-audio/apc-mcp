@@ -1,0 +1,73 @@
+# The plugin's full description. A host reads this only after manifest.ttl has
+# pointed it here, so it can be as detailed as needed.
+#
+# Two things in this file are load-bearing and easy to break:
+#
+#   1. The subject URI must equal {{PLUGIN_ID}}_URI in Source/plugin.c and the
+#      subject in manifest.ttl, which reaches this file through rdfs:seeAlso. Hosts match the RDF data to the descriptor by
+#      that string; a mismatch means the plugin loads with no metadata, or not
+#      at all.
+#   2. Every port's lv2:index and lv2:symbol must match the enum and the struct
+#      field names in Source/plugin.c. connect_port() is given only an integer,
+#      so the host decides what to connect by reading this file.
+#
+# lv2core requires a Plugin to have a doap:name, and a Port to have exactly one
+# lv2:symbol and at least one lv2:name.
+
+@prefix doap: <http://usefulinc.com/ns/doap#> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<{{PLUGIN_URI}}>
+  a lv2:Plugin , lv2:UtilityPlugin ;
+
+  doap:name "{{PLUGIN_DISPLAY_NAME}}" ;
+  doap:shortdesc "{{PLUGIN_DESCRIPTION_TTL}}" ;
+  doap:license <https://opensource.org/licenses/MIT> ;
+  doap:maintainer [
+    foaf:name "{{VENDOR}}" ;
+  ] ;
+
+  # Hosts use these to decide whether a saved project's preset is still
+  # compatible. Bump microVersion for any change, and minorVersion for a
+  # backwards-incompatible one; both are non-negative integers, not strings.
+  lv2:minorVersion 1 ;
+  lv2:microVersion 0 ;
+
+  # Declaring hardRTCapable is a promise: run() must not allocate, lock, block
+  # on I/O, or call anything unbounded. The run() in Source/plugin.c honours it.
+  # Remove this line if you add anything that does not.
+  lv2:optionalFeature lv2:hardRTCapable ;
+
+  lv2:port [
+    a lv2:InputPort , lv2:ControlPort ;
+    lv2:index 0 ;
+    lv2:symbol "gain" ;
+    lv2:name "Gain" ;
+    # A ControlPort host needs all three bounds to draw a sensible widget, and
+    # lv2:default should be a value the plugin can start at safely.
+    lv2:default 1.0 ;
+    lv2:minimum 0.0 ;
+    lv2:maximum 4.0 ;
+  ] , [
+    a lv2:InputPort , lv2:AudioPort ;
+    lv2:index 1 ;
+    lv2:symbol "in_l" ;
+    lv2:name "Input Left" ;
+  ] , [
+    a lv2:InputPort , lv2:AudioPort ;
+    lv2:index 2 ;
+    lv2:symbol "in_r" ;
+    lv2:name "Input Right" ;
+  ] , [
+    a lv2:OutputPort , lv2:AudioPort ;
+    lv2:index 3 ;
+    lv2:symbol "out_l" ;
+    lv2:name "Output Left" ;
+  ] , [
+    a lv2:OutputPort , lv2:AudioPort ;
+    lv2:index 4 ;
+    lv2:symbol "out_r" ;
+    lv2:name "Output Right" ;
+  ] .

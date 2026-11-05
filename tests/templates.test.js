@@ -37,6 +37,8 @@ const PERMUTATIONS = [
   // both the gui_app template and the displayName() divergence (PRODUCT_NAME
   // "Tone Gen" inside a directory called tone_gen). `ui` is deliberately
   // 'webview' on the second to prove the app template ignores it.
+  { name: 'Lv2Gain',   type: 'lv2',   ui: 'generic' },
+  { name: 'lv2_gain',  type: 'lv2',   ui: 'webview' },
   { name: 'ToneGen',   type: 'standalone', ui: 'generic' },
   { name: 'tone_gen',  type: 'standalone', ui: 'webview' },
 ];
@@ -125,6 +127,8 @@ const juceOnly = ui => [...scaffolded.values()].filter(s => isJuce(s) && (!ui ||
 // continue;` mean "JUCE plugin" and must now say so explicitly, or they silently
 // assert plugin-only invariants against an app target.
 const isApp = s => s.type === 'standalone';
+const isLv2 = s => s.type === 'lv2';
+const lv2Only = () => [...scaffolded.values()].filter(isLv2);
 const appOnly = () => [...scaffolded.values()].filter(isApp);
 const jucePluginOnly = () => [...scaffolded.values()].filter(s => isJuce(s));
 
@@ -215,8 +219,9 @@ describe('FUNC-02/08/11/12 · JUCE templates use the real JUCE 9 CMake API', () 
   });
 
   it('uses COMPANY_COPYRIGHT, not bare COPYRIGHT', () => {
-    for (const s of scaffolded.values()) {
-      if (s.type === 'clap') continue;
+    // "not clap" used to mean "JUCE"; with type=lv2 added it no longer does, so
+    // select on the family explicitly.
+    for (const s of jucePluginOnly()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       assert.ok(!/(^|\s)COPYRIGHT\s/.test(cm),
         `${s.name}: bare COPYRIGHT is silently ignored by juce_add_plugin`);
@@ -225,8 +230,7 @@ describe('FUNC-02/08/11/12 · JUCE templates use the real JUCE 9 CMake API', () 
   });
 
   it('links JUCE modules (without this every juce:: symbol is undefined)', () => {
-    for (const s of scaffolded.values()) {
-      if (s.type === 'clap') continue;
+    for (const s of jucePluginOnly()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       assert.ok(cm.includes('target_link_libraries'),
         `${s.name}: no target_link_libraries at all`);
@@ -236,8 +240,7 @@ describe('FUNC-02/08/11/12 · JUCE templates use the real JUCE 9 CMake API', () 
   });
 
   it('guards add_subdirectory(JUCE) so multi-plugin repos can configure', () => {
-    for (const s of scaffolded.values()) {
-      if (s.type === 'clap') continue;
+    for (const s of jucePluginOnly()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       if (!cm.includes('add_subdirectory')) continue;
       assert.ok(/if\s*\(\s*NOT\s+TARGET\s+juce::/i.test(cm),
@@ -458,8 +461,9 @@ describe('schema rejects format values JUCE cannot build', () => {
     assert.ok(!allowed.includes('ara'), `"ara" is still advertised: ${allowed.join(', ')}`);
     // Exact list on purpose: this is a snapshot of the tool's advertised schema,
     // so adding or removing a type is a deliberate, reviewed change rather than
-    // something that slips in. 'standalone' was added for the app template.
-    assert.deepEqual(allowed, ['clap', 'vst3', 'juce', 'standalone']);
+    // something that slips in. 'standalone' and 'lv2' were added for the
+    // application and native-LV2 templates.
+    assert.deepEqual(allowed, ['clap', 'vst3', 'juce', 'standalone', 'lv2']);
   });
 });
 
@@ -634,6 +638,262 @@ describe('standalone application template (juce_add_gui_app)', () => {
       'an app has no FORMATS, so the argument must be rejected rather than dropped');
     assert.match(r.text, /standalone/i, r.text);
     assert.match(r.text, /formats/i, r.text);
+    assert.ok(!fs.existsSync(path.join(PLUGINS, name)),
+      'a rejected scaffold must not leave a directory behind');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// type: 'lv2' scaffolds a NATIVE LV2 plugin — pure C against lv2/core/lv2.h
+// plus Turtle metadata. Unrelated to the LV2 that type='juce' emits from C++.
+//
+// The failure mode these tests exist to prevent is specific to LV2: the plugin's
+// identity and its port wiring live in three files that must agree exactly, and
+// when they do not the host loads the plugin with no metadata, or connects a
+// gain value to an audio buffer. Nothing errors — it just sounds wrong or plays
+// silence. Vocabulary verified against lv2/core.lv2/lv2core.ttl.
+describe('native LV2 template', () => {
+  // Parse the bracketed port blocks out of plugin.ttl. Ports do not nest, so a
+  // non-greedy bracket match is enough.
+  function ttlPorts(ttl) {
+    return [...ttl.matchAll(/\[([^[]*lv2:index[^\]]*)\]/g)].map(m => {
+      const body = m[1];
+      const indexMatch = body.match(/lv2:index\s+(\d+)/);
+      const symbolMatch = body.match(/lv2:symbol\s+"([^"]+)"/);
+      // `a lv2:InputPort , lv2:ControlPort ;` — the type list of this port.
+      const typeMatch = body.match(/\ba\s+([^;]+);/);
+      return {
+        index: indexMatch ? Number(indexMatch[1]) : NaN,
+        symbol: symbolMatch ? symbolMatch[1] : undefined,
+        names: [...body.matchAll(/lv2:name\s+"([^"]+)"/g)].map(x => x[1]),
+        types: typeMatch
+          ? typeMatch[1].split(',').map(t => t.trim()).filter(Boolean)
+          : [],
+        body,
+      };
+    });
+  }
+
+  // The C side: enum constant -> index, and enum constant -> struct field.
+  function cPortMaps(c) {
+    const enumIdx = {};
+    for (const m of c.matchAll(/\b(PORT_[A-Z0-9_]+)\s*=\s*(\d+)/g)) enumIdx[m[1]] = Number(m[2]);
+    const caseToField = {};
+    for (const m of c.matchAll(/case\s+(PORT_[A-Z0-9_]+)\s*:\s*self->(\w+)/g)) caseToField[m[1]] = m[2];
+    return { enumIdx, caseToField };
+  }
+
+  it('uses the same plugin URI in the C descriptor, manifest.ttl and plugin.ttl', () => {
+    for (const s of lv2Only()) {
+      const c = s.files.get('Source/plugin.c');
+      const manifest = s.files.get('Source/manifest.ttl');
+      const ttl = s.files.get('Source/plugin.ttl');
+
+      const uriInC = (c.match(/#define\s+\w+_URI\s+"([^"]+)"/) ?? [])[1];
+      assert.ok(uriInC, `${s.name}: no <id>_URI define in plugin.c`);
+
+      const manifestSubject = (manifest.match(/^<([^>]+)>$/m) ?? [])[1];
+      const ttlSubject = (ttl.match(/^<([^>]+)>$/m) ?? [])[1];
+      assert.equal(manifestSubject, uriInC,
+        `${s.name}: manifest.ttl subject "${manifestSubject}" != plugin.c URI "${uriInC}"`);
+      assert.equal(ttlSubject, uriInC,
+        `${s.name}: plugin.ttl subject "${ttlSubject}" != plugin.c URI "${uriInC}"`);
+
+      // It must also be a URI, not just a matching string.
+      assert.match(uriInC, /^urn:[a-z0-9]+:[A-Za-z0-9_]+$/,
+        `${s.name}: "${uriInC}" is not a valid URN — hosts reject a non-URI plugin identity`);
+    }
+  });
+
+  it('wires every Turtle port index to the matching C struct field', () => {
+    for (const s of lv2Only()) {
+      const ports = ttlPorts(s.files.get('Source/plugin.ttl'));
+      assert.ok(ports.length >= 3, `${s.name}: expected audio in/out plus a control port, got ${ports.length}`);
+
+      const { enumIdx, caseToField } = cPortMaps(s.files.get('Source/plugin.c'));
+      const byIndex = {};
+      for (const [k, v] of Object.entries(enumIdx)) byIndex[v] = k;
+
+      // Indices must be exactly 0..n-1: a gap or a duplicate makes the host
+      // connect the wrong buffer.
+      const indices = ports.map(p => p.index).sort((a, b) => a - b);
+      assert.deepEqual(indices, ports.map((_, i) => i),
+        `${s.name}: lv2:index values must be 0..n-1 contiguous, got [${indices.join(', ')}]`);
+
+      for (const p of ports) {
+        const portConst = byIndex[p.index];
+        assert.ok(portConst,
+          `${s.name}: no C enum constant has value ${p.index} (lv2:symbol "${p.symbol}")`);
+        assert.equal(caseToField[portConst], p.symbol,
+          `${s.name}: lv2:index ${p.index} is "${p.symbol}" in plugin.ttl but connect_port() `
+          + `assigns it to self->${caseToField[portConst]} — the host would connect the wrong buffer`);
+      }
+    }
+  });
+
+  it('gives every port exactly one lv2:symbol and at least one lv2:name', () => {
+    // Both are hard requirements in lv2core.ttl: lv2:PortBase restricts
+    // lv2:symbol to owl:cardinality 1, and lv2:Port requires
+    // lv2:name minCardinality 1.
+    for (const s of lv2Only()) {
+      for (const p of ttlPorts(s.files.get('Source/plugin.ttl'))) {
+        assert.ok(p.symbol, `${s.name}: a port at index ${p.index} has no lv2:symbol`);
+        assert.equal((p.body.match(/lv2:symbol/g) ?? []).length, 1,
+          `${s.name}: port "${p.symbol}" must have exactly one lv2:symbol`);
+        assert.ok(p.names.length >= 1,
+          `${s.name}: port "${p.symbol}" needs at least one lv2:name`);
+      }
+    }
+  });
+
+  it('declares a direction and a port type for every port', () => {
+    for (const s of lv2Only()) {
+      for (const p of ttlPorts(s.files.get('Source/plugin.ttl'))) {
+        const hasDir = p.types.includes('lv2:InputPort') || p.types.includes('lv2:OutputPort');
+        const hasKind = p.types.includes('lv2:AudioPort') || p.types.includes('lv2:ControlPort');
+        assert.ok(hasDir, `${s.name}: port "${p.symbol}" declares no lv2:InputPort/lv2:OutputPort`);
+        assert.ok(hasKind, `${s.name}: port "${p.symbol}" declares no lv2:AudioPort/lv2:ControlPort`);
+      }
+    }
+  });
+
+  it('gives control ports the bounds a host needs to draw a widget', () => {
+    for (const s of lv2Only()) {
+      for (const p of ttlPorts(s.files.get('Source/plugin.ttl'))) {
+        if (!p.types.includes('lv2:ControlPort')) continue;
+        for (const prop of ['lv2:default', 'lv2:minimum', 'lv2:maximum']) {
+          assert.ok(p.body.includes(prop),
+            `${s.name}: control port "${p.symbol}" is missing ${prop}`);
+        }
+      }
+    }
+  });
+
+  it('declares the metadata lv2core requires of a Plugin', () => {
+    for (const s of lv2Only()) {
+      const ttl = s.files.get('Source/plugin.ttl');
+      for (const prop of ['a lv2:Plugin', 'doap:name', 'lv2:minorVersion', 'lv2:microVersion']) {
+        assert.ok(ttl.includes(prop), `${s.name}: plugin.ttl is missing ${prop}`);
+      }
+      // minor/microVersion are xsd:nonNegativeInteger, not strings.
+      assert.match(ttl, /lv2:minorVersion\s+\d+\s*;/, `${s.name}: lv2:minorVersion must be an integer`);
+      assert.match(ttl, /lv2:microVersion\s+\d+\s*;/, `${s.name}: lv2:microVersion must be an integer`);
+    }
+  });
+
+  it('names the binary in manifest.ttl exactly as CMake builds it', () => {
+    for (const s of lv2Only()) {
+      const binary = (s.files.get('Source/manifest.ttl').match(/lv2:binary\s+<([^>]+)>/) ?? [])[1];
+      assert.ok(binary, `${s.name}: manifest.ttl has no lv2:binary`);
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      assert.ok(cm.includes(`SUFFIX ".so"`),
+        `${s.name}: CMake must pin SUFFIX so the built filename matches manifest.ttl on every platform`);
+      assert.ok(cm.includes('PREFIX ""'),
+        `${s.name}: CMake must clear PREFIX or Linux produces lib<name>.so`);
+      assert.equal(binary, `${s.name}.so`,
+        `${s.name}: manifest.ttl names "${binary}" but the target is "${s.name}"`);
+    }
+  });
+
+  it('points rdfs:seeAlso at the plugin.ttl that actually exists', () => {
+    for (const s of lv2Only()) {
+      const seeAlso = (s.files.get('Source/manifest.ttl').match(/rdfs:seeAlso\s+<([^>]+)>/) ?? [])[1];
+      assert.ok(seeAlso, `${s.name}: manifest.ttl has no rdfs:seeAlso`);
+      assert.ok(s.files.has(`Source/${seeAlso}`),
+        `${s.name}: rdfs:seeAlso points at ${seeAlso}, which was not scaffolded`);
+    }
+  });
+
+  it('emits the bundle where audio_plugin_validate scans for LV2 artefacts', () => {
+    for (const s of lv2Only()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      const expected = `plugins/${s.name}/${s.name}_artefacts/$<CONFIG>/LV2/${s.name}.lv2`;
+      assert.ok(cm.includes(expected),
+        `${s.name}: LIBRARY_OUTPUT_DIRECTORY must be ${expected} so the built bundle is discoverable`);
+      // A bundle is a directory holding the binary AND the metadata.
+      assert.ok(/copy_if_different[\s\S]*manifest\.ttl[\s\S]*plugin\.ttl/.test(cm),
+        `${s.name}: the .ttl files must be copied into the bundle next to the binary`);
+    }
+  });
+
+  it('builds a MODULE library and locates the LV2 headers with a real error if absent', () => {
+    for (const s of lv2Only()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      assert.equal(cmakeFirstArg(cm, 'add_library'), s.name,
+        `${s.name}: add_library target should be the plugin name`);
+      assert.match(cm, /add_library\(\s*\S+\s+MODULE/,
+        `${s.name}: an LV2 binary is dlopen'd and never linked against, so it must be MODULE, not SHARED`);
+      assert.ok(cm.includes('lv2/core/lv2.h'),
+        `${s.name}: must search for the real header path lv2/core/lv2.h`);
+      assert.ok(/FATAL_ERROR/.test(cm),
+        `${s.name}: a missing LV2 SDK must fail loudly rather than produce an unbuildable project`);
+      // LV2 core is header-only; there is nothing to link.
+      assert.ok(!cm.includes('target_link_libraries'),
+        `${s.name}: lv2 core is header-only, so linking a library would be wrong`);
+    }
+  });
+
+  it('initialises the descriptor with designated initialisers, not positional ones', () => {
+    const FIELDS = ['URI', 'instantiate', 'connect_port', 'activate', 'run',
+                    'deactivate', 'cleanup', 'extension_data'];
+    for (const s of lv2Only()) {
+      const c = s.files.get('Source/plugin.c');
+      for (const f of FIELDS) {
+        assert.match(c, new RegExp(`\\.${f}\\s*=`),
+          `${s.name}: LV2_Descriptor field .${f} is not set by name — a positional initialiser `
+          + 'silently breaks if the field order is misremembered');
+      }
+      assert.match(c, /LV2_SYMBOL_EXPORT\s+const\s+LV2_Descriptor\s*\*\s*lv2_descriptor\s*\(\s*uint32_t/,
+        `${s.name}: hosts resolve the exported symbol "lv2_descriptor"`);
+      assert.match(c, /static const LV2_Descriptor descriptor/,
+        `${s.name}: the descriptor should be static and const`);
+    }
+  });
+
+  it('is C, not C++', () => {
+    for (const s of lv2Only()) {
+      assert.ok(s.files.has('Source/plugin.c'), `${s.name}: expected Source/plugin.c`);
+      for (const rel of s.files.keys()) {
+        assert.ok(!rel.endsWith('.cpp') && !rel.endsWith('.h'),
+          `${s.name}: a native LV2 template should not scaffold ${rel}`);
+      }
+      const c = s.files.get('Source/plugin.c');
+      assert.ok(!/^\s*(class|template|namespace)\b/m.test(cppCode(c)),
+        `${s.name}: plugin.c contains C++ constructs`);
+      assert.match(c, /#include <stdlib\.h>/, `${s.name}: uses calloc/free without including <stdlib.h>`);
+    }
+  });
+
+  it('escapes a description that would otherwise break the Turtle literal', async () => {
+    const name = 'Lv2Quote' + Date.now().toString(36).slice(-4);
+    const r = await call('audio_plugin_create', {
+      projectPath: PROJ, name, type: 'lv2', vendor: 'acme',
+      description: 'A "quoted" and \\backslashed\\ description',
+    });
+    assert.equal(r.isError, false, `scaffold failed: ${r.text}`);
+    const ttl = fs.readFileSync(path.join(PLUGINS, name, 'Source', 'plugin.ttl'), 'utf8');
+    const line = ttl.split('\n').find(l => l.includes('doap:shortdesc'));
+    assert.ok(line, 'no doap:shortdesc line');
+    // Both the quote and the backslash must be escaped, or the literal ends
+    // early and the whole file fails to parse.
+    assert.match(line, /doap:shortdesc "A \\"quoted\\" and \\\\backslashed\\\\ description"/,
+      `description was not escaped for Turtle: ${line}`);
+  });
+
+  it('ignores the ui parameter and rejects a formats argument', async () => {
+    const generic = scaffolded.get('Lv2Gain');
+    const webview = scaffolded.get('lv2_gain');
+    assert.ok(generic && webview, 'both LV2 permutations must have scaffolded');
+    assert.deepEqual([...generic.files.keys()].sort(), [...webview.files.keys()].sort(),
+      'ui changed the file set for a native LV2 plugin');
+
+    const name = 'Lv2WithFormats' + Date.now().toString(36).slice(-4);
+    const r = await call('audio_plugin_create',
+      { projectPath: PROJ, name, type: 'lv2', formats: 'VST3' });
+    assert.equal(r.isError, true, 'a native LV2 plugin has no JUCE FORMATS list');
+    assert.match(r.text, /lv2/i, r.text);
+    assert.match(r.text, /juce/i,
+      'the message should distinguish native LV2 from the LV2 that type="juce" emits');
     assert.ok(!fs.existsSync(path.join(PLUGINS, name)),
       'a rejected scaffold must not leave a directory behind');
   });
