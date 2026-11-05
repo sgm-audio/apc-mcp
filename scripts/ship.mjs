@@ -80,7 +80,7 @@ if (NO_CHECK) {
 // ── Guard 2: git state ────────────────────────────────────────────
 const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout?.trim();
 if (!branch || branch === 'HEAD') {
-  stop('HEAD is detached. Check out a branch first.');
+  stop(`HEAD is detached, not "${REQUIRED_BRANCH}". Check out ${REQUIRED_BRANCH} first.`);
 }
 if (branch !== REQUIRED_BRANCH) {
   stop(`you are on "${branch}", not "${REQUIRED_BRANCH}".\n` +
