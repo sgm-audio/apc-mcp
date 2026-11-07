@@ -2,7 +2,7 @@
 //
 // These are NEGATIVE tests: they assert that the server *rejects* malicious or
 // malformed input. A security control with no negative tests is not a control.
-// Every test here maps to a finding in AUDIT.md (SEC-01, FUNC-04/05/07, QA-05, SEC-03).
+// Every test here maps to a finding in docs/archive/AUDIT.md (SEC-01, FUNC-04/05/07, QA-05, SEC-03).
 //
 // Fixtures live in os.tmpdir(), never in the repo, and are removed in after().
 

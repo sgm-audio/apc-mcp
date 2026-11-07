@@ -8,7 +8,7 @@
 //
 // Everything here is verified structurally, so it runs with no cmake, no JUCE
 // and no CLAP toolchain present. API shapes were checked against JUCE 9.0.3 and
-// free-audio/clap sources; see AUDIT.md.
+// free-audio/clap sources; see docs/archive/AUDIT.md.
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';

@@ -1,5 +1,11 @@
 # Changelog
 
+> Documentation now lives in [docs/](docs/README.md); the current state is in
+> [docs/project-status.md](docs/project-status.md). This file is the dated release
+> history and is read by `scripts/ship.mjs` before tagging. File names mentioned in
+> older entries (`TODO.md`, `AUDIT.md`, `HANDOFF.md`) reflect the pre-reorg layout:
+> those records are now in `docs/` and `docs/archive/`.
+
 ## [Unreleased] — 2.0.0
 
 > **Release note — two breaking changes**, so this ships as **2.0.0**, not 1.5.1:

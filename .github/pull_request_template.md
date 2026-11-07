@@ -6,7 +6,7 @@ the GitLab Ultimate code-quality gate is dropped, since CI runs on GitHub Action
 
 ## Description
 
-<!-- What does this PR change? Link the finding IDs from AUDIT.md if it closes any. -->
+<!-- What does this PR change? Link the finding IDs from docs/archive/AUDIT.md if it closes any. -->
 
 ## Type of change
 
@@ -46,7 +46,7 @@ the GitLab Ultimate code-quality gate is dropped, since CI runs on GitHub Action
 
 - [ ] A test fails against the **pre-change** code. Run it in a throwaway worktree:
       `git worktree add /tmp/red HEAD && cp tests/<new>.test.js /tmp/red/tests/`
-      (see `HANDOFF.md` §4). A control with no red phase is not a control.
+      (see `docs/development.md` §Adding a tool). A control with no red phase is not a control.
 
 ### If this is a release
 

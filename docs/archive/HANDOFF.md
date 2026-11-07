@@ -1,5 +1,14 @@
 # HANDOFF — apc-mcp completion guide
 
+> **ARCHIVED SNAPSHOT — not maintained.** This was a session handoff written in
+> 2026-10. Its phase log, test counts, line references and "what remains" list are
+> historical. For the current state see [Project status](../project-status.md),
+> the current [Roadmap](../roadmap.md), and the [Development guide](../development.md).
+> The original text below is preserved verbatim as evidence.
+>
+> ---
+>
+
 **For:** whoever picks this project up next (human or agent).
 **Written:** 2026-10-05, on branch `arena/353ee88c-apc-mcp`.
 **Read this first.** It contains the current state, the verified environment
