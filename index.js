@@ -56,8 +56,9 @@ const SAFE_REGEX = /^[\x20-\x7E]+$/;
 const SAFE_DESCRIPTION = /^[\x20-\x7E]+$/;
 // JUCE format list: semicolon-separated format names
 const SAFE_FORMATS = /^[a-zA-Z0-9_;-]+$/;
-// Project path: block shell metacharacters
-const SAFE_PATH = /^[a-zA-Z0-9_ /.\-:@~]+$/;
+// Project path: block shell metacharacters. Backslash is required for native
+// Windows paths; paths reach filesystem APIs or discrete argv entries, not a shell.
+const SAFE_PATH = /^[a-zA-Z0-9_ /\\.\-:@~]+$/;
 
 function validatePath(p) {
   if (!SAFE_PATH.test(p)) {
@@ -211,8 +212,9 @@ function trySpawn(cmd, args, opts = {}) {
   }
 
   const output = result.stdout || '';
-  if (result.status === 0) return { ok: true, output };
   const stderr = result.stderr || '';
+  // Compilers commonly write warnings to stderr even on a successful build.
+  if (result.status === 0) return { ok: true, output, stderr };
   return {
     ok: false,
     output,
@@ -724,6 +726,21 @@ function registerTool(name, schema, handler) {
   });
 }
 
+function buildNeedsConfigure(buildDir, config) {
+  const cachePath = path.join(buildDir, 'CMakeCache.txt');
+  if (!fs.existsSync(cachePath)) return true;
+  let cache;
+  try { cache = fs.readFileSync(cachePath, 'utf8'); }
+  catch { return true; }
+
+  // Multi-config generators select with --config at build time. Single-config
+  // generators ignore it and must be regenerated when CMAKE_BUILD_TYPE changes.
+  const multi = cache.match(/^CMAKE_CONFIGURATION_TYPES:STRING=(.*)$/m)?.[1]?.trim();
+  if (multi) return false;
+  const configured = cache.match(/^CMAKE_BUILD_TYPE:(?:STRING|UNINITIALIZED)=(.*)$/m)?.[1]?.trim() ?? '';
+  return configured !== config;
+}
+
 // ─── audio_plugin_build ────────────────────────────────────────────
 registerTool(
   'audio_plugin_build',
@@ -746,17 +763,7 @@ registerTool(
 
     // Auto-configure when unconfigured, or when a single-config cache has a
     // different CMAKE_BUILD_TYPE than the requested config.
-    const cachePath = path.join(buildDir, 'CMakeCache.txt');
-    let needsConfigure = !fs.existsSync(cachePath);
-    if (!needsConfigure) {
-      try {
-        const cacheText = fs.readFileSync(cachePath, 'utf-8');
-        const cachedType = cacheText.match(/^CMAKE_BUILD_TYPE:(?:STRING|UNINITIALIZED)=(.+)$/m)?.[1]?.trim();
-        if (cachedType && cachedType !== config) needsConfigure = true;
-      } catch { /* proceed to build */ }
-    }
-
-    if (needsConfigure) {
+    if (buildNeedsConfigure(buildDir, config)) {
       fs.mkdirSync(buildDir, { recursive: true });
       const cfgArgs = [
         '-B', buildDir,
