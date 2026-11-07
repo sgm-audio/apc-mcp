@@ -18,34 +18,29 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/sgm-audio/apc-mcp" alt="License"></a>
 </p>
 
-**apc-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server for audio plugin development. It wraps the tools you already use — **CMake**, **ctest**, **clang-format**, **pluginval**, **clap-validator** — into a clean MCP tool interface for building, testing, linting, validating, and scaffolding plugin projects across JUCE, CLAP and VST3 formats.
+**apc-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server for audio plugin development. It wraps the tools you already use — **CMake**, **ctest**, **clang-format**, **pluginval**, **clap-validator** — into a clean MCP tool interface for building, testing, linting, validating, and scaffolding plugin projects across JUCE, CLAP, VST3, and LV2 formats.
 
 Works with any MCP client: Claude Code, OpenCode, VS Code with MCP, Continue.dev, and more.
 
-> **Project status.** A full build/QA/security audit found **36 defects** —
-> including a path traversal in `audio_plugin_lint` that allowed arbitrary writes
-> outside the project, scaffold templates that could neither configure nor
-> compile, and tools that reported success when the underlying command had failed.
-> `package.json` on `main` is version **2.0.0**, but there is no `v2.0.0` tag or
-> release (latest tag: `v1.5.0`) and it is not on npm.
+> **Project status.** A full build/QA/security audit and follow-up bug hunt
+> hardened security boundaries (including symlink-aware containment and
+> C++/CMake/Turtle template escaping), rewrote all five scaffold templates
+> (`clap`, `juce`, `juce-webview`, `lv2`, `standalone`) against verified
+> upstream JUCE 9, CLAP, and LV2 APIs, and fixed validator/build/lint/test CLI
+> handling.
 >
-> Checked 2026-10-31 on Linux, Node 24: `npm test` runs 147 tests — 141 pass,
-> 2 skip, 4 fail. The 4 failures are the C++ compile checks; with no system
-> C++ compiler they cannot pass, and with the zig-clang wrapper used for this
-> check they failed on a toolchain cache error, so those checks remain
-> unverified. `npm run lint` passes.
+> Current baseline on Node 22+: `npm run check` passes cleanly — ESLint (0
+> warnings), **189 tests** (`node:test`, including real `gcc`/`g++` compile
+> checks against JUCE 9, `free-audio/clap`, and `lv2/lv2` headers), `10/10`
+> scaffold smoke cases, `0` `npm audit` vulnerabilities, and `163/163`
+> allowlisted lockfile licenses.
 >
-> CI: GitHub Actions does run on this repo (100 most recent runs: 64 success,
-> 36 failure). The recent `CI` and `CodeQL` runs since 2026-10-20 have failed.
->
-> Releases: `v1.4.0`, `v1.4.1` and `v1.5.0` exist as git tags.
-> [`SECURITY.md`](SECURITY.md) states that 1.4.0 and 1.5.0 have the path traversal.
-> `@sgm-audio/apc-mcp` is not on npm. An npm package named `apc-mcp`
-> exists (0.1.0, 0.2.0); its link to this repo was not checked.
->
-> [`AUDIT.md`](AUDIT.md) has the findings and evidence;
-> [`HANDOFF.md`](HANDOFF.md) has what remains and how to verify it;
-> [`TODO.md`](TODO.md) has the unbuilt feature scope (ARA, LV2).
+> `package.json` on `main` is version **2.0.0** (not yet tagged/published to
+> npm; latest git tag is `v1.5.0`). [`SECURITY.md`](SECURITY.md) documents why
+> `1.4.0` and `1.5.0` should not be used on untrusted inputs.
+> [`AUDIT.md`](AUDIT.md) has the original audit record, [`HANDOFF.md`](HANDOFF.md)
+> has the engineering guide, and [`TODO.md`](TODO.md) tracks the remaining ARA
+> template work.
 
 ---
 
@@ -65,7 +60,7 @@ Add one entry to your MCP config — no npm, no clone, no setup:
 }
 ```
 
-`npx` fetches the repo and caches it.
+`npx` fetches the repo and caches it (published npm package name: `@sgm-audio/apc-mcp`). You can also check the installed binary version directly with `apc-mcp --version`.
 
 ### Requirements
 
@@ -73,8 +68,8 @@ Add one entry to your MCP config — no npm, no clone, no setup:
 - **CMake 3.22+** — required for build/configure tools
 - **clang-format** — required for lint tool
 - **pluginval** — required for VST3 validation
-- **clap-validator** — required for CLAP validation
-- A JUCE/CLAP/VST3 audio plugin project with a `plugins/` directory
+- **clap-validator** — required for CLAP validation (`free-audio/clap-validator`)
+- A JUCE, CLAP, VST3, or LV2 audio plugin project with a `plugins/` directory
 
 ---
 
@@ -85,10 +80,10 @@ Add one entry to your MCP config — no npm, no clone, no setup:
 | [`audio_plugin_build`](#build) | CMake configure + build with parsed error/warning counts |
 | [`audio_plugin_configure`](#configure) | CMake configure with custom generator and flags |
 | [`audio_plugin_test`](#test) | ctest runner with pass/fail/total summary |
-| [`audio_plugin_lint`](#lint) | clang-format check (dry-run) or auto-fix on C++ sources |
+| [`audio_plugin_lint`](#lint) | clang-format check (dry-run) or auto-fix on C/C++ sources |
 | [`audio_plugin_plugins`](#list-plugins) | Discover plugins with metadata — text or JSON output |
 | [`audio_plugin_validate`](#validate) | Run pluginval (VST3) or clap-validator on built binaries |
-| [`audio_plugin_create`](#scaffold) | Scaffold a new CLAP or JUCE plugin from production templates |
+| [`audio_plugin_create`](#scaffold) | Scaffold a new CLAP, JUCE, VST3, LV2, or standalone target |
 
 ### Build
 
@@ -151,27 +146,30 @@ audio_plugin_create(name="Phaser9000", type="clap")
 audio_plugin_create(name="MyVerb", type="juce", vendor="MyCompany", formats="VST3;AU")
 audio_plugin_create(name="SimpleDelay", type="clap", vendor="MyCompany", description="A simple delay effect")
 audio_plugin_create(name="MyVerb", type="juce", ui="webview", vendor="MyCompany")
+audio_plugin_create(name="Lv2Gain", type="lv2", vendor="MyCompany")
 audio_plugin_create(name="ToneGen", type="standalone", vendor="MyCompany")
 ```
 
-Generates a working plugin stub: `CMakeLists.txt`, source files, and either a
-modern CLAP entry (the `clap_entry` → plugin-factory chain) or a JUCE
-`AudioProcessor` structure.
+Generates a working plugin or app stub: `CMakeLists.txt`, source files, and a
+CLAP factory/entry + `CLAP_EXT_AUDIO_PORTS` plugin, a JUCE `AudioProcessor` /
+`AudioAppComponent`, or a native C11 LV2 bundle with Turtle metadata.
 
 **`type`** — which template to scaffold:
 
 | `type` | Template | Notes |
 |---|---|---|
-| `clap` *(default)* | `templates/clap/` | Plain C++ against the free-audio/clap headers. Vendors CLAP at `_tools/clap` or finds an installed `clap-config.cmake`. |
+| `clap` *(default)* | `templates/clap/` | C++20 `MODULE` plugin against `free-audio/clap` headers with stereo `CLAP_EXT_AUDIO_PORTS` (CFBundle on macOS, single `.clap` DSO on Linux/Windows). Vendors CLAP at `_tools/clap` or finds an installed `clap-config.cmake`. |
 | `juce` | `templates/juce/` or `templates/juce-webview/` | Full `juce_add_plugin` project. `formats` accepts any of JUCE's: `AU AUv3 AAX LV2 Standalone Unity VST VST3`. |
 | `vst3` | same JUCE templates | Convenience alias that defaults `formats` to VST3. |
+| `lv2` | `templates/lv2/` | Native LV2 plugin in pure C11 against `lv2/core/lv2.h` plus `manifest.ttl` and `plugin.ttl` (unrelated to JUCE's C++ `LV2` format target). |
 | `standalone` | `templates/standalone/` | A standalone audio **application**, not a plugin: `juce_add_gui_app` builds one executable that owns its audio device via `AudioAppComponent`. Scaffolds `Source/Main.cpp` (a `JUCEApplication` plus its `DocumentWindow`) and `Source/MainComponent.{h,cpp}` (a 440 Hz sine generator with a level slider). Has no `FORMATS`, so passing `formats` with this type is rejected rather than silently ignored. |
 
 > `type="ara"` was removed in 2.0.0. It emitted `FORMATS ARA`, which
-> `juce_add_plugin` does not accept, from a plain `juce::AudioProcessor` rather
-> than `juce::ARAAudioProcessor` — so it reported success while scaffolding a
-> plugin that could never configure. ARA is a JUCE *effect mode*
-> (`IS_ARA_EFFECT`), not a format; it will return with a real template.
+> `juce_add_plugin` does not accept, from a plain `juce::AudioProcessor`
+> without `juce::AudioProcessorARAExtension` /
+> `juce::ARADocumentControllerSpecialisation` — so it reported success while
+> scaffolding a plugin that could never configure. ARA is a JUCE *effect mode*
+> (`IS_ARA_EFFECT`), not a format; it will return with a dedicated template.
 
 **`ui`** — editor style, for the JUCE templates only:
 
@@ -180,12 +178,14 @@ modern CLAP entry (the `clap_entry` → plugin-factory chain) or a JUCE
 | `generic` *(default)* | `juce::GenericAudioProcessorEditor` — sliders for every parameter, no UI code to write. |
 | `webview` | A `juce::WebBrowserComponent` editor serving an embedded HTML/CSS/JS UI from BinaryData, with a two-way bridge: C++ pushes state via `window.updateState(...)`, and JS calls back by navigating to `apc://callback?action=...&data=...`. Edit `Source/UI/{index.html,style.css,app.js}`. |
 
-`ui` applies to the JUCE *plugin* types only. `clap` ships its own editor and
-`standalone` ships its own window, so both ignore it.
+`ui` applies to the JUCE *plugin* types (`juce`, `vst3`) only. `clap` and `lv2`
+are headless DSP scaffolds, and `standalone` ships its own `AudioAppComponent`
+window, so all three ignore `ui`.
 
 The webview template needs a browser backend, so its `CMakeLists.txt` sets
-`NEEDS_WEB_BROWSER TRUE` and `NEEDS_WEBVIEW2 TRUE` — WebView2 on Windows, WebKit
-on Linux, WKWebView on macOS.
+`NEEDS_WEB_BROWSER TRUE`, `NEEDS_WEBVIEW2 TRUE`, and
+`JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1` — WebView2 on Windows, WebKit on
+Linux, WKWebView on macOS.
 
 ---
 
@@ -231,8 +231,9 @@ my-plugin/
 git clone https://github.com/sgm-audio/apc-mcp.git
 cd apc-mcp
 npm install
-npm test          # 147 tests, node:test (compile checks need g++ or clang++)
-npm run lint      # syntax check on the server code itself
+npm test          # 189 tests, node:test (compile checks need gcc/g++ or clang/clang++)
+npm run lint      # ESLint + syntax check on server, scripts, tests, and WebView JS
+npm run check     # Full gate: lint + test + scaffold smoke + npm audit + license check
 ```
 
 ### Project structure
@@ -241,28 +242,29 @@ npm run lint      # syntax check on the server code itself
 apc-mcp/
 ├── index.js                    # MCP server — single file, 7 tools
 ├── templates/
-│   ├── clap/                   # CLAP scaffold (modern factory/entry API)
+│   ├── clap/                   # CLAP scaffold (modern factory/entry + audio-ports API)
 │   ├── juce/                   # JUCE scaffold, generic editor
 │   ├── juce-webview/           # JUCE scaffold + WebBrowserComponent UI
 │   │   └── Source/UI/          # the HTML/CSS/JS you edit
+│   ├── lv2/                    # Native C11 LV2 scaffold + Turtle metadata
 │   └── standalone/             # JUCE *application* (juce_add_gui_app), not a plugin
-├── tests/                      # 147 tests, node:test, no framework
+├── tests/                      # 189 tests, node:test, no framework
 │   ├── helpers/mcp-client.mjs  # shared MCP stdio client (full handshake)
 │   ├── fixtures/juce-api-stub/ # transcribed JUCE 9 API, for compile checks
-│   ├── server.test.js          # happy path
-│   ├── security.test.js        # negative / rejection tests
+│   ├── server.test.js          # happy path + CLI flags
+│   ├── security.test.js        # negative / traversal / symlink rejection tests
 │   ├── tool-output.test.js     # config precedence, parsers, failure reporting
 │   ├── templates.test.js       # generated-project structure (no toolchain)
-│   ├── artefacts.test.js       # build-artefact discovery per JUCE's real layout
-│   ├── cpp-api.test.js         # real g++/clang++ over generated sources
-│   └── release.test.js         # versioning, CI pins, release guards
+│   ├── artefacts.test.js       # build-artefact discovery per JUCE/CLAP/LV2 layouts
+│   ├── cpp-api.test.js         # real gcc/g++/clang over generated C/C++ sources
+│   └── release.test.js         # versioning, CI pins, SPDX license & release guards
 ├── scripts/
 │   ├── smoke-scaffold.mjs      # npm run smoke — scaffold every type x ui
 │   ├── check-licenses.mjs      # npm run licenses — lockfile license gate
 │   └── ship.mjs                # npm run ship — guarded tag + push
 ├── .github/
 │   ├── workflows/
-│   │   ├── publish.yml         # CI: test, compile-scaffold, scaffold-{clap,juce},
+│   │   ├── publish.yml         # CI: test, compile-scaffold, scaffold-{clap,lv2,juce},
 │   │   │                       #     license, publish on v* tags
 │   │   └── codeql.yml          # CodeQL security analysis
 │   ├── dependabot.yml          # Automated dependency updates

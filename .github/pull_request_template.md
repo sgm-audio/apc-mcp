@@ -33,9 +33,9 @@ the GitLab Ultimate code-quality gate is dropped, since CI runs on GitHub Action
 ### If you touched `templates/`
 
 - [ ] `npm run smoke` passes, and `node scripts/smoke-scaffold.mjs --configure` if
-      you have cmake plus `APC_JUCE_DIR` / `APC_CLAP_DIR`
-- [ ] `APC_CLAP_INCLUDE=<clap>/include node --test tests/cpp-api.test.js` reports
-      **0 skipped**
+      you have cmake plus `APC_JUCE_DIR` / `APC_CLAP_DIR` / `APC_LV2_DIR`
+- [ ] `APC_CLAP_INCLUDE=<clap>/include APC_LV2_INCLUDE=<lv2>/include node --test tests/cpp-api.test.js`
+      reports **0 skipped**
 - [ ] Every CMake keyword used actually exists — `juce_add_plugin` has **no
       unparsed-argument check**, so an unknown keyword is silently dropped, not
       reported. Verify against JUCE's `extras/Build/CMake/JUCEUtils.cmake`.

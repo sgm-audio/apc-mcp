@@ -200,14 +200,37 @@ describe('artefact discovery (findPluginBinaries)', () => {
       `the bundle is the .lv2 directory: ${paths[0]}`);
   });
 
-  it('still finds a CLAP bundle', async () => {
-    // Regression guard: the CLAP branch already scanned the directory.
+  it('still finds a CLAP macOS bundle directory', async () => {
     const proj = plantProject('p-clap', {
       'my-clap/my-clap_artefacts/Release/CLAP/my-clap.clap/Contents/MacOS/my-clap': 'exe',
     });
     const paths = discoveredPaths(await validate(proj)).filter(p => p.includes('CLAP'));
     assert.equal(paths.length, 1, paths.join(' | '));
     assert.ok(paths[0].endsWith(path.join('CLAP', 'my-clap.clap')), paths[0]);
+  });
+
+  it('finds a Linux/Windows single-file .clap shared library', async () => {
+    const proj = plantProject('p-clap-file', {
+      'my-clap/my-clap_artefacts/Release/CLAP/my-clap.clap': 'file',
+    });
+    const paths = discoveredPaths(await validate(proj)).filter(p => p.includes('CLAP'));
+    assert.equal(paths.length, 1, paths.join(' | '));
+    assert.ok(paths[0].endsWith(path.join('CLAP', 'my-clap.clap')), paths[0]);
+  });
+
+  it('honours custom pluginsDir from apc-mcp.json when scanning build artefacts', async () => {
+    const proj = path.join(ROOT, 'p-custom-pluginsdir');
+    fs.mkdirSync(path.join(proj, 'build', 'modules', 'ModVerb', 'ModVerb_artefacts', 'Release', 'VST3', 'ModVerb.vst3'), { recursive: true });
+    fs.writeFileSync(path.join(proj, 'CMakeLists.txt'), 'cmake_minimum_required(VERSION 3.22)\nproject(pmod)\n');
+    fs.writeFileSync(path.join(proj, 'apc-mcp.json'), JSON.stringify({
+      buildDir: 'build',
+      pluginsDir: 'modules',
+      config: 'Release',
+      validateFormats: ['VST3'],
+    }));
+    const paths = discoveredPaths(await validate(proj));
+    assert.equal(paths.length, 1, `custom pluginsDir="modules" was ignored: ${paths.join(' | ')}`);
+    assert.ok(paths[0].endsWith(path.join('VST3', 'ModVerb.vst3')), paths[0]);
   });
 
   it('finds every format of a multi-format build at once', async () => {

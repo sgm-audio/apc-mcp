@@ -25,10 +25,12 @@ namespace
 
         for (const auto &part : juce::StringArray::fromTokens (query, "&", ""))
         {
-            const auto kv = juce::StringArray::fromTokens (part, "=", "");
-
-            if (kv.size() == 2)
-                params.set (kv[0].trim(), juce::URL::removeEscapeChars (kv[1].trim()));
+            if (part.contains ("="))
+            {
+                const auto key = part.upToFirstOccurrenceOf ("=", false, false).trim();
+                const auto val = part.fromFirstOccurrenceOf ("=", false, false).trim();
+                params.set (key, juce::URL::removeEscapeChars (val));
+            }
         }
 
         return params;

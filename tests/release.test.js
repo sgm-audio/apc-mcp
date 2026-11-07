@@ -16,6 +16,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { initializeInfo, PROJECT_ROOT } from './helpers/mcp-client.mjs';
+import { evaluateSpdx } from '../scripts/check-licenses.mjs';
 
 const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf8'));
 const WORKFLOWS = path.join(PROJECT_ROOT, '.github', 'workflows');
@@ -92,24 +93,12 @@ describe('OPS-02 · a failed publish must fail the workflow', () => {
       'publish needs NPM_TOKEN from secrets');
   });
 
-  it('publish is gated on the checks that can actually run', () => {
+  it('publish is gated on every verification job', () => {
     const text = workflowText('publish.yml');
     const needs = /^\s*needs:\s*\[([^\]]+)\]/m.exec(text)?.[1]
       ?.split(',').map(s => s.trim()).filter(Boolean) ?? [];
-    assert.ok(needs.includes('test'), `publish must need test: ${needs.join(', ')}`);
-    assert.ok(needs.includes('license'), `publish must need license: ${needs.join(', ')}`);
-    // scaffold-juce is deliberately excluded until it has one green run — see the
-    // comment in the workflow and HANDOFF.md §7.
-    assert.ok(!needs.includes('scaffold-juce'),
-      'scaffold-juce has never had a green run; do not gate publishing on it yet');
-    // The gating policy, stated as a test rather than as a comment nobody reads:
-    // a scaffold job gates the release when it needs nothing but cmake, a
-    // compiler and a git clone — no apt packages whose names can move when
-    // ubuntu-latest is rebased. scaffold-clap and scaffold-lv2 qualify;
-    // scaffold-juce installs JUCE's Linux dependency list and does not.
-    for (const cheap of ['scaffold-clap', 'scaffold-lv2']) {
-      assert.ok(needs.includes(cheap),
-        `${cheap} has no apt surface to drift, so publishing should be gated on it: ${needs.join(', ')}`);
+    for (const job of ['test', 'license', 'compile-scaffold', 'scaffold-clap', 'scaffold-lv2', 'scaffold-juce']) {
+      assert.ok(needs.includes(job), `publish must need ${job}: ${needs.join(', ')}`);
     }
   });
 });
@@ -238,12 +227,30 @@ describe('OPS-05 · ship cannot tag a branch it is not on', () => {
     assert.equal(tags, '', `dry run left a tag behind: ${tags}`);
   });
 
-  it('the guard script is executable and syntactically valid', () => {
-    const p = path.join(PROJECT_ROOT, 'scripts', 'ship.mjs');
-    const mode = fs.statSync(p).mode & 0o111;
-    assert.ok(mode !== 0, 'scripts/ship.mjs should be executable');
-    const check = spawnSync(process.execPath, ['--check', p], { encoding: 'utf-8' });
-    assert.equal(check.status, 0, check.stderr);
+  it('all shebang scripts in scripts/ are executable and syntactically valid', () => {
+    for (const script of ['ship.mjs', 'check-licenses.mjs', 'smoke-scaffold.mjs']) {
+      const p = path.join(PROJECT_ROOT, 'scripts', script);
+      const mode = fs.statSync(p).mode & 0o111;
+      assert.ok(mode !== 0, `scripts/${script} has a shebang and should be executable`);
+      const check = spawnSync(process.execPath, ['--check', p], { encoding: 'utf-8' });
+      assert.equal(check.status, 0, check.stderr);
+    }
+  });
+});
+
+describe('SPDX license evaluator handles compound & WITH expressions', () => {
+  const allow = new Set(['MIT', 'Apache-2.0', 'BSD-3-Clause']);
+
+  it('does not truncate trailing AND obligations after WITH', () => {
+    const r = evaluateSpdx('Apache-2.0 WITH LLVM-exception AND GPL-3.0-only', allow);
+    assert.equal(r.ok, false, `WITH truncation let GPL pass: ${JSON.stringify(r)}`);
+  });
+
+  it('evaluates parenthesised OR inside AND', () => {
+    assert.equal(evaluateSpdx('MIT AND (Apache-2.0 OR BSD-3-Clause)', allow).ok, true);
+    assert.equal(evaluateSpdx('(MIT OR GPL-2.0-only) AND GPL-3.0-only', allow).ok, false);
+    assert.equal(evaluateSpdx('GPL-3.0-only OR MIT', allow).ok, true);
+    assert.equal(evaluateSpdx('MIT AND GPL-3.0-only', allow).ok, false);
   });
 });
 

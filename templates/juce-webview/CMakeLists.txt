@@ -21,7 +21,7 @@ juce_add_plugin({{PLUGIN_NAME}}
     VERSION 1.0.0
     FORMATS {{PLUGIN_FORMATS}}
     PRODUCT_NAME "{{PLUGIN_DISPLAY_NAME}}"
-    DESCRIPTION "{{PLUGIN_DESCRIPTION}}"
+    DESCRIPTION "{{PLUGIN_DESCRIPTION_CMAKE}}"
     COMPANY_NAME "{{VENDOR}}"
     COMPANY_WEBSITE "https://{{VENDOR}}.com"
     COMPANY_EMAIL "dev@{{VENDOR}}.com"
@@ -70,6 +70,9 @@ juce_add_binary_data({{PLUGIN_ID}}_WebData
 target_compile_definitions({{PLUGIN_NAME}} PUBLIC
     # Must be 1 — WebViewEditor uses juce::WebBrowserComponent.
     JUCE_WEB_BROWSER=1
+    # Required on Windows alongside NEEDS_WEBVIEW2 TRUE so JUCE enables
+    # JUCE_USE_WIN_WEBVIEW2 and JUCE_WEB_BROWSER_RESOURCE_PROVIDER_AVAILABLE.
+    JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
     JUCE_MODAL_LOOPS_PERMITTED=1

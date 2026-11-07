@@ -318,11 +318,14 @@ describe('FUNC-02/15 · WebView template uses the real JUCE 9 browser API', () =
     }
   });
 
-  it('asks for a web browser backend', () => {
+  it('asks for a web browser backend, including static WebView2 on Windows', () => {
     for (const s of juceOnly('webview')) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       assert.ok(/NEEDS_WEB_BROWSER\s+TRUE/.test(cm), `${s.name}: NEEDS_WEB_BROWSER not TRUE`);
+      assert.ok(/NEEDS_WEBVIEW2\s+TRUE/.test(cm), `${s.name}: NEEDS_WEBVIEW2 not TRUE`);
       assert.ok(/JUCE_WEB_BROWSER=1/.test(cm), `${s.name}: JUCE_WEB_BROWSER must be 1`);
+      assert.ok(/JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1/.test(cm),
+        `${s.name}: NEEDS_WEBVIEW2 TRUE requires JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1 on Windows`);
     }
   });
 
@@ -419,12 +422,31 @@ describe('FUNC-13/20 · CLAP template targets the modern CLAP API', () => {
     }
   });
 
-  it('emits into the artefacts layout audio_plugin_validate scans', () => {
+  it('emits a MODULE .clap binary/bundle into the artefacts layout audio_plugin_validate scans', () => {
     for (const s of claps()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
-      const expected = `plugins/${s.name}/${s.name}_artefacts/$<CONFIG>/CLAP/${s.name}.clap`;
-      assert.ok(cm.includes(expected),
-        `${s.name}: validate scans <build>/${expected} — a scaffolded CLAP could never be validated`);
+      assert.match(cm, new RegExp(`add_library\\(\\s*${s.name}\\s+MODULE\\b`),
+        `${s.name}: CLAP plugin must be a MODULE library, not SHARED`);
+      const expectedDir = `plugins/${s.name}/${s.name}_artefacts/$<CONFIG>/CLAP`;
+      assert.ok(cm.includes(expectedDir),
+        `${s.name}: validate scans <build>/${expectedDir} — a scaffolded CLAP could never be validated`);
+      assert.ok(!cm.includes(`${expectedDir}/${s.name}.clap"`),
+        `${s.name}: LIBRARY_OUTPUT_DIRECTORY must not create a ${s.name}.clap/ directory on Linux/Windows`);
+      assert.ok(cm.includes('BUNDLE_EXTENSION clap'), `${s.name}: macOS CFBundle needs BUNDLE_EXTENSION clap`);
+      assert.ok(cm.includes('PREFIX ""') && cm.includes('SUFFIX ".clap"'),
+        `${s.name}: Linux/Windows DSO must have PREFIX "" and SUFFIX ".clap"`);
+    }
+  });
+
+  it('implements CLAP_EXT_AUDIO_PORTS and returns CLAP_PROCESS_CONTINUE on 0-port transport calls', () => {
+    for (const s of claps()) {
+      const cpp = cppCode(s.files.get('Source/PluginProcessor.cpp'));
+      assert.ok(cpp.includes('CLAP_EXT_AUDIO_PORTS'),
+        `${s.name}: stereo audio effect must expose CLAP_EXT_AUDIO_PORTS`);
+      assert.ok(cpp.includes('clap_plugin_audio_ports_t'),
+        `${s.name}: expected clap_plugin_audio_ports_t vtable`);
+      assert.match(cpp, /audio_inputs_count\s*==\s*0[\s\S]{0,120}CLAP_PROCESS_CONTINUE/,
+        `${s.name}: 0-port transport calls must return CLAP_PROCESS_CONTINUE, not CLAP_PROCESS_ERROR`);
     }
   });
 });
@@ -878,6 +900,39 @@ describe('native LV2 template', () => {
     // early and the whole file fails to parse.
     assert.match(line, /doap:shortdesc "A \\"quoted\\" and \\\\backslashed\\\\ description"/,
       `description was not escaped for Turtle: ${line}`);
+  });
+
+  it('escapes quotes, backslashes, dollar signs, and avoids cross-variable expansion in CLAP and JUCE descriptions', async () => {
+    const desc = 'A "warm" \\delay\\ with ${CMAKE_VAR} and {{VENDOR}}';
+    const rClap = await call('audio_plugin_create', {
+      projectPath: PROJ, name: 'ClapEscaped', type: 'clap', vendor: 'acme', description: desc,
+    });
+    assert.equal(rClap.isError, false, rClap.text);
+    const clapCpp = fs.readFileSync(path.join(PLUGINS, 'ClapEscaped', 'Source', 'PluginProcessor.cpp'), 'utf8');
+    const descLine = clapCpp.split('\n').find(l => l.includes('.description'));
+    assert.ok(descLine?.includes('\\"warm\\"') && descLine.includes('\\\\delay\\\\'),
+      `CLAP C++ description was not escaped: ${descLine}`);
+    assert.ok(descLine.includes('{{VENDOR}}') && !descLine.includes('acme'),
+      `replaceTemplateVars cross-expanded {{VENDOR}} inside description: ${descLine}`);
+
+    const rJuce = await call('audio_plugin_create', {
+      projectPath: PROJ, name: 'JuceEscaped', type: 'juce', vendor: 'acme', description: desc,
+    });
+    assert.equal(rJuce.isError, false, rJuce.text);
+    const juceCmake = fs.readFileSync(path.join(PLUGINS, 'JuceEscaped', 'CMakeLists.txt'), 'utf8');
+    const cmLine = juceCmake.split('\n').find(l => l.trim().startsWith('DESCRIPTION '));
+    assert.ok(cmLine?.includes('\\"warm\\"') && cmLine.includes('\\${CMAKE_VAR}'),
+      `CMake DESCRIPTION was not escaped: ${cmLine}`);
+    assert.ok(cmLine.includes('{{VENDOR}}') && !cmLine.includes('and acme'),
+      `replaceTemplateVars cross-expanded {{VENDOR}} inside CMake DESCRIPTION: ${cmLine}`);
+  });
+
+  it('enables C in LV2 CMakeLists so C++-only host projects can add_subdirectory it', () => {
+    for (const s of lv2Only()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      assert.match(cm, /\benable_language\s*\(\s*C\s*\)/,
+        `${s.name}: missing enable_language(C) breaks host projects with project(... LANGUAGES CXX)`);
+    }
   });
 
   it('ignores the ui parameter and rejects a formats argument', async () => {

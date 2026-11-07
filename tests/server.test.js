@@ -13,10 +13,11 @@
 
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { call, listTools } from './helpers/mcp-client.mjs';
+import { call, listTools, PROJECT_ROOT } from './helpers/mcp-client.mjs';
 
 const TOOL_NAMES = [
   'audio_plugin_build',
@@ -138,6 +139,39 @@ describe('apc-mcp MCP server', () => {
       assert.equal(plugins.length, 1);
       assert.equal(plugins[0]?.name, 'Foo');
       assert.equal(plugins[0]?.type, 'CLAP');
+    });
+    it('surfaces statusError in text mode, prevents status.json from spoofing name, and tolerates broken symlinks', async () => {
+      const dir = withProject('status-guards');
+      const pluginDir = path.join(dir, 'plugins', 'RealName');
+      fs.mkdirSync(pluginDir);
+      fs.writeFileSync(path.join(pluginDir, 'CMakeLists.txt'), '');
+      fs.writeFileSync(path.join(pluginDir, 'status.json'), JSON.stringify({ name: 'SpoofedName', type: 'VST3' }));
+      fs.symlinkSync(path.join(dir, 'nonexistent-target'), path.join(dir, 'plugins', 'DanglingLink'));
+
+      const rJson = await call('audio_plugin_plugins', { projectPath: dir, format: 'json' });
+      assert.equal(rJson.isError, false, textOf(rJson));
+      const parsed = JSON.parse(textOf(rJson));
+      assert.equal(parsed[0]?.name, 'RealName', 'status.json overwrote canonical directory name');
+
+      fs.writeFileSync(path.join(pluginDir, 'status.json'), '{ broken json');
+      const rText = await call('audio_plugin_plugins', { projectPath: dir, format: 'text' });
+      assert.equal(rText.isError, false, textOf(rText));
+      assert.match(textOf(rText), /status\.json is unreadable/, 'text mode hid statusError');
+    });
+  });
+
+  describe('CLI flags (--version / --help)', () => {
+    it('prints version and exits 0 without hanging on stdin', () => {
+      const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf8'));
+      const r = spawnSync(process.execPath, [path.join(PROJECT_ROOT, 'index.js'), '--version'],
+        { encoding: 'utf-8', timeout: 5000 });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout.trim(), pkg.version);
+
+      const h = spawnSync(process.execPath, [path.join(PROJECT_ROOT, 'index.js'), '--help'],
+        { encoding: 'utf-8', timeout: 5000 });
+      assert.equal(h.status, 0, h.stderr);
+      assert.match(h.stdout, /Usage: apc-mcp/);
     });
   });
 
