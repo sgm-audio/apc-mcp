@@ -49,11 +49,30 @@
 #include <vector>
 #include <cmath>
 
-#define JUCE_WINDOWS 0
-#define JUCE_MAC 0
-#define JUCE_LINUX 1
-#define JUCE_WEB_BROWSER 1
-#define JUCE_WEB_BROWSER_RESOURCE_PROVIDER_AVAILABLE 1
+#ifndef JUCE_WINDOWS
+ #define JUCE_WINDOWS 0
+#endif
+#ifndef JUCE_MAC
+ #define JUCE_MAC 0
+#endif
+#ifndef JUCE_LINUX
+ #define JUCE_LINUX (! (JUCE_WINDOWS || JUCE_MAC))
+#endif
+#ifndef JUCE_WEB_BROWSER
+ #define JUCE_WEB_BROWSER 1
+#endif
+#ifndef JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING
+ #define JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING 0
+#endif
+#ifndef JUCE_USE_WIN_WEBVIEW2
+ #if JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING
+  #define JUCE_USE_WIN_WEBVIEW2 1
+ #else
+  #define JUCE_USE_WIN_WEBVIEW2 0
+ #endif
+#endif
+#define JUCE_WEB_BROWSER_RESOURCE_PROVIDER_AVAILABLE \
+    (JUCE_MAC || JUCE_LINUX || (JUCE_WINDOWS && JUCE_USE_WIN_WEBVIEW2))
 #define JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(C) \
     C (const C &) = delete; C &operator= (const C &) = delete;
 
@@ -72,6 +91,8 @@ namespace juce
         String (const char *) {}
         String (const std::string &) {}
         String fromFirstOccurrenceOf (const String &, bool, bool) const { return {}; }
+        String upToFirstOccurrenceOf (const String &, bool, bool) const { return {}; }
+        bool contains (const String &) const { return false; }
         bool startsWith (const String &) const { return false; }
         String trim() const { return {}; }
         double getDoubleValue() const { return 0.0; }
@@ -484,9 +505,11 @@ namespace juce
         class Options
         {
         public:
-            enum class Backend { browser, webview2 };
+            enum class Backend { defaultBackend, ie, webview2 };
+           #if JUCE_WEB_BROWSER_RESOURCE_PROVIDER_AVAILABLE
             [[nodiscard]] Options withResourceProvider (ResourceProvider,
                                                         std::optional<String> = std::nullopt) const { return {}; }
+           #endif
             [[nodiscard]] Options withBackend (Backend) const { return {}; }
         };
 
@@ -496,7 +519,9 @@ namespace juce
 
         void goToURL (const String &) {}
         void evaluateJavascript (const String &, EvaluationCallback = nullptr) {}
+       #if JUCE_WEB_BROWSER_RESOURCE_PROVIDER_AVAILABLE
         static const String &getResourceProviderRoot();
+       #endif
 
         virtual bool pageAboutToLoad (const String &) { return true; }
     };

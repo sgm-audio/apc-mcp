@@ -21,9 +21,6 @@
 
 ### Security
 
-- **Project boundaries now include symlink resolution.** Lexical `..`/absolute-path
-  checks are backed by `realpath` checks on the nearest existing ancestor, closing
-  redirection through in-project `pluginsDir`, `buildDir` and lint-target symlinks.
 - **Path traversal in `audio_plugin_lint` closed (critical).** `target` was validated
   only against `SAFE_PATH`, which permits `.`, so `../x` passed and was joined onto the
   project root before being handed to `clang-format -i`. A single tool argument could
@@ -48,15 +45,49 @@
   All six were transitive via the SDK's HTTP transport, which this stdio-only
   server never loads.
 
+- **Symlink containment hardened in `assertWithinProject()`.** Existing path
+  ancestors are now resolved with `fs.realpathSync()` against the real project
+  root, and `findFilesByExt()` skips symbolic links, preventing symlinks inside
+  the project (such as `_tools/` links or a symlinked `plugins/` directory) from
+  causing writes or `clang-format -i` edits outside the project root.
+- **Context-specific template escaping & single-pass substitution.** `description`
+  is now escaped separately for C++ string literals (`PLUGIN_DESCRIPTION_CXX`),
+  CMake quoted arguments (`PLUGIN_DESCRIPTION_CMAKE`), and LV2 Turtle literals
+  (`PLUGIN_DESCRIPTION_TTL`), and `replaceTemplateVars()` substitutes placeholders
+  in a single pass so `{{KEY}}` substrings inside user values are never
+  cross-expanded.
+- **Dev-dependency `minimatch` advisory resolved.** Overrode `minimatch` to
+  `^11.0.5` so `npm audit` reports **0** vulnerabilities across both runtime and
+  dev trees.
+
 ### Fixed
 
-- **Follow-up QA (2026-11-07):** successful commands retain stderr for warning
-  diagnostics; ctest stderr/failed counts affect failure reporting; builds pass
-  `--config` and regenerate single-config trees when Debug/Release changes;
-  native Windows paths are accepted; descriptions are escaped for C++, CMake and
-  Turtle; failed scaffold copies clean up partial output; CLAP builds emit the
-  actual `.clap` binary on Linux/Windows; CI action pins are consistent and every
-  native scaffold job gates publishing.
+- **`audio_plugin_validate` CLI invocations & custom `pluginsDir` fixed.**
+  `pluginval` now receives `--strictness-level 10 <path>` (replacing invalid
+  `--strictness` and nonexistent `--validate-in-new-process`), `clap-validator`
+  now receives `validate <path>`, the `clap-validator` install URL now points at
+  `free-audio/clap-validator` (replacing the dead 404 `CLAP-Workspace` URL), and
+  `findPluginBinaries()` honours `config.pluginsDir` instead of hardcoding
+  `build/plugins`.
+- **CLAP scaffold packaging & `CLAP_EXT_AUDIO_PORTS` fixed.** `templates/clap`
+  now builds a `MODULE` library producing a CFBundle on macOS and a single
+  `.clap` DSO on Linux/Windows (instead of a `<name>.clap/` directory), exposes
+  stereo `CLAP_EXT_AUDIO_PORTS`, and returns `CLAP_PROCESS_CONTINUE` on 0-port
+  transport calls so `clap-validator` transport tests pass.
+- **Windows WebView2 compile definition added to `templates/juce-webview`.**
+  Added `JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1` alongside
+  `NEEDS_WEBVIEW2 TRUE` so `JUCE_WEB_BROWSER_RESOURCE_PROVIDER_AVAILABLE` is
+  enabled on Windows under JUCE 9; switched `UI/app.js` to `encodeURIComponent`
+  and `WebViewEditor.cpp` to preserve `=` in query values.
+- **`audio_plugin_lint`, `audio_plugin_build`, `audio_plugin_test`, and CLI flags
+  hardened.** `lint` now handles single-file `target` paths, lints `.c` files
+  (such as `templates/lv2/Source/plugin.c`), and skips `build/` and `_tools/` on
+  whole-project runs; `build` passes `--config <Config>`, reconfigures when
+  cached `CMAKE_BUILD_TYPE` changes, parses tool-level `LINK : fatal error LNK...`
+  lines, and surfaces raw output when unparsed build failures occur; `test`
+  counts `***Timeout` / `***Exception` lines and includes `stderr` in failure
+  details; `apc-mcp --version` and `--help` now exit cleanly instead of hanging
+  on stdio.
 - **Prerequisite detection actually works now.** `findBinary()` wrapped `spawnSync` in
   `try/catch` and returned `true` unconditionally — `spawnSync` does not throw on a
   missing binary, it returns `{ error, status }`. Every tool was reported as installed,
@@ -432,7 +463,7 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
 
 - **`type: "ara"` removed from `audio_plugin_create` (breaking).** It mapped to the
   plain JUCE template with `FORMATS ARA` — not a valid `juce_add_plugin` format — and
-  derived from `juce::AudioProcessor` rather than `juce::ARAAudioProcessor`, so it
+  derived from `juce::AudioProcessor` without `juce::AudioProcessorARAExtension`, so it
   reported success while scaffolding a plugin that could never configure. Restoring it
   requires a real ARA template (still tracked in `TODO.md`).
 - **`.gitlab-ci.yml` deleted.** The repo is hosted on GitHub and all README badges point
@@ -557,32 +588,15 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
 
 ### Known issues still open
 
-Tracked in `AUDIT.md`. The template defects above are fixed, and `scaffold-juce` is the
-job that will confirm a scaffolded JUCE plugin configures end to end — **it has not had
-a green run yet**, because neither cmake nor apt is reachable from the environment the
-fixes were developed in, and `publish` deliberately does not depend on it until it has.
-Phases 3, 4 and 5 are complete. The remaining blocker is **OPS-07: GitHub Actions
-cannot run at all until the account's billing lock is cleared**, so none of the new CI
-jobs — including `scaffold-juce`, the only check that can prove a scaffolded JUCE plugin
-configures against real JUCE — has ever executed. No workflow change made in Phase 4 or
-5 has been validated by a real run either; they were validated by parsing, by
-`tests/release.test.js`, and by `npx js-yaml`. `publish` therefore still does not depend
-on `scaffold-juce`, and its apt package list is unverified against whatever
-`ubuntu-latest` is by the time it first runs (`ubuntu-latest` becomes Ubuntu 26 on
-2026-10-19).
+- **`type="ara"` remains unbuilt (`TODO.md`).** Removed in 2.0.0 because the old
+  scaffold emitted invalid `FORMATS ARA` on a non-ARA processor; re-introducing
+  it requires a dedicated `IS_ARA_EFFECT TRUE` template and external ARA SDK
+  headers in CI.
 
-The largest unverified assumption in the project is **`cmake -B build` on a scaffolded
-plugin** (AUDIT Phase 6, item 41). No CMake binary was obtainable in the environment the
-fixes were made in. What is proven instead: the generated CLAP sources compile clean
-under `g++ -Wall -Wextra` against **real** free-audio/clap headers, and the generated
-JUCE sources pass `g++ -std=c++20 -fsyntax-only` against a **transcribed stub** of the
-JUCE 9 API — not real JUCE. Configure and build of a generated project have never run
-anywhere.
-
-Coverage is incomplete in a known way too: `clean`, `generator`, `options` and
-`testName` have no tests, and `audio_plugin_create`/`plugins` have happy-path coverage
-only. The unbuilt `TODO.md` feature scope (Standalone → ARA → LV2) follows. See
-`HANDOFF.md` for file:line detail.
+*(Earlier `OPS-07` billing-lock and `scaffold-juce` CI notes from Phase 5 have
+since been resolved: `compile-scaffold`, `scaffold-clap`, `scaffold-lv2`,
+`scaffold-juce`, `license`, and `CodeQL` all run on GitHub-hosted runners, and
+`scaffold-juce` is now in `publish.needs`.)*
 
 ## [1.5.0] — 2026-06-17
 

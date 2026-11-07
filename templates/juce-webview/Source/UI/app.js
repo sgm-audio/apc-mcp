@@ -32,9 +32,10 @@
 
   // ─── JS → C++: send user actions ────────────────────────────────
   function sendAction(action, data) {
-    // Navigate to custom URL scheme — intercepted by C++ pageAboutToLoad
-    const params = new URLSearchParams({ action: action, data: String(data) });
-    window.location.href = 'apc://callback?' + params.toString();
+    // Navigate to custom URL scheme — intercepted by C++ pageAboutToLoad.
+    // encodeURIComponent encodes spaces as %20, matching JUCE's URL::removeEscapeChars.
+    window.location.href = 'apc://callback?action=' + encodeURIComponent(action)
+      + '&data=' + encodeURIComponent(String(data));
   }
 
   gainSlider.addEventListener('input', function() {

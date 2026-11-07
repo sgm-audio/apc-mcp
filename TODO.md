@@ -10,7 +10,7 @@
 
 ## ~~`ui` parameter on `audio_plugin_create`~~ ✅ DONE
 
-`generic` (default) or `webview`. Ignored by `clap` and `standalone`, which ship their own UI.
+`generic` (default) or `webview`. Ignored by `clap` and `lv2` (headless DSP scaffolds) and by `standalone` (which ships its own `AudioAppComponent` window).
 
 ## ~~Standalone template~~ ✅ DONE
 

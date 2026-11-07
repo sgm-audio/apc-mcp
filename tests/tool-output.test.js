@@ -447,11 +447,99 @@ describe('QA-06 · a missing optional validator must not abort the report', () =
       `validation was incomplete, so it must not report success: ${r.text}`);
   });
 
-  it('validates cleanly when both validators are present', async () => {
+  it('validates cleanly when both validators are present, passing valid upstream CLI flags', async () => {
     writeProjectConfig({ validateFormats: ['VST3', 'CLAP'] });
     plantArtefacts('Debug');
     const r = await call('audio_plugin_validate', { projectPath: PROJ }, { env: shimEnv() });
     assert.equal(r.isError, false, r.text);
     assert.match(r.text, /2 passed, 0 failed/);
+
+    const pvArgs = argvOf('pluginval')[0] ?? '';
+    assert.match(pvArgs, /^--strictness-level 10 /,
+      `pluginval requires --strictness-level, got: ${pvArgs}`);
+    assert.doesNotMatch(pvArgs, /--validate-in-new-process/,
+      `--validate-in-new-process is not a real pluginval flag: ${pvArgs}`);
+
+    const cvArgs = argvOf('clap-validator')[0] ?? '';
+    assert.match(cvArgs, /^validate /,
+      `clap-validator requires the "validate" subcommand, got: ${cvArgs}`);
+  });
+
+  it('points missing clap-validator install hint to free-audio/clap-validator, not dead 404 CLAP-Workspace', async () => {
+    writeProjectConfig({ validateFormats: ['CLAP'] });
+    plantArtefacts('Debug', { vst3: false, clap: true });
+    const r = await call('audio_plugin_validate', { projectPath: PROJ },
+      { env: shimEnv(NO_CLAPVAL_BIN) });
+    assert.match(r.text, /free-audio\/clap-validator/);
+    assert.doesNotMatch(r.text, /CLAP-Workspace/);
+  });
+});
+
+describe('lint, build, and test edge cases', () => {
+  it('lints a single file when target points to a file', async () => {
+    const r = await call('audio_plugin_lint',
+      { projectPath: PROJ, target: 'plugins/Foo/Source/Foo.cpp' },
+      { env: shimEnv() });
+    assert.equal(r.isError, false, r.text);
+    const args = argvOf('clang-format')[0] ?? '';
+    assert.match(args, /Foo\.cpp/, `single-file target never invoked clang-format: ${args}`);
+  });
+
+  it('lints .c files (such as scaffolded LV2 plugins) and skips build/ and _tools/', async () => {
+    fs.mkdirSync(path.join(PROJ, 'plugins', 'Lv2Plug', 'Source'), { recursive: true });
+    fs.writeFileSync(path.join(PROJ, 'plugins', 'Lv2Plug', 'Source', 'plugin.c'), 'int lv2_x = 1;\n');
+    fs.mkdirSync(path.join(PROJ, 'build'), { recursive: true });
+    fs.writeFileSync(path.join(PROJ, 'build', 'CMakeCXXCompilerId.cpp'), 'int junk = 0;\n');
+    fs.mkdirSync(path.join(PROJ, '_tools', 'JUCE'), { recursive: true });
+    fs.writeFileSync(path.join(PROJ, '_tools', 'JUCE', 'juce_core.cpp'), 'int vendor = 0;\n');
+
+    const r = await call('audio_plugin_lint', { projectPath: PROJ }, { env: shimEnv() });
+    assert.equal(r.isError, false, r.text);
+    const args = argvOf('clang-format')[0] ?? '';
+    assert.match(args, /plugin\.c/, `LV2 .c file was ignored by lint: ${args}`);
+    assert.doesNotMatch(args, /CMakeCXXCompilerId\.cpp/, `lint walked into build/: ${args}`);
+    assert.doesNotMatch(args, /juce_core\.cpp/, `lint walked into _tools/: ${args}`);
+  });
+
+  it('build passes --config, reconfigures on CMAKE_BUILD_TYPE change, parses LINK LNK errors, and shows raw output when errorCount is 0', async () => {
+    fs.mkdirSync(BUILD, { recursive: true });
+    fs.writeFileSync(path.join(BUILD, 'CMakeCache.txt'), 'CMAKE_BUILD_TYPE:STRING=Debug\n');
+    const rCfg = await call('audio_plugin_build',
+      { projectPath: PROJ, config: 'Release' }, { env: shimEnv() });
+    assert.equal(rCfg.isError, false, rCfg.text);
+    const cmakeCalls = argvOf('cmake');
+    assert.ok(cmakeCalls.some(a => a.includes('-DCMAKE_BUILD_TYPE=Release')),
+      `expected reconfigure when cached build type differed: ${cmakeCalls.join(' | ')}`);
+    assert.ok(cmakeCalls.some(a => a.includes('--build') && a.includes('--config Release')),
+      `expected --config Release on cmake --build: ${cmakeCalls.join(' | ')}`);
+
+    plantCache();
+    const rLnk = await call('audio_plugin_build', { projectPath: PROJ },
+      { env: shimEnv(FAKE_BIN, { stderr: "LINK : fatal error LNK1181: cannot open input file 'x.lib'\n", exit: 2 }) });
+    assert.equal(rLnk.isError, true);
+    assert.match(rLnk.text, /Errors: 1/, `MSVC LINK fatal error was missed: ${rLnk.text}`);
+    assert.match(rLnk.text, /LNK1181/);
+
+    plantCache();
+    const rMake = await call('audio_plugin_build', { projectPath: PROJ },
+      { env: shimEnv(FAKE_BIN, { stderr: "gmake: *** No rule to make target 'Missing'.  Stop.\n", exit: 2 }) });
+    assert.equal(rMake.isError, true);
+    assert.match(rMake.text, /No rule to make target/, `unparsed build failure dropped raw output: ${rMake.text}`);
+  });
+
+  it('test counts ***Timeout / ***Exception lines and includes stderr in Details', async () => {
+    const timeoutOut = [
+      '1/2 Test #1: OkTest ..........   Passed    0.01 sec',
+      '2/2 Test #2: HangTest ........***Timeout   5.00 sec',
+    ].join('\n');
+    const r1 = await call('audio_plugin_test', { projectPath: PROJ },
+      { env: shimEnv(FAKE_BIN, { stdout: timeoutOut, exit: 8 }) });
+    assert.equal(r1.isError, true);
+    assert.match(r1.text, /Passed: 1, Failed: 1, Total: 2/, `***Timeout was missed: ${r1.text}`);
+
+    const r2 = await call('audio_plugin_test', { projectPath: PROJ },
+      { env: shimEnv(FAKE_BIN, { stderr: 'CMake Error: Cannot find test directory\n', exit: 8 }) });
+    assert.equal(r2.isError, true);
+    assert.match(r2.text, /Cannot find test directory/, `ctest stderr was dropped: ${r2.text}`);
   });
 });

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 
 namespace
 {
@@ -20,26 +22,53 @@ namespace
         .manual_url   = "",
         .support_url  = "",
         .version      = "1.0.0",
-        .description  = "{{PLUGIN_DESCRIPTION_CPP}}",
+        .description  = "{{PLUGIN_DESCRIPTION_CXX}}",
         .features     = s_features,
+    };
+
+    uint32_t CLAP_ABI audioPortsCount(const clap_plugin_t *, bool) {
+        return 1;
+    }
+
+    bool CLAP_ABI audioPortsGet(const clap_plugin_t *,
+                                uint32_t index,
+                                bool is_input,
+                                clap_audio_port_info_t *info) {
+        if (index > 0 || info == nullptr)
+            return false;
+
+        *info = {};
+        info->id = 0;
+        std::snprintf(info->name, sizeof(info->name), "%s",
+                      is_input ? "Audio Input" : "Audio Output");
+        info->flags = CLAP_AUDIO_PORT_IS_MAIN;
+        info->channel_count = 2;
+        info->port_type = CLAP_PORT_STEREO;
+        info->in_place_pair = 0;
+        return true;
+    }
+
+    const clap_plugin_audio_ports_t s_audioPorts = {
+        .count = &audioPortsCount,
+        .get   = &audioPortsGet,
     };
 }
 
 const clap_plugin_descriptor_t *{{PLUGIN_ID}}_descriptor() { return &s_descriptor; }
 
 {{PLUGIN_CLASS_NAME}}::{{PLUGIN_CLASS_NAME}}(const clap_host_t *host) : m_host(host) {
-    m_plugin.desc            = &s_descriptor;
-    m_plugin.plugin_data     = this;
-    m_plugin.init            = &{{PLUGIN_CLASS_NAME}}::init;
-    m_plugin.destroy         = &{{PLUGIN_CLASS_NAME}}::destroy;
-    m_plugin.activate        = &{{PLUGIN_CLASS_NAME}}::activate;
-    m_plugin.deactivate      = &{{PLUGIN_CLASS_NAME}}::deactivate;
+    m_plugin.desc             = &s_descriptor;
+    m_plugin.plugin_data      = this;
+    m_plugin.init             = &{{PLUGIN_CLASS_NAME}}::init;
+    m_plugin.destroy          = &{{PLUGIN_CLASS_NAME}}::destroy;
+    m_plugin.activate         = &{{PLUGIN_CLASS_NAME}}::activate;
+    m_plugin.deactivate       = &{{PLUGIN_CLASS_NAME}}::deactivate;
     m_plugin.start_processing = &{{PLUGIN_CLASS_NAME}}::startProcessing;
     m_plugin.stop_processing  = &{{PLUGIN_CLASS_NAME}}::stopProcessing;
-    m_plugin.reset           = &{{PLUGIN_CLASS_NAME}}::reset;
-    m_plugin.process         = &{{PLUGIN_CLASS_NAME}}::process;
-    m_plugin.get_extension   = &{{PLUGIN_CLASS_NAME}}::getExtension;
-    m_plugin.on_main_thread  = &{{PLUGIN_CLASS_NAME}}::onMainThread;
+    m_plugin.reset            = &{{PLUGIN_CLASS_NAME}}::reset;
+    m_plugin.process          = &{{PLUGIN_CLASS_NAME}}::process;
+    m_plugin.get_extension    = &{{PLUGIN_CLASS_NAME}}::getExtension;
+    m_plugin.on_main_thread   = &{{PLUGIN_CLASS_NAME}}::onMainThread;
 }
 
 {{PLUGIN_CLASS_NAME}}::~{{PLUGIN_CLASS_NAME}}() = default;
@@ -47,7 +76,8 @@ const clap_plugin_descriptor_t *{{PLUGIN_ID}}_descriptor() { return &s_descripto
 const clap_plugin_descriptor_t *{{PLUGIN_CLASS_NAME}}::descriptor() const { return &s_descriptor; }
 
 bool {{PLUGIN_CLASS_NAME}}::init(const clap_plugin_t *plugin) {
-    return from(plugin) != nullptr;
+    auto *self = from(plugin);
+    return self != nullptr && self->m_host != nullptr;
 }
 
 void {{PLUGIN_CLASS_NAME}}::destroy(const clap_plugin_t *plugin) {
@@ -104,8 +134,10 @@ clap_process_status {{PLUGIN_CLASS_NAME}}::process(const clap_plugin_t *plugin,
     if (frames == 0)
         return CLAP_PROCESS_SLEEP;
 
+    // Transport-only / event-only calls may pass 0 audio ports; returning
+    // CLAP_PROCESS_ERROR here fails clap-validator's transport tests.
     if (process->audio_inputs_count == 0 || process->audio_outputs_count == 0)
-        return CLAP_PROCESS_ERROR;
+        return CLAP_PROCESS_CONTINUE;
 
     const auto &in  = process->audio_inputs[0];
     auto       &out = process->audio_outputs[0];
@@ -139,9 +171,11 @@ clap_process_status {{PLUGIN_CLASS_NAME}}::process(const clap_plugin_t *plugin,
     return CLAP_PROCESS_CONTINUE;
 }
 
-const void *{{PLUGIN_CLASS_NAME}}::getExtension(const clap_plugin_t *, const char *) {
-    // No extensions implemented yet. Add e.g. CLAP_EXT_AUDIO_PORTS here as the
-    // plugin grows.
+const void *{{PLUGIN_CLASS_NAME}}::getExtension(const clap_plugin_t *plugin, const char *id) {
+    if (plugin == nullptr || id == nullptr)
+        return nullptr;
+    if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0)
+        return &s_audioPorts;
     return nullptr;
 }
 

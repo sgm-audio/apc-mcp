@@ -14,7 +14,9 @@
 // useful on a laptop with no toolchain:
 //   APC_JUCE_DIR   path to a JUCE checkout (symlinked to <proj>/_tools/JUCE)
 //   APC_CLAP_DIR   path to a free-audio/clap checkout (symlinked to <proj>/_tools/clap)
-// JUCE cases are scaffolded but only configured when APC_JUCE_DIR is set.
+//   APC_LV2_DIR    path to an lv2/lv2 include directory (contains lv2/core/lv2.h)
+// Each family is always scaffolded and structurally verified, and cmake-configured
+// when its corresponding APC_*_DIR variable is set.
 //
 // Usage:
 //   node scripts/smoke-scaffold.mjs                  # structural checks only
@@ -40,6 +42,7 @@ const CASES = [
   { name: 'SmokeClap',      type: 'clap', ui: 'generic', family: 'clap' },
   { name: 'SmokeJuceGen',   type: 'juce', ui: 'generic', family: 'juce' },
   { name: 'SmokeJuceWv',    type: 'juce', ui: 'webview', family: 'juce' },
+  { name: 'SmokeVst3Gen',   type: 'vst3', ui: 'generic', family: 'juce' },
   { name: 'SmokeVst3Wv',    type: 'vst3', ui: 'webview', family: 'juce' },
   { name: 'smoke-kebab',    type: 'clap', ui: 'generic', family: 'clap' },
   // A standalone application. `family` stays 'juce' because that is what
@@ -58,7 +61,7 @@ const CASES = [
 // keyed by `type`, so the structural check cannot drift from what the templates
 // actually emit.
 const CMAKE_COMMAND_FOR_TYPE = {
-  clap: 'add_library',            // a plain shared library against free-audio/clap
+  clap: 'add_library',            // a MODULE library against free-audio/clap
   juce: 'juce_add_plugin',
   vst3: 'juce_add_plugin',
   standalone: 'juce_add_gui_app', // an executable, not a plugin library

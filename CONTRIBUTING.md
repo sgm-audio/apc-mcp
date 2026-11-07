@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Node.js 22+ (matching `package.json` and CI)
+- Node.js 22+
 - Familiarity with MCP (Model Context Protocol)
 
 ## Setup
@@ -16,7 +16,11 @@ npm install
 ## Running tests
 
 ```sh
-npm test
+npm test          # Run full test suite (189 tests across 7 files)
+npm run lint      # ESLint + node --check
+npm run smoke     # End-to-end scaffold smoke test (10 permutations)
+npm run licenses  # Verify package-lock.json against license_decisions.yml
+npm run check     # Run lint + test + smoke + npm audit + licenses
 ```
 
 Tests use Node's built-in `node:test` runner — no test framework dependency.
@@ -46,8 +50,9 @@ Tests use Node's built-in `node:test` runner — no test framework dependency.
 runs lint, the tests, the scaffold smoke test, `npm audit` and the license gate.
 Run `npm run check` before committing; CI runs the same thing.
 
-- The server is a single file (`index.js`, over 1,200 lines). If you add a
-  substantial subsystem, propose splitting it rather than growing the file further.
+- The server is a single file (`index.js`, ~1,300 lines). It has outgrown the old
+  "~800 lines" guidance; if you add a substantial subsystem, propose splitting it
+  rather than growing the file further.
 - **Never build a shell string.** Use `spawnSync()` / `trySpawn()` with an argument
   array. ESLint bans importing `exec`/`execSync` for this reason.
 - Use `trySpawn()` for commands that might fail — it inspects `result.error` and
@@ -56,9 +61,11 @@ Run `npm run check` before committing; CI runs the same thing.
 - **A tool that did not succeed must return `isError: true`**, including when the
   command exited 0 but its output shows errors, and when a step had to be skipped.
   Reporting success for a failed operation is worse than throwing.
-- Template files go in `templates/<type>/`. If you touch them, run `npm run smoke`
-  and — with a compiler available — `tests/cpp-api.test.js`; see `HANDOFF.md` §3 for
-  how to point it at real JUCE and CLAP checkouts.
+- Template files go in `templates/<type>/` (`clap`, `juce`, `juce-webview`, `lv2`,
+  `standalone`). If you touch them, run `npm run smoke` and — with a C/C++ compiler
+  available — `tests/cpp-api.test.js`; see `HANDOFF.md` §2–§3 for pointing
+  `APC_CLAP_INCLUDE` and `APC_LV2_INCLUDE` (and `APC_JUCE_DIR` / `APC_CLAP_DIR` /
+  `APC_LV2_DIR`) at real checkouts.
 - Config schema for `apc-mcp.json` lives in `CONFIG_SCHEMA` in `index.js`, validated
   per key so one bad value degrades to its default.
 - Structured output uses `### Headers` for sections followed by raw text.

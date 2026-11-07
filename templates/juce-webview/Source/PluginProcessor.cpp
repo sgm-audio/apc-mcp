@@ -27,8 +27,7 @@ void {{PLUGIN_CLASS_NAME}}::processBlock(juce::AudioBuffer<float> &buffer, juce:
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear(i, 0, buffer.getNumSamples());
 
-    float gain = m_gain->get();
-    m_lastGain = gain;
+    const float gain = m_gain->get();
 
     for (int channel = 0; channel < totalNumInputChannels; ++channel) {
         auto *channelData = buffer.getReadPointer(channel);

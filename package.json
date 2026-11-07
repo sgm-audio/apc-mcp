@@ -1,7 +1,7 @@
 {
   "name": "@sgm-audio/apc-mcp",
   "version": "2.0.0",
-  "description": "MCP server for audio plugin development — CMake build, test, lint, and project management for JUCE, CLAP, VST3 and LV2 projects",
+  "description": "MCP server for audio plugin development \u2014 CMake build, test, lint, and project management for JUCE, CLAP, VST3, and LV2 plugin projects",
   "type": "module",
   "bin": {
     "apc-mcp": "./index.js"
@@ -13,12 +13,12 @@
   "scripts": {
     "test": "node --test",
     "lint": "eslint . && node --check index.js",
-    "audit": "npm audit && echo '✅ No known vulnerabilities'",
+    "audit": "npm audit && echo '\u2705 No known vulnerabilities'",
     "licenses": "node scripts/check-licenses.mjs",
     "smoke": "node scripts/smoke-scaffold.mjs",
     "smoke:configure": "node scripts/smoke-scaffold.mjs --configure",
     "quality": "npm run lint && npm test",
-    "security": "npm audit --audit-level=high && echo '✅ Security gate passed'",
+    "security": "npm audit --audit-level=high && echo '\u2705 Security gate passed'",
     "check": "npm run quality && npm run smoke && npm run audit && npm run licenses",
     "ship": "node scripts/ship.mjs"
   },
@@ -42,6 +42,7 @@
     "juce",
     "clap",
     "vst3",
+    "lv2",
     "cmake",
     "audio",
     "dsp",
@@ -49,9 +50,9 @@
   ],
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.14.0"
+    "eslint": "^10.12.0"
   },
   "overrides": {
-    "minimatch": "^11.0.1"
+    "minimatch": "^11.0.5"
   }
 }

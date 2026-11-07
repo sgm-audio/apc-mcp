@@ -78,51 +78,101 @@ if (allowed.size === 0) {
 }
 
 // ─── SPDX evaluation ───────────────────────────────────────────────
-// "MIT OR Apache-2.0"  -> compliant if EITHER branch is allowed (you pick one)
-// "MIT AND CC0-1.0"    -> compliant only if BOTH are allowed (both apply)
-// "Apache-2.0 WITH LLVM-exception" -> evaluate the base license
-// "SEE LICENSE IN COPYING" / "UNLICENSED" / absent -> indeterminate
-function normalize(id) {
-  return String(id).trim().replace(/^\((.*)\)$/, '$1').trim();
-}
-
-function isAllowed(expr) {
-  const e = normalize(expr);
-  if (!e) return { ok: false, reason: 'no license field' };
-  if (/^SEE LICENSE IN\b/i.test(e) || /^UNLICENSED$/i.test(e)) {
-    return { ok: false, reason: `non-SPDX license expression: ${e}` };
-  }
-
-  const base = e.split(/\s+WITH\s+/i)[0].trim();
-
-  if (/\s+OR\s+/i.test(base)) {
-    const parts = base.split(/\s+OR\s+/i).map(normalize);
-    return parts.some(p => allowedHas(p))
-      ? { ok: true, reason: `one of "${parts.join('" | "')}" is allowed` }
-      : { ok: false, reason: `none of "${parts.join('" | "')}" is allowed` };
-  }
-
-  if (/\s+AND\s+/i.test(base)) {
-    const parts = base.split(/\s+AND\s+/i).map(normalize);
-    const disallowed = parts.filter(p => !allowedHas(p));
-    return disallowed.length === 0
-      ? { ok: true, reason: `all of "${parts.join('" + "')}" are allowed` }
-      : { ok: false, reason: `"${disallowed.join('", "')}" not allowed (AND requires every branch)` };
-  }
-
-  return allowedHas(base)
-    ? { ok: true, reason: base }
-    : { ok: false, reason: `"${base}" is not in the allowlist` };
-}
-
-function allowedHas(id) {
-  if (allowed.has(id)) return true;
+// Standard SPDX operator precedence: WITH > AND > OR, with parentheses.
+//   "MIT OR Apache-2.0"               -> compliant if EITHER branch is allowed
+//   "MIT AND CC0-1.0"                 -> compliant only if EVERY branch is allowed
+//   "Apache-2.0 WITH LLVM-exception"  -> evaluate base license of that atom only
+//   "SEE LICENSE IN ..." / "UNLICENSED" / absent -> indeterminate
+function allowedHas(id, allowSet = allowed) {
+  if (allowSet.has(id)) return true;
   const lower = id.toLowerCase();
-  for (const a of allowed) if (a.toLowerCase() === lower) return true;
+  for (const a of allowSet) if (a.toLowerCase() === lower) return true;
   return false;
 }
 
+export function evaluateSpdx(expr, allowSet = allowed) {
+  const raw = String(expr ?? '').trim();
+  if (!raw) return { ok: false, reason: 'no license field' };
+  if (/^SEE LICENSE IN\b/i.test(raw) || /^UNLICENSED$/i.test(raw)) {
+    return { ok: false, reason: `non-SPDX license expression: ${raw}` };
+  }
+
+  const tokens = raw.match(/\(|\)|[^\s()]+/g) ?? [];
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const isKw = (tok, kw) => tok !== undefined && tok.toUpperCase() === kw;
+
+  function parseOr() {
+    const branches = [parseAnd()];
+    while (isKw(peek(), 'OR')) {
+      pos++;
+      branches.push(parseAnd());
+    }
+    if (branches.length === 1) return branches[0];
+    const winner = branches.find(b => b.ok);
+    return winner
+      ? { ok: true, reason: `satisfied OR branch (${winner.reason})` }
+      : { ok: false, reason: `no OR branch allowed (${branches.map(b => b.reason).join('; ')})` };
+  }
+
+  function parseAnd() {
+    const branches = [parseWith()];
+    while (isKw(peek(), 'AND')) {
+      pos++;
+      branches.push(parseWith());
+    }
+    if (branches.length === 1) return branches[0];
+    const failed = branches.filter(b => !b.ok);
+    return failed.length === 0
+      ? { ok: true, reason: `all AND branches allowed` }
+      : { ok: false, reason: `${failed.map(b => b.reason).join('; ')} (AND requires every branch)` };
+  }
+
+  function parseWith() {
+    const base = parseAtom();
+    if (isKw(peek(), 'WITH')) {
+      pos++;
+      const exc = tokens[pos++];
+      if (!exc || exc === '(' || exc === ')' || /^(AND|OR|WITH)$/i.test(exc)) {
+        throw new Error(`missing exception after WITH in "${raw}"`);
+      }
+    }
+    return base;
+  }
+
+  function parseAtom() {
+    const tok = tokens[pos++];
+    if (!tok) throw new Error(`unexpected end of expression "${raw}"`);
+    if (tok === '(') {
+      const inner = parseOr();
+      if (tokens[pos++] !== ')') throw new Error(`unclosed "(" in "${raw}"`);
+      return inner;
+    }
+    if (tok === ')' || /^(AND|OR|WITH)$/i.test(tok)) {
+      throw new Error(`unexpected token "${tok}" in "${raw}"`);
+    }
+    return allowedHas(tok, allowSet)
+      ? { ok: true, reason: tok }
+      : { ok: false, reason: `"${tok}" is not in the allowlist` };
+  }
+
+  try {
+    const res = parseOr();
+    if (pos !== tokens.length) {
+      return { ok: false, reason: `unexpected token "${tokens[pos]}" in "${raw}"` };
+    }
+    return res;
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
+function isAllowed(expr) {
+  return evaluateSpdx(expr, allowed);
+}
+
 // ─── Scan ──────────────────────────────────────────────────────────
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 if (!fs.existsSync(LOCKFILE)) fail(`lockfile not found: ${LOCKFILE}`);
 let lock;
 try {
@@ -143,7 +193,7 @@ for (const [key, meta] of entries) {
   const name = key.replace(/^.*node_modules\//, '');
   const id = meta.version ? `${name}@${meta.version}` : name;
   const license = meta.license ?? '';
-  const isDev = !!meta.dev;
+  const isDev = Boolean(meta.dev || meta.devOptional);
 
   tally.set(license || '(none)', (tally.get(license || '(none)') ?? 0) + 1);
 
@@ -167,7 +217,7 @@ console.log(`Allowlist (${rel}): ${[...allowed].join(', ')}`);
 console.log('');
 console.log('Licenses present:');
 for (const [lic, n] of [...tally].sort((a, b) => b[1] - a[1])) {
-  const mark = allowedHas(normalize(lic).split(/\s+(?:OR|AND|WITH)\s+/i)[0]) ? '✓' : '✗';
+  const mark = lic !== '(none)' && isAllowed(lic).ok ? '✓' : '✗';
   console.log(`  ${mark} ${String(n).padStart(3)}  ${lic}`);
 }
 
@@ -198,3 +248,4 @@ if (STRICT_DEV && warnings.length) {
 }
 
 console.log(`\n✅ All distributed dependencies are under an allowed license.`);
+}
