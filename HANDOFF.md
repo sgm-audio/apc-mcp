@@ -11,11 +11,11 @@ this file is the operating manual.
 
 ## 1. Where the project stands
 
-`apc-mcp` is an MCP server (`index.js`, 1063 lines, zero-dep beyond
+`apc-mcp` is an MCP server (`index.js`, 1,301 lines, zero-dep beyond
 `@modelcontextprotocol/sdk` + `zod`) exposing 7 tools for audio-plugin work:
 `create`, `configure`, `build`, `test`, `lint`, `validate`, `plugins`. It ships
-CMake/C++ scaffold templates under `templates/` for `clap`, `juce` and `vst3`,
-each with `generic` or `webview` UI.
+CMake/C/C++ scaffold templates under `templates/` for `clap`, `juce`, `vst3`
+(`generic` or `webview` UI), `lv2`, and `standalone`.
 
 A full audit found **35 defects**, and one more (**FUNC-21**) turned up while building the first `TODO.md` feature. Phases 0–5 are **done, committed and pushed**:
 
@@ -33,22 +33,20 @@ A full audit found **35 defects**, and one more (**FUNC-21**) turned up while bu
 | `728eb7a` | feature | **`type="lv2"`**: a native LV2 plugin — C against the real `lv2/core/lv2.h`, Turtle metadata, `MODULE` library emitted into the bundle layout `validate` scans. Compile-checked against **real** upstream headers in CI, not a stub. 163 tests total |
 
 **Version is `2.0.0`** — `package.json:3` is the only source of truth;
-`index.js:26` reads it at startup and `index.js:619` reports it in
+`index.js:26` reads it at startup and `index.js:706` reports it in
 `initialize` — because removing `type:'ara'` is a breaking input-schema change
 and `engines.node >=22` drops two supported Node majors. It has **not been
-published**. `index.js` is now 1142 lines.
+published**. `index.js` is now 1,301 lines.
 
-**Phases 0–5 are done, and the first `TODO.md` feature (Standalone) is built.**
+**Phases 0–5, Standalone, LV2, and the post-2.0.0 bug-hunt fixes are done.**
 What remains is:
 
-- **OPS-07** — a human must clear the GitHub billing lock before any CI job can
-  validate this work (§7). Nothing above has been through a real CI run.
-- **One green `scaffold-juce` run** before `publish` may depend on it (§6, §11).
-- **ARA and LV2** from `TODO.md` (§8). ARA is blocked on an external SDK that CI
-  would also need.
+- **ARA** from `TODO.md` (§8), which requires an external ARA SDK and a large
+  JUCE ARA stub surface.
+- **Cutting the `v2.0.0` release** once ready (§11: rename `CHANGELOG.md`'s
+  `[Unreleased]` heading and run `npm run ship`).
 
-Everything below is verified against the current tree; line numbers are current
-as of the Standalone commit.
+Everything below is verified against the current tree.
 
 ---
 
@@ -63,18 +61,19 @@ Expected:
 
 ```
 npm run lint            → eslint . && node --check index.js  → clean (0 problems)
-npm test                → # tests 163  # pass 161  # fail 0  # skipped 2
-npm run smoke           → smoke-scaffold: PASS (9/9 scaffolded, 0 failures)
+npm test                → # tests 189  # pass 184  # fail 0  # skipped 5
+npm run smoke           → smoke-scaffold: PASS (10/10 scaffolded, 0 failures)
 npm audit               → ✅ No known vulnerabilities   (0 vulnerabilities)
 npm run licenses        → ✅ All distributed dependencies are under an allowed license.
 ```
 
 `npm run check` chains all five (`quality` = `lint && test`). If `npm test` shows
-a different total than 163, a test file was added or removed — check
+a different total than 189, a test file was added or removed — check
 `git status` before believing any later instruction in this file.
 
-The **2 skips** are the CLAP and LV2 compile checks. Set both env vars and they
-become passes, giving **163 / 163 / 0 / 0**:
+The **5 skips** are the 2 CLAP compile cases, 1 LV2 compile case, and their 2
+header-presence guards in `tests/cpp-api.test.js`. Set both env vars and they
+become passes, giving **189 / 189 / 0 / 0**:
 
 ```bash
 git clone --depth 1 https://github.com/free-audio/clap.git /tmp/clap
@@ -89,15 +88,6 @@ read as a pass.
 
 ESLint is a **hard gate** as of Phase 5. `npm run lint` returning non-zero means
 `npm run check` fails, which means `scripts/ship.mjs` refuses to release.
-
-The **2 skips** are the CLAP compile checks in `tests/cpp-api.test.js`, which
-need real CLAP headers. To run them at full strength:
-
-```bash
-git clone --depth 1 https://github.com/free-audio/clap.git /tmp/clap
-APC_CLAP_INCLUDE=/tmp/clap/include node --test tests/cpp-api.test.js
-# expect: # tests 6  # pass 6  # fail 0  # skipped 0
-```
 
 If any of that is not green, stop and fix it before adding work — otherwise you
 cannot tell your regressions from pre-existing ones.
@@ -117,7 +107,7 @@ These cost hours to establish. **Do not retry the things marked ✗.**
 | `clang-format`, `ctest`, `pluginval`, `clap-validator`, ESLint | ✗ absent | Tool-dependent tests use PATH shims (fake executables in `os.tmpdir()`). Follow that pattern. |
 | `pyyaml` | ✗ absent | Validate workflow YAML with `npx --yes js-yaml .github/workflows/publish.yml` instead. |
 | `file` | ✗ absent | Detect CRLF with `grep -cU $'\r' file`. |
-| GitHub Actions | ✗ **locked for billing** | See §7 / OPS-07. **No CI job in this repo can start.** |
+| GitHub Actions | ✅ active | Billing lock (`OPS-07`) was cleared; `CI` and `CodeQL` run on push/PR to `main`. |
 
 ### `/tmp` is ephemeral
 
@@ -158,26 +148,28 @@ tests/helpers/mcp-client.mjs   shared MCP stdio client: rpc(), call(), listTools
                                initialize handshake, advances on responses (no fixed
                                timers). ALL THREE test files that talk to the server
                                use this; do not hand-roll another client.
-tests/server.test.js      12   happy-path coverage. Was 11 with its own
-                               hand-rolled client that SKIPPED the handshake;
-                               moved onto the shared client in Phase 5
-tests/artefacts.test.js   13   build-artefact discovery against JUCE's real
-                               layout: PRODUCT_NAME != directory name, the AU
+tests/server.test.js      14   happy-path + CLI (--version / --help) coverage.
+                               Moved onto the shared handshaking client in Phase 5
+tests/artefacts.test.js   15   build-artefact discovery against JUCE/CLAP/LV2
+                               layouts: PRODUCT_NAME != directory name, the AU
                                (not AudioUnit) directory, .app/.exe/extension-less
-                               Standalone binaries, LV2 bundles (FUNC-21)
-tests/tool-output.test.js 22   config precedence, failure reporting, and the
-                               build/test output parsers (Phase 3)
-tests/release.test.js     19   version single-sourcing, no continue-on-error,
-                               SHA-pinned actions, no EOL Node, ship guards (Phase 4)
-tests/security.test.js    30   NEGATIVE tests: traversal PoCs, metacharacter
-                               rejection, missing-toolchain messages, bogus paths
-tests/templates.test.js   58   structural checks over the *generated project*;
-                               needs no cmake/JUCE/CLAP/LV2. Includes a 14-test
-                               suite for the standalone app template and a
-                               14-test suite for the native LV2 template.
-tests/cpp-api.test.js      9   real gcc/g++/clang -fsyntax-only over generated C
-                               and C++, driven by a per-family table (juce / clap
-                               / lv2) with its own header guard test each
+                               Standalone binaries, macOS & Linux/Win CLAP, LV2
+                               bundles, custom pluginsDir (FUNC-21)
+tests/tool-output.test.js 27   config precedence, validator CLI flags, single-file
+                               & .c lint, build/test output parsers (Phase 3+)
+tests/release.test.js     21   version single-sourcing, no continue-on-error,
+                               SHA-pinned actions, no EOL Node, SPDX parser &
+                               ship guards (Phase 4+)
+tests/security.test.js    39   NEGATIVE tests: traversal & symlink PoCs,
+                               metacharacter & reserved-name rejection, missing
+                               toolchain messages, bogus paths
+tests/templates.test.js   61   structural checks over the *generated project*;
+                               needs no cmake/JUCE/CLAP/LV2. Covers CLAP MODULE +
+                               audio-ports, JUCE + Windows WebView2, standalone
+                               app, native LV2, and description escaping.
+tests/cpp-api.test.js     12   real gcc/g++/clang -fsyntax-only over generated C11
+                               and C++20 (including simulated JUCE_WINDOWS=1),
+                               driven by a per-family table with header guard tests
 tests/fixtures/juce-api-stub/JuceHeader.h   the JUCE 9 API stub (test fixture,
                                             NOT shipped — package.json "files"
                                             is ["index.js","templates/"])
@@ -189,8 +181,8 @@ eslint.config.js                npm run lint — flat config, explicit Node/brow
                                 exec/execSync
 ```
 
-**Total: 163 tests** (12 server + 13 artefacts + 30 security + 58 templates +
-9 cpp-api + 22 tool-output + 19 release).
+**Total: 189 tests** (14 server + 15 artefacts + 39 security + 61 templates +
+12 cpp-api + 27 tool-output + 21 release).
 
 Both `tests/templates.test.js` and `tests/artefacts.test.js` have a
 comment-stripping helper (`cmakeCode()` / `cppCode()`). **Use them.** The templates
@@ -288,7 +280,7 @@ absent.
 | ID | What it was | What it is now |
 |---|---|---|
 | **HYG-04** | No ESLint. `npm run lint` was `node --check index.js`, which only proves the file parses — so a dead parameter and a silent `catch` survived review. | `eslint@10` + `@eslint/js` (devDeps, both allowlisted licenses). Flat config in `eslint.config.js` with **explicit** Node/browser globals, so no `globals` package is needed. Rules: `no-unused-vars`, `no-useless-escape`, `no-empty` (empty catch **not** allowed), `eqeqeq`, `prefer-const`, `no-var`, plus `no-restricted-properties`/`no-restricted-syntax` banning `exec`/`execSync` — the shell-invoking APIs SECURITY.md exists to avoid. `spawn`/`spawnSync` stay allowed; they take argv arrays. `lint` = `eslint . && node --check index.js`; `quality` = `lint && test`, so `npm run check` and CI both lint. **First run: 15 errors, all fixed, re-run clean.** |
-| **HYG-02** | `findPluginBinaries(projectPath, config, buildDir, formats)` — `projectPath` never used. | Param removed; the single call site updated. ESLint's `no-unused-vars` now prevents a recurrence. (The function was later rewritten for FUNC-21 and now lives at `index.js:524`, called from `:954`.) |
+| **HYG-02** | `findPluginBinaries(projectPath, config, buildDir, formats)` — `projectPath` never used. | Param removed; the single call site updated. ESLint's `no-unused-vars` now prevents a recurrence. (The function was later rewritten for FUNC-21 and custom `pluginsDir`, and now lives at `index.js:557`, called from `:1086`.) |
 | **HYG-07** | `tests/server.test.js` did `result.result.content[0].text` throughout — a shape change threw a `TypeError` instead of failing an assertion. | Every access optional-chained, with the actual response in the assertion message. `JSON.parse` wrapped so a non-JSON reply fails with the payload shown. |
 | **HYG-06** | The same file carried its own stdio client that **sent `tools/list` and `tools/call` with no `initialize` handshake** — it never exercised the path a real MCP client takes. | Rewritten onto `tests/helpers/mcp-client.mjs`, which handshakes. Fixtures moved to `os.tmpdir()`. 11 → **12 tests**, with more assertions than before. |
 | **HYG-10** | `SECURITY.md` was **materially false** — see the list below. | Fully rewritten against the current code. |
@@ -302,13 +294,13 @@ absent.
 config is decorative:
 
 - Two useless escapes inside `SAFE_OPTIONS` (`index.js:44`) and `SAFE_PATH`
-  (`index.js:56`). **These are the security allowlists.** Before removing a
+  (`index.js:60`). **These are the security allowlists.** Before removing a
   backslash from a regex that gates shell metacharacters, both were compared to
   their cleaned forms over **65,536 probe strings** (every code point below U+2000,
   alone and embedded in a valid token): 0 behavioural differences. Do the same if
   you ever touch them — and if you do, `tests/security.test.js` has 10
   metacharacter-rejection cases that must stay green.
-- The empty `catch` above (`index.js` ~:825).
+- The empty `catch` above (`index.js` ~:825 at the time).
 - `stripAnsi`'s `\x1B` control character, flagged by `no-control-regex`. That one is
   **correct and intentional** — stripping ANSI SGR codes is the whole point — so it
   carries an `eslint-disable-next-line` with the reason rather than being "fixed".
@@ -316,8 +308,8 @@ config is decorative:
 **`SECURITY.md` was false in six separate ways.** If you inherit a security doc from
 an earlier phase, assume nothing in it is current:
 
-1. Called `0.1.0` the current version and described "17 tests, 6 findings" (reality at the time of the rewrite: 2.0.0, 119 tests, 35 findings — now 147 tests and 36 findings with FUNC-21).
-2. Claimed layer 3 did `path.resolve()` + `realpathSync` checks — **neither call existed**. The real guard is `assertWithinProject` (`index.js:75`) with `hasDotDot` (`:66`) plus the zod regexes.
+1. Called `0.1.0` the current version and described "17 tests, 6 findings" (now 2.0.0 and 189 tests).
+2. Claimed layer 3 did `path.resolve()` + `realpathSync` checks — neither call existed at the time. `assertWithinProject` (`index.js:79`, with `hasDotDot` at `:70`) now performs both lexical resolution and `fs.realpathSync()` ancestor checks.
 3. Claimed `validatePath()` "rejects non-alphanumeric path components" — never true; `SAFE_PATH` permits `.`, and that permissiveness *was* SEC-01.
 4. Listed dependency versions that had all been superseded.
 5. Asserted *"no residual risk of arbitrary file read/write"* — untrue. The guard allowlists paths **within** the project boundary, so everything inside it is writable by design. The doc now says so.
@@ -326,34 +318,18 @@ an earlier phase, assume nothing in it is current:
 
 ---
 
-## 7. 🔴 OPS-07 — the blocker nobody can fix from code
+## 7. ✅ OPS-07 — RESOLVED (GitHub Actions active)
 
-**Every GitHub Actions job in this repo fails in 2–4 seconds** with:
+During the original October 2026 audit, GitHub Actions jobs failed immediately
+due to a temporary account billing lock. **That billing lock has since been
+cleared:**
 
-> *The job was not started because your account is locked due to a billing issue.*
-
-Evidence (`gh run view`): scheduled CodeQL run `37174821386` (2d) and Dependabot
-PR CI run `36765350429` (5d) — all three matrix legs of `test` failed instantly
-with that annotation and `publish` was skipped.
-
-**This needs a human to resolve billing.** Until then:
-
-- No CI claim in `AUDIT.md` or the `CHANGELOG.md` can be validated.
-- The red X's on `main` are **not** a code regression. Don't chase them.
-- `scaffold-juce` — the only job that can prove a scaffolded JUCE plugin really
-  configures against real JUCE — has never run. Its apt package list
-  (`libwebkit2gtk-4.1-dev` etc.) is JUCE's documented Linux deps for
-  **ubuntu-24.04**, unverified.
-- `CI` triggers only on `push` to `main`, on `v*` tags, and on `pull_request`
-  targeting `main`. **Pushing a feature branch runs nothing** — validation
-  requires opening a PR.
-- ⚠️ **`ubuntu-latest` becomes Ubuntu 26 on 2026-10-19**
-  ([runner-images#14748](https://github.com/actions/runner-images/issues/14748)).
-  That may rename the apt packages `scaffold-juce` installs. On the first real
-  run, check them and pin the job to `ubuntu-24.04` if needed.
-- GitHub also reports **24 vulnerabilities on the default branch** (7 high /
-  16 moderate / 1 low). That is `main`'s committed lockfile. SEC-02 fixed it on
-  this branch, where `npm audit` reports 0. Different refs, not a regression.
+- `CI` (`publish.yml`) and `CodeQL` (`codeql.yml`) run on pushes and PRs to `main`.
+- `compile-scaffold`, `scaffold-clap`, `scaffold-lv2`, and `scaffold-juce`
+  (including the Ubuntu 26 runner image migration after 2026-10-19) have all
+  executed and passed on real GitHub runners (`runs 42064211672`, `42064221847`).
+- `scaffold-juce` is now included in `publish.needs` alongside `test`, `license`,
+  `compile-scaffold`, `scaffold-clap`, and `scaffold-lv2`.
 
 ---
 
@@ -526,7 +502,7 @@ first.
 - **Line-number citations drift.** `AUDIT.md`, `HANDOFF.md` and `SECURITY.md` all
   cite `file:line`, and a single function rewrite moved three of `SECURITY.md`'s
   references by ~70 lines. Every citation pairs the line with a *symbol name*
-  (`assertWithinProject()` — `index.js:75`) precisely so a stale number is still
+  (`assertWithinProject()` — `index.js:79`) precisely so a stale number is still
   findable — but after any edit that changes file length, re-derive the numbers
   rather than trusting them. `node -e` over `fs.readFileSync(...).split('\n')` with
   a regex per symbol is the fast way.
@@ -544,8 +520,8 @@ Checked during the audit and found sound:
 - `configure`'s argv/options splitting: `-DFOO=ON -DBAR=OFF` becomes separate
   argv entries with no shell involvement — no injection.
 - `tools/list` returns all 7 tools with full `describe()` text.
-- Packaging: `npm pack` yields 19 files; no `tests/` or `scripts/` leak (the
-  stub fixture is not shipped). npm chmods the bin 644 → 755 on publish.
+- Packaging: `npm pack` yields 27 files (`43.0 kB`); no `tests/` or `scripts/`
+  leak (the stub fixture is not shipped). npm chmods the bin 644 → 755 on publish.
 - `checkPluginPath()` in `create`.
 - The layer-1 zod metacharacter regexes (10/10 rejection cases pass).
 - `.editorconfig` compliance across the repo.
@@ -562,33 +538,23 @@ Checked during the audit and found sound:
 
 Do not publish until:
 
-1. ✅ **Phases 3–5 complete, plus the Standalone feature and FUNC-21.**
-   `npm run check` exits 0: ESLint clean, 163 tests / 161 pass / 0 fail / 2 skip,
-   smoke 9/9, `npm audit` 0 vulnerabilities, license gate PASS. With
-   `APC_CLAP_INCLUDE` and `APC_LV2_INCLUDE` pointing at real checkouts the 2 skips
-   become passes (163 / 163 / 0 skip). Re-verified after `npm ci` from an empty `node_modules`,
-   and by installing the packed tarball into a clean prefix and scaffolding a
-   standalone app through `node_modules/.bin/apc-mcp`.
-2. ☐ **Billing resolved** and a PR opened so all six CI jobs get a real run.
-3. ☐ `scaffold-juce` has had **one green run** → add it to `publish.needs`.
-4. ☐ `scaffold-juce`'s apt packages re-checked against whatever
-   `ubuntu-latest` is by then; pin to `ubuntu-24.04` if they moved.
-5. ✅ `OPS-02` fixed — `continue-on-error` is gone and a test now asserts no
+1. ✅ **Phases 3–5, Standalone, LV2, FUNC-21, and follow-up audit fixes complete.**
+   `npm run check` exits 0: ESLint clean, 189 tests / 184 pass / 0 fail / 5 skip,
+   smoke 10/10, `npm audit` 0 vulnerabilities, license gate PASS (163 packages). With
+   `APC_CLAP_INCLUDE` and `APC_LV2_INCLUDE` pointing at real checkouts the 5 skips
+   become passes (**189 / 189 / 0 skip**).
+2. ✅ **Billing resolved (`OPS-07`)** — GitHub Actions and CodeQL run on `main`.
+3. ✅ `scaffold-juce` has passed on real GitHub runners and is included in `publish.needs`.
+4. ✅ `scaffold-juce`'s apt packages verified on Ubuntu 26 (`ubuntu-latest`).
+5. ✅ `OPS-02` fixed — `continue-on-error` is gone and a test asserts no
    workflow step reintroduces it.
-6. ✅ `README.md` and `SECURITY.md` are accurate. The only ARA text left in the
-   README is the deliberate "removed in 2.0.0" note explaining why; `SECURITY.md`
-   was rewritten in Phase 5 and every claim in it cites file:line.
-6b. ☐ **The `scaffold-*` CI jobs still have never run**, so `cmake -B build` on a
-   generated project is unproven (AUDIT Phase 6, item 41). Until item 2 clears, that
-   is the largest untested assumption in the release. The installed-tarball path *is*
-   proven: `npm pack` → clean install → `node_modules/.bin/apc-mcp` answers
-   `initialize` with version 2.0.0 and lists 7 tools, and a `type=juce ui=webview`
-   scaffold from the *installed* package produced all 9 files with `FORMATS VST3;AU`,
-   `NEEDS_WEB_BROWSER`, zero unsubstituted placeholders and the three UI assets.
+6. ✅ `README.md`, `CONTRIBUTING.md`, and `SECURITY.md` are accurate and synced to
+   current line numbers and counts.
+6b. ✅ **All `scaffold-*` CI jobs (`clap`, `lv2`, `juce`) have run green on real
+   GitHub runners**, and the installed-tarball path (`npm pack` → 27 files) is verified.
 7. ☐ `CHANGELOG.md` `## [Unreleased] — 2.0.0` renamed to a dated `## [2.0.0] — <date>`
-   heading. **`scripts/ship.mjs` refuses to release until this is done** — that guard
-   is the reason the step cannot be forgotten.
-8. ☐ Tag `v2.0.0` (the workflow publishes on `v*` tags).
+   heading. **`scripts/ship.mjs` refuses to release until this is done.**
+8. ☐ Tag `v2.0.0` via `npm run ship` (the workflow publishes on `v*` tags).
 
 `AUDIT.md` is committed here deliberately. It documents a path-traversal
 exploit against the *published* 1.5.0; that is acceptable because the same
@@ -614,12 +580,10 @@ git clone --depth 1 https://github.com/lv2/lv2.git /tmp/lv2
 export APC_CLAP_INCLUDE=/tmp/clap/include APC_LV2_INCLUDE=/tmp/lv2/include
 export APC_CLAP_DIR=/tmp/clap APC_LV2_DIR=/tmp/lv2/include APC_JUCE_DIR=/tmp/JUCE
 
-# Phases 3, 4 and 5 are DONE — §5 and §6 record what they changed.
-# Next, in order:
-#   §7  OPS-07 — a human must clear the GitHub billing lock; nothing validates
-#                in CI until then
-#   §11 the 2.0.0 release checklist (items 2, 3, 4, 6b, 7, 8 are still open)
-#   §8  the unbuilt TODO.md feature scope: Standalone → ARA → LV2
+# Phases 3–5, OPS-07, Standalone, and LV2 are DONE.
+# Remaining:
+#   §11 the 2.0.0 release checklist (items 7 and 8: CHANGELOG heading + npm run ship)
+#   §8  the remaining TODO.md feature: ARA (requires external ARA SDK)
 # Whatever you pick: write the failing test first, and prove it fails against the
 # pre-change code in a throwaway worktree (§4 has the command).
 ```

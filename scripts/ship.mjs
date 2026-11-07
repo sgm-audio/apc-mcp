@@ -66,6 +66,8 @@ if (!/^\d+\.\d+\.\d+([-+].+)?$/.test(version)) {
   stop(`"${version}" is not a valid semver version.`);
 }
 
+const NPM_CMD = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
 // ── Guard 1: quality gates ────────────────────────────────────────
 // Run here rather than only via `npm run ship &&`, so invoking this file
 // directly cannot bypass them.
@@ -74,7 +76,7 @@ if (NO_CHECK) {
 } else if (DRY_RUN) {
   console.log('\nship: dry run — skipping `npm run check` (it would run for real).');
 } else {
-  run('npm', ['run', 'check'], 'npm run check');
+  run(NPM_CMD, ['run', 'check'], 'npm run check');
 }
 
 // ── Guard 2: git state ────────────────────────────────────────────
@@ -119,6 +121,11 @@ if (existing.status === 0) {
   stop(`tag ${tagName} already exists and points at ${existing.stdout?.trim()}.\n` +
        '  Bump the version in package.json before shipping again.');
 }
+const remoteTag = git(['ls-remote', '--tags', 'origin', `refs/tags/${tagName}`]);
+if (remoteTag.status === 0 && remoteTag.stdout?.trim()) {
+  stop(`tag ${tagName} already exists on origin (${remoteTag.stdout.trim().split(/\s+/)[0]}).\n` +
+       '  Bump the version in package.json before shipping again.');
+}
 
 // ── Guard 4: the CHANGELOG must document this version ─────────────
 // Catches the common mistake of tagging while the entry is still [Unreleased].
@@ -141,9 +148,11 @@ if (/^## \[Unreleased\]/m.test(changelog) && DRY_RUN) {
 }
 
 // ── All guards passed ─────────────────────────────────────────────
+// Push the branch BEFORE creating the local tag so a failed branch push does
+// not leave an unpushed local tag blocking a retry.
 console.log('\nship: all guards passed.');
-run('git', ['tag', '-a', tagName, '-m', `${pkg.name} ${tagName}`], `git tag ${tagName}`);
 run('git', ['push', 'origin', branch], `git push origin ${branch}`);
+run('git', ['tag', '-a', tagName, '-m', `${pkg.name} ${tagName}`], `git tag ${tagName}`);
 run('git', ['push', 'origin', tagName], `git push origin ${tagName}`);
 
 console.log(DRY_RUN

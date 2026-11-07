@@ -32,7 +32,6 @@ public:
 
 private:
     juce::AudioParameterFloat *m_gain = nullptr;
-    float m_lastGain = 1.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR({{PLUGIN_CLASS_NAME}})
 };

@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
+enable_language(C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -62,6 +63,8 @@ set_target_properties({{PLUGIN_NAME}} PROPERTIES
     # validated without the layout being hand-edited. LIBRARY_OUTPUT_DIRECTORY
     # is what applies to a MODULE library.
     LIBRARY_OUTPUT_DIRECTORY
+        "${CMAKE_BINARY_DIR}/plugins/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/LV2/{{PLUGIN_NAME}}.lv2"
+    RUNTIME_OUTPUT_DIRECTORY
         "${CMAKE_BINARY_DIR}/plugins/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/LV2/{{PLUGIN_NAME}}.lv2"
 )
 

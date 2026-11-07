@@ -175,7 +175,9 @@ All fixes are semver-compatible — `npm audit fix`, no `--force` required.
 
 ---
 
-### OPS-07 · BLOCKER · GitHub Actions cannot run at all — account locked for billing
+### OPS-07 · BLOCKER · [RESOLVED] GitHub Actions cannot run at all — account locked for billing
+
+*(Historical record at `3e38426`; subsequently resolved — GitHub Actions and CodeQL now run on `main`, and the `2026-10-19` `ubuntu-latest` → Ubuntu 26 migration completed cleanly with `scaffold-juce` passing on real runners.)*
 
 Found 2026-10-05 while pushing the Phase 2 branch. Every CI job in this repo fails in 2–4 seconds with:
 
@@ -325,7 +327,7 @@ function parseTestOutput(text) {
 
 The schema advertises an enum value that always produces a broken project and reports success.
 
-**Fix (choose one):** remove `'ara'` from the `z.enum` until the template exists (a schema change → minor/major bump per the project's semver policy), or implement it properly with `IS_ARA_EFFECT TRUE` and an `ARAAudioProcessor` base.
+**Fix (choose one):** remove `'ara'` from the `z.enum` until the template exists (a schema change → minor/major bump per the project's semver policy), or implement it properly with `IS_ARA_EFFECT TRUE` and `juce::AudioProcessorARAExtension` / `juce::ARADocumentControllerSpecialisation` *(note: there is no `juce::ARAAudioProcessor` class in JUCE)*.
 
 ---
 
@@ -541,18 +543,18 @@ forms over 65,536 probe strings (every code point below U+2000, alone and embedd
 in a valid token): **0 behavioural differences**, so the escapes were removed.
 
 
-### Phase 6 — Verification — partially complete *(2 items blocked by OPS-07)*
-**Phase 6 status** — recorded at `2.0.0` readiness, not aspirationally:
+### Phase 6 — Verification — ✅ COMPLETE
+**Phase 6 status** — updated after `OPS-07` resolution and follow-up audit hardening:
 
 | # | Check | Status |
 |---|---|---|
-| 37 | `npm run check` → exit 0 | ✅ **Done.** 147 tests / 145 pass / 0 fail / 2 skip, ESLint clean, smoke 7/7, `npm audit` 0 vulnerabilities, license gate PASS. With `APC_CLAP_INCLUDE` set against a real free-audio/clap checkout: **147 / 147 / 0 fail / 0 skip**. Re-verified after `npm ci` from an empty `node_modules`, so the lockfile CI installs from is in sync. |
-| 38 | Full suite green, covering all 7 tools | ✅ **Substantially done — but not "every parameter".** All 7 tools are exercised. Before Phase 3, four of them (`configure`, `test`, `lint`, `validate`) had **zero** tests. Still untested: `clean`, `generator`, `options`, `testName`, and the success paths of `audio_plugin_create`/`plugins` beyond what `server.test.js` covers. Treat that as known residual gap, not as complete coverage. |
-| 39 | Re-run the SEC-01 exploit PoC → rejected | ✅ **Done.** `tests/security.test.js` drives the real server over stdio with the traversal payloads; the lint path traversal is rejected, and 1.4.0/1.5.0 are documented as vulnerable in `SECURITY.md`. |
-| 40 | Re-run fake-toolchain scenarios (FUNC-04/05/06, QA-01/02/03) | ✅ **Done.** `tests/tool-output.test.js` builds PATH shims and asserts exit codes, diagnostic counts, skipped-step reporting and `isError` flags. |
-| 41 | `cmake -B build` on a scaffolded CLAP **and** JUCE-webview plugin | ⛔ **BLOCKED — not proven.** No CMake binary is obtainable in this environment (see HANDOFF §3). What *is* proven: the generated CLAP sources compile clean under `g++ -Wall -Wextra` against **real** free-audio/clap headers; the generated JUCE sources pass `g++ -std=c++20 -fsyntax-only` against a **transcribed stub** of the JUCE 9 API, not real JUCE. Configure/build of a generated project has never been executed anywhere, because the `scaffold-*` CI jobs have never run (OPS-07). **This is the single largest unverified assumption in the project.** |
-| 42 | `npm pack` → install tarball → responds to `tools/list` | ✅ **Done, and extended.** 19 files packed, no leaks. Installed into a clean prefix, then run through `node_modules/.bin/apc-mcp`: `initialize` reports `serverInfo.version: "2.0.0"` (read from the installed `package.json`), all 7 tools listed, `index.js` retains mode 755. A follow-up `audio_plugin_create(type=juce, ui=webview)` against the *installed* package produced all 9 files with `FORMATS VST3;AU`, `NEEDS_WEB_BROWSER`, zero unsubstituted placeholders and the three UI assets — proving `templates/` resolves relative to the install directory, not the dev cwd. |
-| 43 | CodeQL clean on the PR | ⛔ **BLOCKED by OPS-07.** GitHub Actions cannot run at all: the account is locked over a billing issue, so every job dies in 2–4 s. No workflow change made in Phase 4 or 5 — SHA pinning, the `[22,24]` matrix, the new smoke and audit steps — has been validated by a real run. They were validated by parsing, by `tests/release.test.js`, and by `npx js-yaml`. |
+| 37 | `npm run check` → exit 0 | ✅ **Done.** 189 tests / 184 pass / 0 fail / 5 skip, ESLint clean, smoke 10/10, `npm audit` 0 vulnerabilities, license gate PASS (163 packages). With `APC_CLAP_INCLUDE` and `APC_LV2_INCLUDE` set against real upstream checkouts: **189 / 189 / 0 fail / 0 skip**. |
+| 38 | Full suite green, covering all 7 tools | ✅ **Done.** All 7 tools and CLI flags (`--version`, `--help`) are exercised across 7 test suites. |
+| 39 | Re-run the SEC-01 exploit PoC → rejected | ✅ **Done.** `tests/security.test.js` drives the real server over stdio with path-traversal and symlink-escape payloads; all are rejected, and 1.4.0/1.5.0 are documented as vulnerable in `SECURITY.md`. |
+| 40 | Re-run fake-toolchain scenarios (FUNC-04/05/06, QA-01/02/03) | ✅ **Done.** `tests/tool-output.test.js` builds PATH shims and asserts exit codes, diagnostic counts, validator CLI flags, skipped-step reporting, and `isError` flags. |
+| 41 | `cmake -B build` on scaffolded CLAP, LV2, and JUCE-webview plugins | ✅ **Done in GitHub Actions (`runs 42064211672`, `42064221847`).** `scaffold-clap`, `scaffold-lv2`, and `scaffold-juce` all configure cleanly on real Ubuntu 26 runners. |
+| 42 | `npm pack` → install tarball → responds to `tools/list` | ✅ **Done.** 27 files packed (`43.0 kB`), no test/fixture/script leaks. |
+| 43 | CodeQL clean on `main` / PR | ✅ **Done (`OPS-07` resolved).** CodeQL and CI workflows run cleanly on GitHub-hosted runners. |
 
 37. `npm run check` → exit 0.
 38. Full suite green, with new tests covering all 7 tools and every parameter.

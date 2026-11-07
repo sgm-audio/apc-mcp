@@ -1,7 +1,7 @@
 {
   "name": "@sgm-audio/apc-mcp",
   "version": "2.0.0",
-  "description": "MCP server for audio plugin development \u2014 CMake build, test, lint, and project management for JUCE, CLAP and VST3 plugin projects",
+  "description": "MCP server for audio plugin development \u2014 CMake build, test, lint, and project management for JUCE, CLAP, VST3, and LV2 plugin projects",
   "type": "module",
   "bin": {
     "apc-mcp": "./index.js"
@@ -42,6 +42,7 @@
     "juce",
     "clap",
     "vst3",
+    "lv2",
     "cmake",
     "audio",
     "dsp",
@@ -50,5 +51,8 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^10.12.0"
+  },
+  "overrides": {
+    "minimatch": "^11.0.5"
   }
 }

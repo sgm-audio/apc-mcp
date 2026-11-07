@@ -95,6 +95,38 @@ describe('SEC-01 · lint target must not escape the project root', () => {
     assert.equal(r.isError, true, `expected rejection of absolute outside path, got: ${r.text}`);
     assert.ok(!cfLog().includes('victim.cpp'), `absolute path escape: ${cfLog()}`);
   });
+
+  it('rejects a symlink inside the project pointing outside (lint & create)', async () => {
+    const symProj = path.join(ROOT, 'symproj');
+    fs.mkdirSync(path.join(symProj, '_tools'), { recursive: true });
+    fs.writeFileSync(path.join(symProj, 'CMakeLists.txt'), 'project(sym)\n');
+    fs.symlinkSync(OUTSIDE, path.join(symProj, '_tools', 'ext'), 'dir');
+    fs.symlinkSync(OUTSIDE, path.join(symProj, 'plugins'), 'dir');
+
+    resetCfLog();
+    const rLint = await call('audio_plugin_lint',
+      { projectPath: symProj, target: '_tools/ext', fix: true },
+      { env: { PATH: FAKE_PATH } });
+    assert.equal(rLint.isError, true, `symlink lint escape was accepted: ${rLint.text}`);
+    assert.ok(!cfLog().includes('victim.cpp'), `clang-format touched external file via symlink: ${cfLog()}`);
+
+    const rCreate = await call('audio_plugin_create',
+      { projectPath: symProj, name: 'SymEscaped', type: 'clap' },
+      { env: { PATH: FAKE_PATH } });
+    assert.equal(rCreate.isError, true, `symlink create escape was accepted: ${rCreate.text}`);
+    assert.ok(!fs.existsSync(path.join(OUTSIDE, 'SymEscaped')),
+      'scaffold wrote outside project root via symlinked plugins/');
+  });
+});
+
+describe('plugin name validation rejects degenerate and reserved CMake target names', () => {
+  for (const badName of ['___', '---', '-leading', '123num', 'test', 'all', 'install', 'clean']) {
+    it(`rejects name="${badName}"`, async () => {
+      const r = await call('audio_plugin_create',
+        { projectPath: PROJ, name: badName, type: 'clap' }, { env: { PATH: FAKE_PATH } });
+      assert.equal(r.isError, true, `bad plugin name "${badName}" was accepted: ${r.text}`);
+    });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════

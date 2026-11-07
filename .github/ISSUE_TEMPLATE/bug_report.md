@@ -24,7 +24,8 @@ Paste the full tool output here
 **What you expected**
 
 **Project info**
-- Plugin format: CLAP / VST3 / JUCE / ARA
+- Plugin format: CLAP / VST3 / JUCE / LV2 / Standalone
+- Node.js version:
 - CMake version:
 - Generator: Ninja / Unix Makefiles / other
 - Platform: Linux / macOS / Windows

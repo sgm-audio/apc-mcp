@@ -68,7 +68,6 @@ export default [
         caughtErrors: 'all',
         caughtErrorsIgnorePattern: '^_',
       }],
-      // This project's whole security model is "never build a shell string".
       // The project's whole security model is "never build a shell string", so
       // the shell-invoking APIs are banned outright. spawn/spawnSync are fine —
       // they take an argv array and involve no interpreter.

@@ -29,28 +29,43 @@ if(NOT TARGET clap)
 endif()
 
 # ── Plugin target ────────────────────────────────────────────────────
+# MODULE, not SHARED: a CLAP binary is loaded dynamically (dlopen / LoadLibrary /
+# CFBundle) and never linked against.
+#
 # Literal target name, not ${PROJECT_NAME}: this file is a subdirectory of the
 # host project, so PROJECT_NAME belongs to that project and every scaffolded
 # plugin would otherwise collide on the same target name.
-add_library({{PLUGIN_NAME}} SHARED
+add_library({{PLUGIN_NAME}} MODULE
     Source/PluginEntry.cpp
     Source/PluginProcessor.cpp
+    Source/PluginProcessor.h
 )
 
 target_link_libraries({{PLUGIN_NAME}} PRIVATE clap)
 target_include_directories({{PLUGIN_NAME}} PRIVATE Source)
 
-set_target_properties({{PLUGIN_NAME}} PROPERTIES
-    OUTPUT_NAME "{{PLUGIN_NAME}}"
-    # Emit into the same <build>/plugins/<name>/<name>_artefacts/<config>/CLAP
-    # layout that audio_plugin_validate scans, so a scaffolded plugin can be
-    # validated without the layout being hand-edited.
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/CLAP/{{PLUGIN_NAME}}.clap"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/CLAP/{{PLUGIN_NAME}}.clap"
-)
+# Emit into <build>/plugins/<name>/<name>_artefacts/<config>/CLAP/<name>.clap,
+# matching the layout audio_plugin_validate scans:
+#   - macOS: a CFBundle directory (<name>.clap/Contents/MacOS/<name>)
+#   - Linux & Windows: a single shared object renamed <name>.clap
+set(CLAP_ARTEFACTS_DIR
+    "${CMAKE_BINARY_DIR}/plugins/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/CLAP")
 
-# NOTE: a .clap bundle's internal layout is platform-specific (Linux: a shared
-# object at the bundle root; macOS: MacOS/<name> inside the bundle; Windows:
-# <name>.dll). The above covers Linux and Windows. Packaging a macOS bundle
-# correctly needs an extra POST_BUILD step — see the CLAP docs before shipping
-# a macOS build.
+if(APPLE)
+    set_target_properties({{PLUGIN_NAME}} PROPERTIES
+        OUTPUT_NAME "{{PLUGIN_NAME}}"
+        BUNDLE TRUE
+        BUNDLE_EXTENSION clap
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.{{VENDOR}}.{{PLUGIN_ID}}"
+        MACOSX_BUNDLE_BUNDLE_NAME "{{PLUGIN_DISPLAY_NAME}}"
+        LIBRARY_OUTPUT_DIRECTORY "${CLAP_ARTEFACTS_DIR}"
+    )
+else()
+    set_target_properties({{PLUGIN_NAME}} PROPERTIES
+        OUTPUT_NAME "{{PLUGIN_NAME}}"
+        PREFIX ""
+        SUFFIX ".clap"
+        LIBRARY_OUTPUT_DIRECTORY "${CLAP_ARTEFACTS_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${CLAP_ARTEFACTS_DIR}"
+    )
+endif()

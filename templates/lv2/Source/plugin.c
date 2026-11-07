@@ -12,6 +12,7 @@
 
 #include <lv2/core/lv2.h>
 
+#include <stdint.h>
 #include <stdlib.h>
 
 // The plugin's permanent identity. It MUST be a valid URI (RFC 3986), it MUST
@@ -108,8 +109,10 @@ static void run(LV2_Handle instance, uint32_t sample_count)
     const float gain = *self->gain;
 
     for (uint32_t i = 0; i < sample_count; ++i) {
-        self->out_l[i] = self->in_l[i] * gain;
-        self->out_r[i] = self->in_r[i] * gain;
+        const float l = self->in_l[i];
+        const float r = self->in_r[i];
+        self->out_l[i] = l * gain;
+        self->out_r[i] = r * gain;
     }
 }
 

@@ -7,8 +7,12 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
+    timeout-minutes: 15
     strategy:
       matrix:
         node-version: [22, 24]
@@ -21,24 +25,28 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Lint
-        # `npm run lint` is ESLint over the whole repo plus a parse check. It used
-        # to be `node --check index.js` alone, which only proves the file parses.
+        # `npm run lint` is ESLint over the whole repo plus a parse check.
         run: npm run lint
       - name: Test
         run: npm test
       - name: Scaffold smoke (every type x ui)
         run: npm run smoke
-      # `npm run check` runs audit + licenses locally; CI has a separate `license`
-      # job for the allowlist, but nothing gated on `npm audit` — a new advisory
-      # in the dependency tree would not have failed the build.
       - name: Security advisories
         run: npm audit --audit-level=high
       - name: Smoke test — all 7 tools register
         run: |
-          echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | timeout 5 node index.js | python3 -c "
+          printf '%s\n%s\n%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"1.0"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | timeout 5 node index.js | python3 -c "
           import sys, json
-          data = json.loads(sys.stdin.read())
-          names = [t['name'] for t in data['result']['tools']]
+          msgs = [json.loads(l) for l in sys.stdin.read().splitlines() if l.strip()]
+          tools_msg = next((m for m in msgs if m.get('id') == 2), None)
+          if not tools_msg:
+            print(f'FAIL: no tools/list response in {msgs}')
+            sys.exit(1)
+          names = [t['name'] for t in tools_msg['result']['tools']]
           expected = ['audio_plugin_build','audio_plugin_configure','audio_plugin_create','audio_plugin_lint','audio_plugin_plugins','audio_plugin_test','audio_plugin_validate']
           missing = [n for n in expected if n not in names]
           if missing:
@@ -47,13 +55,12 @@ jobs:
           print(f'OK: {len(names)} tools registered')
           "
 
-  # Compiles the scaffolded C++ with a real front end. This is what catches
-  # templates calling JUCE/CLAP API that does not exist — the structural tests
-  # alone cannot. JUCE sources go against tests/fixtures/juce-api-stub (a
-  # transcription of the JUCE 9 API, no JUCE download needed); CLAP sources go
-  # against the real free-audio/clap headers.
+  # Compiles the scaffolded C/C++ with real gcc/g++ front ends. JUCE sources go
+  # against tests/fixtures/juce-api-stub (a transcription of the JUCE 9 API);
+  # CLAP and LV2 sources go against real free-audio/clap and lv2/lv2 headers.
   compile-scaffold:
     name: Scaffolded C/C++ compiles
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -76,20 +83,15 @@ jobs:
         run: node --test tests/cpp-api.test.js
 
   # Configures the native LV2 template against real cmake and the real LV2
-  # headers. Like scaffold-clap this needs only cmake + a compiler (both
-  # preinstalled) plus a git clone, so there is no apt surface to drift — which
-  # is the property that makes it safe to gate publishing on.
-  #
-  # CAVEAT: first green on 2026-10-08, but LOCAL (WSL Ubuntu 26.04, cmake
-  # 4.1.2, lv2/lv2 headers) -- GitHub Actions remain billing-locked, so it has
-  # still never run on a real runner (AUDIT.md OPS-07). LV2 core is
-  # header-only, so the only system requirement is a C compiler.
+  # headers. Needs only cmake + a C compiler (both preinstalled) plus a git
+  # clone, so there is no apt surface to drift.
   scaffold-lv2:
     name: Scaffolded LV2 configures with real cmake
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
           cache: npm
@@ -105,6 +107,7 @@ jobs:
   # ubuntu-latest, so this job is fast and has no apt surface to drift.
   scaffold-clap:
     name: Scaffolded CLAP configures with real cmake
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -120,19 +123,11 @@ jobs:
           APC_CLAP_DIR: ${{ runner.temp }}/clap
         run: node scripts/smoke-scaffold.mjs --configure
 
-  # Configures the JUCE and JUCE+WebView templates against a real JUCE checkout.
-  # This is the check that proves a scaffolded JUCE plugin actually configures,
-  # which no amount of Node-side testing can do.
-  #
-  # CAVEAT: first green on 2026-10-08, but LOCAL (WSL Ubuntu 26.04, cmake
-  # 4.1.2, JUCE 9.0.3, five JUCE/standalone scaffolds configured) -- GitHub
-  # Actions remain billing-locked, so it has still never run on a real runner
-  # (AUDIT.md OPS-07). The apt package names below were validated on Ubuntu
-  # 26.04 during that run (including libwebkit2gtk-4.1-dev), so they are known
-  # good for the `ubuntu-latest` to Ubuntu 26 migration on 2026-10-19; no need
-  # to pin to ubuntu-24.04.
+  # Configures the JUCE, JUCE+WebView, and standalone templates against a real
+  # JUCE 9 checkout on Ubuntu.
   scaffold-juce:
     name: Scaffolded JUCE configures with real cmake
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -158,6 +153,7 @@ jobs:
 
   license:
     name: License check
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -169,12 +165,9 @@ jobs:
         run: node scripts/check-licenses.mjs
 
   publish:
-    # scaffold-juce is intentionally NOT in `needs` yet: it has passed locally
-    # (2026-10-08, Ubuntu 26.04 + exactly the apt list below) but never on a
-    # real runner — add it once it has passed once on main. (Blocked on
-    # AUDIT.md OPS-07 either way: Actions are billing-locked.)
-    needs: [test, license, compile-scaffold, scaffold-clap, scaffold-lv2]
+    needs: [test, license, compile-scaffold, scaffold-clap, scaffold-lv2, scaffold-juce]
     if: startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
       id-token: write
