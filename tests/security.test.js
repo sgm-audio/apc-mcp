@@ -239,6 +239,49 @@ describe('QA-05 · a non-existent projectPath is rejected without side effects',
 });
 
 // ═══════════════════════════════════════════════════════════════════
+describe('SEC-01c · symlinks cannot redirect operations outside the project', () => {
+  it('rejects a lint target that is a symlink to an outside directory', async t => {
+    const linked = path.join(PROJ, 'linked-outside');
+    try { fs.symlinkSync(OUTSIDE, linked, 'dir'); }
+    catch (e) { return t.skip(`directory symlinks unavailable: ${e.code}`); }
+
+    resetCfLog();
+    const r = await call('audio_plugin_lint',
+      { projectPath: PROJ, target: 'linked-outside', fix: true }, { env: { PATH: FAKE_PATH } });
+    assert.equal(r.isError, true, r.text);
+    assert.match(r.text, /symlink|escape/i);
+    assert.equal(cfLog(), '', 'clang-format must not be invoked through an escaping symlink');
+  });
+
+  it('rejects a pluginsDir symlink instead of creating files outside', async t => {
+    const p = path.join(ROOT, 'symlink-create');
+    fs.mkdirSync(p, { recursive: true });
+    fs.writeFileSync(path.join(p, 'CMakeLists.txt'), 'project(x)\n');
+    fs.writeFileSync(path.join(p, 'apc-mcp.json'), JSON.stringify({ pluginsDir: 'linked' }));
+    try { fs.symlinkSync(OUTSIDE, path.join(p, 'linked'), 'dir'); }
+    catch (e) { return t.skip(`directory symlinks unavailable: ${e.code}`); }
+
+    const r = await call('audio_plugin_create',
+      { projectPath: p, name: 'Boom', type: 'clap' }, { env: { PATH: FAKE_PATH } });
+    assert.equal(r.isError, true, r.text);
+    assert.match(r.text, /symlink|escape/i);
+    assert.equal(fs.existsSync(path.join(OUTSIDE, 'Boom')), false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+describe('cross-platform paths', () => {
+  it('accepts a native Windows path string at the schema boundary', async () => {
+    // The path is deliberately non-existent on this host: reaching the normal
+    // project-root error proves the SAFE_PATH schema did not reject backslashes.
+    const r = await call('audio_plugin_plugins',
+      { projectPath: 'C:\\work\\MyPlugin' }, { env: { PATH: FAKE_PATH } });
+    assert.match(r.text, /not found|not a directory/i, r.text);
+    assert.doesNotMatch(r.text, /shell metacharacters|Invalid path/i, r.text);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 describe('SEC-03 · apc-mcp.json is validated, never trusted blindly', () => {
   function projectWith(configObj, name) {
     const p = path.join(ROOT, name);

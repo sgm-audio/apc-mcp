@@ -255,6 +255,24 @@ describe('SPDX license evaluator handles compound & WITH expressions', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+describe('documentation paths', () => {
+  it('every relative Markdown link in root documentation resolves', () => {
+    const docs = fs.readdirSync(PROJECT_ROOT).filter(f => f.endsWith('.md'));
+    for (const doc of docs) {
+      const text = fs.readFileSync(path.join(PROJECT_ROOT, doc), 'utf8');
+      for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
+        const target = match[1];
+        if (/^(?:[a-z]+:|#)/i.test(target)) continue;
+        const relative = target.split('#')[0];
+        if (!relative) continue;
+        assert.ok(fs.existsSync(path.join(PROJECT_ROOT, decodeURIComponent(relative))),
+          `${doc} links to missing path: ${target}`);
+      }
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 describe('workflow files are parseable YAML', () => {
   it('every workflow has a name, triggers and at least one job', () => {
     for (const f of workflowFiles) {

@@ -86,7 +86,8 @@ function writeProjectConfig(obj) {
 // configure step instead.
 function plantCache() {
   fs.mkdirSync(BUILD, { recursive: true });
-  fs.writeFileSync(path.join(BUILD, 'CMakeCache.txt'), '# stub cache\n');
+  fs.writeFileSync(path.join(BUILD, 'CMakeCache.txt'),
+    'CMAKE_BUILD_TYPE:STRING=Debug\nCMAKE_CONFIGURATION_TYPES:STRING=\n');
 }
 
 // Plant the artefacts audio_plugin_validate looks for.
@@ -177,6 +178,39 @@ describe('FUNC-06 · config from apc-mcp.json must be honoured', () => {
     assert.equal(r.isError, false, r.text);
     assert.ok((argvOf('cmake')[0] ?? '').includes('-DCMAKE_BUILD_TYPE=Debug'));
   });
+
+  it('audio_plugin_build passes --config for multi-config generators', async () => {
+    plantCache();
+    const r = await call('audio_plugin_build',
+      { projectPath: PROJ, config: 'Release' }, { env: shimEnv() });
+    assert.equal(r.isError, false, r.text);
+    const buildArgs = argvOf('cmake').find(a => a.includes('--build')) ?? '';
+    assert.match(buildArgs, /(^|\s)--config Release(\s|$)/,
+      `Release was not forwarded to the build step: ${buildArgs}`);
+  });
+
+  it('reconfigures a single-config tree when the requested config changes', async () => {
+    plantCache();
+    fs.writeFileSync(path.join(BUILD, 'CMakeCache.txt'),
+      'CMAKE_BUILD_TYPE:STRING=Debug\nCMAKE_CONFIGURATION_TYPES:STRING=\n');
+    const r = await call('audio_plugin_build',
+      { projectPath: PROJ, config: 'Release' }, { env: shimEnv() });
+    assert.equal(r.isError, false, r.text);
+    const configureArgs = argvOf('cmake').find(a => a.includes('-DCMAKE_BUILD_TYPE')) ?? '';
+    assert.match(configureArgs, /-DCMAKE_BUILD_TYPE=Release/,
+      `--config alone does not change Unix Makefiles/Ninja: ${log()}`);
+  });
+
+  it('does not reconfigure a multi-config tree just to select Release', async () => {
+    plantCache();
+    fs.writeFileSync(path.join(BUILD, 'CMakeCache.txt'),
+      'CMAKE_BUILD_TYPE:STRING=Debug\nCMAKE_CONFIGURATION_TYPES:STRING=Debug;Release\n');
+    const r = await call('audio_plugin_build',
+      { projectPath: PROJ, config: 'Release' }, { env: shimEnv() });
+    assert.equal(r.isError, false, r.text);
+    assert.equal(argvOf('cmake').filter(a => a.includes('-DCMAKE_BUILD_TYPE')).length, 0, log());
+    assert.match(argvOf('cmake').find(a => a.includes('--build')) ?? '', /--config Release/);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -252,6 +286,20 @@ describe('QA-02 · the ctest parser must not count its own summary prose', () =>
       { env: shimEnv(FAKE_BIN, { stdout: partial, exit: 8 }) });
     assert.match(r.text, /Passed: 1, Failed: 1, Total: 2/, `got: ${r.text}`);
   });
+
+  it('does not report success when parsed tests failed despite exit zero', async () => {
+    const r = await call('audio_plugin_test', { projectPath: PROJ },
+      { env: shimEnv(FAKE_BIN, { stdout: CTEST_ONE_FAIL, exit: 0 }) });
+    assert.equal(r.isError, true, r.text);
+    assert.match(r.text, /Passed: 2, Failed: 1, Total: 3/);
+  });
+
+  it('includes ctest stderr in failure details', async () => {
+    const r = await call('audio_plugin_test', { projectPath: PROJ },
+      { env: shimEnv(FAKE_BIN, { stderr: 'ctest crashed before producing a summary', exit: 2 }) });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /ctest crashed before producing a summary/, r.text);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -306,6 +354,16 @@ describe('QA-04 · summary prose must not be counted as a warning', () => {
     const r = await call('audio_plugin_build', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: withWarning }) });
     assert.match(r.text, /Warnings: 1/, `got: ${r.text}`);
+  });
+
+  it('counts warnings written to stderr during a successful build', async () => {
+    plantCache();
+    const withWarning = '/src/Foo.cpp:3:7: warning: unused variable \'x\' [-Wunused-variable]';
+    const r = await call('audio_plugin_build', { projectPath: PROJ },
+      { env: shimEnv(FAKE_BIN, { stderr: withWarning, exit: 0 }) });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.text, /Errors: 0, Warnings: 1/,
+      `successful-process stderr was discarded: ${r.text}`);
   });
 
   it('counts a gcc-style warning (no column number)', async () => {

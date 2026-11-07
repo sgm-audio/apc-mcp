@@ -104,9 +104,9 @@ write outside the project root.**
 - Dependency license gate added and wired into CI
 - Broken GitLab CI removed; CI consolidated on GitHub Actions with all actions
   pinned to commit SHAs and explicit job `permissions` / `timeout-minutes`
-- **205 tests**, including 42 negative security tests, 64 template-structure
-  tests, 15 artefact-discovery tests, 20 real C/C++ compile + link checks, 28 tool-output
-  tests, 21 release/CI-invariant tests, and 15 server/CLI tests
+- **215 tests**, including 45 negative security tests, 64 template-structure
+  tests, 15 artefact-discovery tests, 20 real C/C++ compile + link checks, 34 tool-output
+  tests, 22 release/CI-invariant tests, and 15 server/CLI tests
 
 ### 1.5.0 / 1.4.0
 

@@ -231,7 +231,7 @@ my-plugin/
 git clone https://github.com/sgm-audio/apc-mcp.git
 cd apc-mcp
 npm install
-npm test          # 205 tests, node:test (compile + link checks use gcc/g++ or clang/clang++)
+npm test          # 215 tests, node:test (compile + link checks use gcc/g++ or clang/clang++)
 npm run lint      # ESLint + syntax check on server, scripts, tests, and WebView JS
 npm run check     # Full gate: lint + test + scaffold smoke + npm audit + license check
 ```
@@ -248,7 +248,7 @@ apc-mcp/
 │   │   └── Source/UI/          # the HTML/CSS/JS you edit
 │   ├── lv2/                    # Native C11 LV2 scaffold + Turtle metadata
 │   └── standalone/             # JUCE *application* (juce_add_gui_app), not a plugin
-├── tests/                      # 205 tests, node:test, no framework
+├── tests/                      # 215 tests, node:test, no framework
 │   ├── helpers/mcp-client.mjs  # shared MCP stdio client (full handshake)
 │   ├── fixtures/juce-api-stub/ # transcribed JUCE 9 API, for compile + link checks
 │   ├── server.test.js          # happy path + CLI flags + root CMake wiring
