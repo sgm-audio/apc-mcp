@@ -82,11 +82,10 @@ jobs:
           APC_LV2_INCLUDE: ${{ runner.temp }}/lv2/include
         run: node --test tests/cpp-api.test.js
 
-  # Configures the native LV2 template against real cmake and the real LV2
-  # headers. Needs only cmake + a C compiler (both preinstalled) plus a git
-  # clone, so there is no apt surface to drift.
+  # Configures, compiles, and links the native LV2 template against real cmake
+  # and the real LV2 headers, verifying the resulting .lv2 bundle on disk.
   scaffold-lv2:
-    name: Scaffolded LV2 configures with real cmake
+    name: Scaffolded LV2 builds with real cmake
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -98,15 +97,14 @@ jobs:
       - run: npm ci
       - name: Clone lv2/lv2 for the headers
         run: git clone --depth 1 https://github.com/lv2/lv2.git "${RUNNER_TEMP}/lv2"
-      - name: cmake -B build on every scaffolded LV2 plugin
+      - name: Build and verify every scaffolded LV2 plugin
         env:
           APC_LV2_DIR: ${{ runner.temp }}/lv2/include
-        run: node scripts/smoke-scaffold.mjs --configure
+        run: node scripts/smoke-scaffold.mjs --build
 
-  # The default scaffold type. Needs only cmake + a compiler, both preinstalled on
-  # ubuntu-latest, so this job is fast and has no apt surface to drift.
+  # Configures, compiles, and links the CLAP template against free-audio/clap.
   scaffold-clap:
-    name: Scaffolded CLAP configures with real cmake
+    name: Scaffolded CLAP builds with real cmake
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -118,16 +116,16 @@ jobs:
       - run: npm ci
       - name: Vendor free-audio/clap at _tools/clap
         run: git clone --depth 1 https://github.com/free-audio/clap.git "${RUNNER_TEMP}/clap"
-      - name: cmake -B build on every scaffolded CLAP plugin
+      - name: Build and verify every scaffolded CLAP plugin
         env:
           APC_CLAP_DIR: ${{ runner.temp }}/clap
-        run: node scripts/smoke-scaffold.mjs --configure
+        run: node scripts/smoke-scaffold.mjs --build
 
-  # Configures the JUCE, JUCE+WebView, and standalone templates against a real
-  # JUCE 9 checkout on Ubuntu.
+  # Configures, compiles, and links the JUCE, JUCE+WebView, and standalone
+  # templates against a real JUCE 9 checkout on Ubuntu.
   scaffold-juce:
-    name: Scaffolded JUCE configures with real cmake
-    timeout-minutes: 30
+    name: Scaffolded JUCE builds with real cmake
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -140,16 +138,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config \
             libasound2-dev libjack-jackd2-dev libcurl4-openssl-dev \
-            libfreetype6-dev libx11-dev libxcomposite-dev libxcursor-dev \
+            libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev \
             libxext-dev libxinerama-dev libxrandr-dev libxrender-dev \
-            libwebkit2gtk-4.1-dev libglu1-mesa-dev
+            libgtk-3-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev
       - name: Clone JUCE 9
         run: git clone --depth 1 --branch 9.0.3 https://github.com/juce-framework/JUCE.git "${RUNNER_TEMP}/JUCE"
-      - name: cmake -B build on every scaffolded JUCE plugin
+      - name: Build and verify every scaffolded JUCE plugin & standalone app
         env:
           APC_JUCE_DIR: ${{ runner.temp }}/JUCE
-        run: node scripts/smoke-scaffold.mjs --configure
+        run: node scripts/smoke-scaffold.mjs --build
 
   license:
     name: License check

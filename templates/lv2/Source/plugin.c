@@ -69,6 +69,9 @@ static LV2_Handle instantiate(const LV2_Descriptor *descriptor,
 static void connect_port(LV2_Handle instance, uint32_t port, void *data_location)
 {
     {{PLUGIN_ID}} *self = ({{PLUGIN_ID}} *) instance;
+    if (self == NULL) {
+        return;
+    }
 
     switch (port) {
         case PORT_GAIN:  self->gain  = (const float *) data_location; break;
@@ -97,8 +100,8 @@ static void run(LV2_Handle instance, uint32_t sample_count)
     // these are non-NULL in practice. The guard is cheap and turns a malformed
     // host into silence instead of a crash — and a crash inside a plugin takes
     // the whole DAW process down with it.
-    if (self->gain == NULL || self->in_l == NULL || self->in_r == NULL
-        || self->out_l == NULL || self->out_r == NULL) {
+    if (self == NULL || self->gain == NULL || self->in_l == NULL
+        || self->in_r == NULL || self->out_l == NULL || self->out_r == NULL) {
         return;
     }
 

@@ -73,6 +73,9 @@
 #endif
 #define JUCE_WEB_BROWSER_RESOURCE_PROVIDER_AVAILABLE \
     (JUCE_MAC || JUCE_LINUX || (JUCE_WINDOWS && JUCE_USE_WIN_WEBVIEW2))
+#ifndef JUCE_CALLTYPE
+ #define JUCE_CALLTYPE
+#endif
 #define JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(C) \
     C (const C &) = delete; C &operator= (const C &) = delete;
 
@@ -168,14 +171,18 @@ namespace juce
         operator String() const { return {}; }
     };
 
-    String operator+ (const char *, const String &);
-    String operator+ (String, const String &);
-    String operator+ (String, const char *);
+    inline String operator+ (const char *, const String &) { return {}; }
+    inline String operator+ (String, const String &) { return {}; }
+    inline String operator+ (String, const char *) { return {}; }
 
     class JSON
     {
     public:
-        static String toString (const var &, bool allOnOneLine = false, int maximumDecimalPlaces = 15);
+        static String toString (const var &, bool allOnOneLine = false, int maximumDecimalPlaces = 15)
+        {
+            (void) allOnOneLine; (void) maximumDecimalPlaces;
+            return {};
+        }
     };
 
     class URL
@@ -228,7 +235,7 @@ namespace juce
     {
     public:
         ParameterID() = default;
-        template <typename StringLike> ParameterID (StringLike &&, int versionHint = 0) {}
+        template <typename StringLike> ParameterID (StringLike &&, int = 0) {}
     };
 
     template <typename T> class NormalisableRange
@@ -264,7 +271,16 @@ namespace juce
     };
 
     class MidiBuffer {};
-    class AudioChannelSet { public: static AudioChannelSet stereo() { return {}; } };
+    class AudioChannelSet
+    {
+    public:
+        int channels = 0;
+        static AudioChannelSet disabled() { return { 0 }; }
+        static AudioChannelSet mono()     { return { 1 }; }
+        static AudioChannelSet stereo()   { return { 2 }; }
+        bool operator== (const AudioChannelSet &other) const noexcept { return channels == other.channels; }
+        bool operator!= (const AudioChannelSet &other) const noexcept { return channels != other.channels; }
+    };
 
     //==========================================================================
     // juce_core/maths/juce_MathsFunctions.h — MathConstants lives there, not in
@@ -449,6 +465,11 @@ namespace juce
             BusesProperties &withInput (const String &, AudioChannelSet, bool) { return *this; }
             BusesProperties &withOutput (const String &, AudioChannelSet, bool) { return *this; }
         };
+        struct BusesLayout
+        {
+            AudioChannelSet getMainInputChannelSet() const { return AudioChannelSet::stereo(); }
+            AudioChannelSet getMainOutputChannelSet() const { return AudioChannelSet::stereo(); }
+        };
         AudioProcessor() = default;
         AudioProcessor (const BusesProperties &) {}
         virtual ~AudioProcessor() = default;
@@ -462,7 +483,9 @@ namespace juce
 
         virtual void prepareToPlay (double, int) = 0;
         virtual void releaseResources() = 0;
+        virtual bool isBusesLayoutSupported (const BusesLayout &) const { return true; }
         virtual void processBlock (AudioBuffer<float> &, MidiBuffer &) = 0;
+        virtual void processBlock (AudioBuffer<double> &, MidiBuffer &) {}
         virtual AudioProcessorEditor *createEditor() = 0;
         virtual bool hasEditor() const = 0;
         virtual const String getName() const = 0;
@@ -487,7 +510,12 @@ namespace juce
         virtual void timerCallback() = 0;
     };
 
-    class ScopedNoDenormals {};
+    class ScopedNoDenormals
+    {
+    public:
+        ScopedNoDenormals() noexcept {}
+        ~ScopedNoDenormals() noexcept {}
+    };
 
     //==========================================================================
     class WebBrowserComponent : public Component
@@ -520,7 +548,7 @@ namespace juce
         void goToURL (const String &) {}
         void evaluateJavascript (const String &, EvaluationCallback = nullptr) {}
        #if JUCE_WEB_BROWSER_RESOURCE_PROVIDER_AVAILABLE
-        static const String &getResourceProviderRoot();
+        static const String &getResourceProviderRoot() { static const String root { "https://juce.backend/" }; return root; }
        #endif
 
         virtual bool pageAboutToLoad (const String &) { return true; }
@@ -724,7 +752,7 @@ namespace juce
         void setResizable (bool, bool) {}
         void setTitleBarHeightRequired (bool) {}
 
-        virtual void closeButtonPressed();
+        virtual void closeButtonPressed() {}
     };
 
     class ResizableWindow : public Component

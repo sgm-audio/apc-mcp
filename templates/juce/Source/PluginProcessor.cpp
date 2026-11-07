@@ -1,5 +1,7 @@
 #include "PluginProcessor.h"
 
+#include <algorithm>
+
 {{PLUGIN_CLASS_NAME}}::{{PLUGIN_CLASS_NAME}}()
     : AudioProcessor(BusesProperties()
           .withInput("Input", juce::AudioChannelSet::stereo(), true)
@@ -13,16 +15,26 @@ void {{PLUGIN_CLASS_NAME}}::prepareToPlay(double sampleRate, int samplesPerBlock
 
 void {{PLUGIN_CLASS_NAME}}::releaseResources() {}
 
+bool {{PLUGIN_CLASS_NAME}}::isBusesLayoutSupported(const BusesLayout &layouts) const {
+    const auto &mainOut = layouts.getMainOutputChannelSet();
+    if (mainOut != juce::AudioChannelSet::mono()
+        && mainOut != juce::AudioChannelSet::stereo())
+        return false;
+
+    return mainOut == layouts.getMainInputChannelSet();
+}
+
 void {{PLUGIN_CLASS_NAME}}::processBlock(juce::AudioBuffer<float> &buffer, juce::MidiBuffer &) {
     juce::ScopedNoDenormals noDenormals;
-    auto totalNumInputChannels = getTotalNumInputChannels();
-    auto totalNumOutputChannels = getTotalNumOutputChannels();
+    const auto totalNumInputChannels = getTotalNumInputChannels();
+    const auto totalNumOutputChannels = getTotalNumOutputChannels();
 
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear(i, 0, buffer.getNumSamples());
 
-    for (int channel = 0; channel < totalNumInputChannels; ++channel) {
-        auto *channelData = buffer.getReadPointer(channel);
+    const auto channelsToProcess = std::min(totalNumInputChannels, totalNumOutputChannels);
+    for (int channel = 0; channel < channelsToProcess; ++channel) {
+        const auto *channelData = buffer.getReadPointer(channel);
         auto *outData = buffer.getWritePointer(channel);
         for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
             outData[sample] = channelData[sample]; // passthrough
@@ -39,4 +51,8 @@ void {{PLUGIN_CLASS_NAME}}::getStateInformation(juce::MemoryBlock &destData) {
 
 void {{PLUGIN_CLASS_NAME}}::setStateInformation(const void *data, int sizeInBytes) {
     juce::ignoreUnused(data, sizeInBytes);
+}
+
+juce::AudioProcessor *JUCE_CALLTYPE createPluginFilter() {
+    return new {{PLUGIN_CLASS_NAME}}();
 }

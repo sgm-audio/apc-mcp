@@ -452,6 +452,8 @@ describe('lint, build, and test edge cases', () => {
     const cmakeCalls = argvOf('cmake');
     assert.ok(cmakeCalls.some(a => a.includes('-DCMAKE_BUILD_TYPE=Release')),
       `expected reconfigure when cached build type differed: ${cmakeCalls.join(' | ')}`);
+    assert.ok(!cmakeCalls[0].includes('-G '),
+      `reconfiguring an existing CMakeCache.txt must not clobber its generator with -G: ${cmakeCalls[0]}`);
     assert.ok(cmakeCalls.some(a => a.includes('--build') && a.includes('--config Release')),
       `expected --config Release on cmake --build: ${cmakeCalls.join(' | ')}`);
 
@@ -483,5 +485,39 @@ describe('lint, build, and test edge cases', () => {
       { env: shimEnv(FAKE_BIN, { stderr: 'CMake Error: Cannot find test directory\n', exit: 8 }) });
     assert.equal(r2.isError, true);
     assert.match(r2.text, /Cannot find test directory/, `ctest stderr was dropped: ${r2.text}`);
+
+    const segOut = [
+      '1/2 Test #1: OkTest ..........   Passed    0.01 sec',
+      '2/2 Test #2: CrashTest .......***SegFault  0.02 sec',
+    ].join('\n');
+    const r3 = await call('audio_plugin_test', { projectPath: PROJ },
+      { env: shimEnv(FAKE_BIN, { stdout: segOut, exit: 8 }) });
+    assert.equal(r3.isError, true);
+    assert.match(r3.text, /Passed: 1, Failed: 1, Total: 2/, `***SegFault was missed: ${r3.text}`);
+  });
+
+  it('lint skips _tools/ and build/ even with target="." and does not false-match Gain.h on Gain.hpp errors', async () => {
+    fs.mkdirSync(path.join(PROJ, 'plugins', 'Foo', 'Source', 'build'), { recursive: true });
+    const nested = path.join(PROJ, 'plugins', 'Foo', 'Source', 'build', 'Nested.cpp');
+    const gainH = path.join(PROJ, 'plugins', 'Foo', 'Source', 'Gain.h');
+    const gainHpp = path.join(PROJ, 'plugins', 'Foo', 'Source', 'Gain.hpp');
+    fs.writeFileSync(nested, 'int nested = 1;\n');
+    fs.writeFileSync(gainH, 'int clean = 1;\n');
+    fs.writeFileSync(gainHpp, 'int dirty=1;\n');
+
+    const rDot = await call('audio_plugin_lint', { projectPath: PROJ, target: '.' }, { env: shimEnv() });
+    assert.equal(rDot.isError, false, rDot.text);
+    const args = argvOf('clang-format')[0] ?? '';
+    assert.doesNotMatch(args, /juce_core\.cpp/, `target="." walked into _tools/: ${args}`);
+    assert.doesNotMatch(args, /CMakeCXXCompilerId\.cpp/, `target="." walked into root build/: ${args}`);
+    assert.match(args, /Nested\.cpp/, `nested Source/build/Nested.cpp should still be linted: ${args}`);
+
+    const rDiag = await call('audio_plugin_lint',
+      { projectPath: PROJ, target: 'plugins/Foo/Source' },
+      { env: shimEnv(FAKE_BIN, { stderr: `${gainHpp}:1:10: error: code should be clang-formatted\n`, exit: 1 }) });
+    assert.equal(rDiag.isError, true);
+    assert.match(rDiag.text, /Files with problems: 1\b/, `Gain.h was falsely matched against Gain.hpp: ${rDiag.text}`);
+    assert.match(rDiag.text, /Gain\.hpp/);
+    assert.doesNotMatch(rDiag.text, /Gain\.h\n/);
   });
 });

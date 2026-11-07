@@ -307,3 +307,50 @@ describe('FUNC-07 · type "ara" is no longer offered (unimplemented template)', 
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+describe('symlink containment on status.json and root CMakeLists.txt + Windows path support', () => {
+  it('refuses to leak external JSON through a symlinked status.json', async () => {
+    const leakProj = path.join(ROOT, 'leakproj');
+    const plugDir = path.join(leakProj, 'plugins', 'PlugA');
+    fs.mkdirSync(plugDir, { recursive: true });
+    fs.writeFileSync(path.join(leakProj, 'CMakeLists.txt'), 'project(leak)\n');
+    fs.writeFileSync(path.join(plugDir, 'CMakeLists.txt'), '');
+    const secretPath = path.join(OUTSIDE, 'secret.json');
+    fs.writeFileSync(secretPath, JSON.stringify({ apiKey: 'TOP_SECRET_12345', type: 'leaked' }));
+    fs.symlinkSync(secretPath, path.join(plugDir, 'status.json'));
+
+    const r = await call('audio_plugin_plugins',
+      { projectPath: leakProj, format: 'json' }, { env: { PATH: FAKE_PATH } });
+    assert.equal(r.isError, false, r.text);
+    assert.ok(!r.text.includes('TOP_SECRET_12345'), `symlinked status.json leaked secret: ${r.text}`);
+    const parsed = JSON.parse(r.text);
+    assert.match(parsed[0]?.statusError ?? '', /symlink|escape|unreadable/i);
+  });
+
+  it('refuses to modify a symlinked root CMakeLists.txt during audio_plugin_create', async () => {
+    const symCmakeProj = path.join(ROOT, 'symcmakeproj');
+    fs.mkdirSync(symCmakeProj, { recursive: true });
+    fs.writeFileSync(path.join(symCmakeProj, 'apc-mcp.json'), '{}');
+    const externalCmake = path.join(OUTSIDE, 'ExternalCMakeLists.txt');
+    fs.writeFileSync(externalCmake, 'project(do_not_touch)\n');
+    fs.symlinkSync(externalCmake, path.join(symCmakeProj, 'CMakeLists.txt'));
+
+    const r = await call('audio_plugin_create',
+      { projectPath: symCmakeProj, name: 'NoTouch', type: 'clap' }, { env: { PATH: FAKE_PATH } });
+    assert.equal(r.isError, true, `expected symlinked CMakeLists.txt rejection: ${r.text}`);
+    assert.equal(fs.readFileSync(externalCmake, 'utf8'), 'project(do_not_touch)\n',
+      'external CMakeLists.txt was modified through symlink');
+  });
+
+  it('allows Windows backslash separators in SAFE_OPTIONS while still blocking .. traversal', async () => {
+    const rOpt = await call('audio_plugin_configure',
+      { projectPath: PROJ, options: '-DJUCE_DIR=C:\\SDKs\\JUCE' }, { env: { PATH: FAKE_PATH } });
+    assert.equal(rOpt.isError, false, `Windows path in options was rejected: ${rOpt.text}`);
+
+    const rTrav = await call('audio_plugin_lint',
+      { projectPath: PROJ, target: 'plugins\\..\\..\\outside' }, { env: { PATH: FAKE_PATH } });
+    assert.equal(rTrav.isError, true, 'backslash .. traversal must still be rejected');
+  });
+});
+

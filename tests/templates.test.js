@@ -283,6 +283,37 @@ describe('FUNC-02/08/11/12 · JUCE templates use the real JUCE 9 CMake API', () 
       assert.equal(open, close, `${s.name}: unbalanced parentheses (${open} open, ${close} close)`);
     }
   });
+
+  it('defines createPluginFilter(), isBusesLayoutSupported(), and using AudioProcessor::processBlock in every JUCE plugin', () => {
+    for (const s of jucePluginOnly()) {
+      const h = cppCode(s.files.get('Source/PluginProcessor.h'));
+      const cpp = cppCode(s.files.get('Source/PluginProcessor.cpp'));
+      assert.match(cpp, /juce::AudioProcessor\s*\*\s*JUCE_CALLTYPE\s+createPluginFilter\s*\(\s*\)/,
+        `${s.name}: missing createPluginFilter() — JUCE VST3/AU/LV2/Standalone wrappers cannot link without it`);
+      assert.match(h, /using\s+AudioProcessor::processBlock\s*;/,
+        `${s.name}: missing using AudioProcessor::processBlock; triggers -Woverloaded-virtual`);
+      assert.match(h, /isBusesLayoutSupported\s*\(\s*const\s+BusesLayout\s*&[^)]*\)\s*const\s+override/,
+        `${s.name}: missing isBusesLayoutSupported() override`);
+      assert.ok(cpp.includes('std::min(totalNumInputChannels, totalNumOutputChannels)'),
+        `${s.name}: processBlock must clamp channel loop against asymmetric layouts`);
+      if (s.ui === 'webview') {
+        assert.match(cpp, /juce::ParameterID\s*\{\s*"gain"\s*,\s*1\s*\}/,
+          `${s.name}: AudioParameterFloat needs ParameterID version hint >= 1 to avoid JUCE 9 AU Debug jassert`);
+      }
+    }
+  });
+
+  it('makes JUCE plugin and standalone CMakeLists self-contained (C+CXX languages, cxx_std_20, Debug default)', () => {
+    for (const s of [...jucePluginOnly(), ...appOnly()]) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      assert.match(cm, /\benable_language\s*\(\s*C\s+CXX\s*\)/,
+        `${s.name}: JUCE compiles C sources (zlib/png/harfbuzz), so CMakeLists must enable C and CXX`);
+      assert.match(cm, /\btarget_compile_features\s*\(\s*\S+\s+PRIVATE\s+cxx_std_20\s*\)/,
+        `${s.name}: must require cxx_std_20 on the target rather than assuming the root CMake sets it`);
+      assert.match(cm, /set\s*\(\s*CMAKE_BUILD_TYPE\s+Debug\b/,
+        `${s.name}: single-config builds need a default CMAKE_BUILD_TYPE so artefacts land under <Config>/`);
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -338,14 +369,20 @@ describe('FUNC-02/15 · WebView template uses the real JUCE 9 browser API', () =
     }
   });
 
-  it('the C++ binary-data namespace matches the CMake NAMESPACE', () => {
+  it('includes BinaryData.h and references juceaide camelCase *Size constants in the CMake NAMESPACE', () => {
     for (const s of juceOnly('webview')) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       const ns = cm.match(/NAMESPACE\s+(\S+)/)?.[1];
-      const editor = s.files.get('Source/WebViewEditor.cpp');
+      const editor = cppCode(s.files.get('Source/WebViewEditor.cpp'));
       assert.ok(ns, `${s.name}: no NAMESPACE`);
-      assert.ok(editor.includes(`namespace ${ns}`),
-        `${s.name}: WebViewEditor.cpp declares a different BinaryData namespace than CMake's ${ns}`);
+      assert.match(editor, /#include\s+[<"]BinaryData\.h[>"]/,
+        `${s.name}: WebViewEditor.cpp must include BinaryData.h (const int *Size has internal linkage)`);
+      assert.ok(!editor.includes('index_html_size') && !editor.includes('extern const int'),
+        `${s.name}: manual extern const int *_size forward declarations fail to link against juceaide BinaryData`);
+      for (const sym of ['index_html', 'index_htmlSize', 'style_css', 'style_cssSize', 'app_js', 'app_jsSize']) {
+        assert.ok(editor.includes(`${ns}::${sym}`),
+          `${s.name}: WebViewEditor.cpp missing ${ns}::${sym}`);
+      }
     }
   });
 
@@ -921,10 +958,43 @@ describe('native LV2 template', () => {
     assert.equal(rJuce.isError, false, rJuce.text);
     const juceCmake = fs.readFileSync(path.join(PLUGINS, 'JuceEscaped', 'CMakeLists.txt'), 'utf8');
     const cmLine = juceCmake.split('\n').find(l => l.trim().startsWith('DESCRIPTION '));
-    assert.ok(cmLine?.includes('\\"warm\\"') && cmLine.includes('\\${CMAKE_VAR}'),
-      `CMake DESCRIPTION was not escaped: ${cmLine}`);
+    assert.ok(cmLine?.includes('\\\\\\"warm\\\\\\"') && cmLine.includes('\\${CMAKE_VAR}'),
+      `CMake+C++ JucePlugin_Desc DESCRIPTION was not escaped: ${cmLine}`);
     assert.ok(cmLine.includes('{{VENDOR}}') && !cmLine.includes('and acme'),
       `replaceTemplateVars cross-expanded {{VENDOR}} inside CMake DESCRIPTION: ${cmLine}`);
+  });
+
+  it('guards null instance pointers in CLAP and LV2 templates and sanitizes bundle/URN vendor IDs', async () => {
+    for (const s of [...scaffolded.values()].filter(x => x.type === 'clap')) {
+      const h = cppCode(s.files.get('Source/PluginProcessor.h'));
+      assert.match(h, /plugin\s*!=\s*nullptr/, `${s.name}: CLAP from() must guard plugin == nullptr`);
+    }
+    for (const s of lv2Only()) {
+      const c = cppCode(s.files.get('Source/plugin.c'));
+      assert.equal((c.match(/self\s*==\s*NULL/g) ?? []).length >= 3, true,
+        `${s.name}: LV2 instantiate/connect_port/run must all guard self == NULL`);
+    }
+
+    const rVendor = await call('audio_plugin_create', {
+      projectPath: PROJ, name: 'VendorSan', type: 'juce', vendor: 'my_vendor',
+    });
+    assert.equal(rVendor.isError, false, rVendor.text);
+    const vendorCm = fs.readFileSync(path.join(PLUGINS, 'VendorSan', 'CMakeLists.txt'), 'utf8');
+    assert.match(vendorCm, /BUNDLE_ID\s+"com\.my-vendor\.VendorSan"/,
+      `CFBundleIdentifier must not contain underscores: ${vendorCm}`);
+
+    const rLv2Short = await call('audio_plugin_create', {
+      projectPath: PROJ, name: 'ShortNid', type: 'lv2', vendor: 'x',
+    });
+    assert.equal(rLv2Short.isError, false, rLv2Short.text);
+    const ttl = fs.readFileSync(path.join(PLUGINS, 'ShortNid', 'Source', 'manifest.ttl'), 'utf8');
+    const nid = ttl.match(/^<urn:([a-z0-9]+):ShortNid>$/m)?.[1] ?? '';
+    assert.ok(nid.length >= 2, `RFC 8141 requires URN NID length >= 2, got "${nid}"`);
+
+    const rClapFmt = await call('audio_plugin_create', {
+      projectPath: PROJ, name: 'ClapBadFmt', type: 'clap', formats: 'VST3',
+    });
+    assert.equal(rClapFmt.isError, true, 'type="clap" must reject non-CLAP formats');
   });
 
   it('enables C in LV2 CMakeLists so C++-only host projects can add_subdirectory it', () => {

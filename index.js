@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 // ─── Paths ──────────────────────────────────────────────────────────
@@ -40,8 +41,8 @@ const CONFIG_FILE = 'apc-mcp.json';
 const SAFE_TARGET = /^[a-zA-Z0-9_.-]+$/;
 // CMake generators: alphanumeric, spaces, underscores, hyphens
 const SAFE_GENERATOR = /^[a-zA-Z0-9_ -]+$/;
-// CMake options flags: -DNAME=VALUE, space-separated
-const SAFE_OPTIONS = /^[a-zA-Z0-9_= /.\-+:@]+$/;
+// CMake options flags: -DNAME=VALUE, space-separated (allows Windows `\` paths)
+const SAFE_OPTIONS = /^[a-zA-Z0-9_= /.\-\\+:@,]+$/;
 // Plugin names for creation: start with a letter, then alphanumeric, underscores, hyphens
 const SAFE_PLUGIN_NAME = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 // Built-in CMake targets that a plugin target name must never shadow.
@@ -56,8 +57,8 @@ const SAFE_REGEX = /^[\x20-\x7E]+$/;
 const SAFE_DESCRIPTION = /^[\x20-\x7E]+$/;
 // JUCE format list: semicolon-separated format names
 const SAFE_FORMATS = /^[a-zA-Z0-9_;-]+$/;
-// Project path: block shell metacharacters
-const SAFE_PATH = /^[a-zA-Z0-9_ /.\-:@~]+$/;
+// Project path: block shell metacharacters (allows POSIX `/` and Windows `\`)
+const SAFE_PATH = /^[a-zA-Z0-9_ /.\-\\:@~]+$/;
 
 function validatePath(p) {
   if (!SAFE_PATH.test(p)) {
@@ -145,9 +146,9 @@ function binaryOnPath(bin) {
 }
 
 function findBinary(bin) {
-  if (_prereqCache.has(bin)) return _prereqCache.get(bin);
+  if (_prereqCache.get(bin) === true) return true;
   const found = binaryOnPath(bin);
-  _prereqCache.set(bin, found);
+  if (found) _prereqCache.set(bin, true);
   return found;
 }
 
@@ -446,7 +447,7 @@ function parseTestOutput(text) {
   let failed = 0;
   for (const line of clean.split('\n')) {
     const m = line.match(
-      /^\s*\d+\/\d+ Test #\d+:.*?(?:\*\*\*(Failed|Timeout|Not Run|Subprocess aborted|Exception)|\b(Passed|Failed))\b/
+      /^\s*\d+\/\d+ Test #\d+:.*?(?:\*\*\*(Failed|Timeout|Not Run|Subprocess aborted|Exception|SegFault|Bad command|Numerical)|\b(Passed|Failed))\b/
     );
     if (!m) continue;
     if (m[2] === 'Passed') passed++;
@@ -461,7 +462,7 @@ function parseTestOutput(text) {
 
 const LINT_EXTENSIONS = ['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx'];
 
-function findFilesByExt(dir, exts, skipDirs = new Set()) {
+function findFilesByExt(dir, exts, skipNames = new Set(), skipPaths = new Set()) {
   const results = [];
   function walk(d) {
     let entries;
@@ -471,7 +472,7 @@ function findFilesByExt(dir, exts, skipDirs = new Set()) {
       if (entry.isSymbolicLink()) continue;
       const p = path.join(d, entry.name);
       if (entry.isDirectory()) {
-        if (skipDirs.has(entry.name)) continue;
+        if (skipNames.has(entry.name) || skipPaths.has(path.resolve(p))) continue;
         walk(p);
       } else if (entry.isFile() && exts.some(e => entry.name.endsWith(e))) {
         results.push(p);
@@ -598,7 +599,12 @@ function mapPluginType(type, ui) {
   // (AUDIT FUNC-07). Restoring it requires a real ARA template first.
   const isWebView = ui === 'webview';
   switch (type) {
-    case 'clap': return { template: 'clap', formats: 'CLAP' };
+    case 'clap': return {
+      template: 'clap',
+      formats: 'CLAP',
+      formatsRejection: 'type="clap" builds a native CLAP plugin against free-audio/clap and has no '
+        + 'JUCE FORMATS list. Remove the `formats` argument (or use type="juce" for multi-format builds).',
+    };
     case 'vst3': return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3' };
     case 'juce':
     default:     return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3;LV2;Standalone' };
@@ -639,8 +645,19 @@ function mapPluginType(type, ui) {
 // they actually control. Both parts are reduced to characters that are legal in
 // a URN, so the scaffold can never emit an invalid one.
 function lv2Uri(vendor, id) {
-  const ns = String(vendor).toLowerCase().replace(/[^a-z0-9]/g, '') || 'vendor';
+  let ns = String(vendor).toLowerCase().replace(/[^a-z0-9]/g, '');
+  // RFC 8141 §2.1 requires a URN Namespace Identifier (NID) to be >= 2 chars.
+  if (ns.length < 2) ns = ns ? `${ns}plugin` : 'vendor';
   return `urn:${ns}:${id}`;
+}
+
+// Apple CFBundleIdentifier permits only [A-Za-z0-9-.] (underscores are invalid).
+function bundleVendor(vendor) {
+  return String(vendor)
+    .replace(/_/g, '-')
+    .replace(/[^a-zA-Z0-9.-]/g, '')
+    .replace(/\.{2,}/g, '.')
+    .replace(/^\.+|\.+$/g, '') || 'apc-mcp';
 }
 
 // Turtle string literals are delimited by `"` and honour backslash escapes, so a
@@ -745,22 +762,29 @@ registerTool(
     const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
 
     // Auto-configure when unconfigured, or when a single-config cache has a
-    // different CMAKE_BUILD_TYPE than the requested config.
+    // different (or empty) CMAKE_BUILD_TYPE than the requested config.
     const cachePath = path.join(buildDir, 'CMakeCache.txt');
-    let needsConfigure = !fs.existsSync(cachePath);
-    if (!needsConfigure) {
+    const cacheExists = fs.existsSync(cachePath);
+    let needsConfigure = !cacheExists;
+    if (cacheExists) {
       try {
         const cacheText = fs.readFileSync(cachePath, 'utf-8');
-        const cachedType = cacheText.match(/^CMAKE_BUILD_TYPE:(?:STRING|UNINITIALIZED)=(.+)$/m)?.[1]?.trim();
-        if (cachedType && cachedType !== config) needsConfigure = true;
+        const isMultiConfig = /^CMAKE_CONFIGURATION_TYPES:(?:STRING|INTERNAL)=.+/m.test(cacheText);
+        const typeMatch = cacheText.match(/^CMAKE_BUILD_TYPE:(?:STRING|UNINITIALIZED)=(.*)$/m);
+        if (!isMultiConfig && typeMatch && typeMatch[1].trim() !== config) {
+          needsConfigure = true;
+        }
       } catch { /* proceed to build */ }
     }
 
     if (needsConfigure) {
       fs.mkdirSync(buildDir, { recursive: true });
+      // Only pass `-G` when creating a fresh cache; passing a default generator
+      // onto an existing CMakeCache.txt built with another generator (e.g. Ninja)
+      // makes CMake abort with a generator mismatch error.
       const cfgArgs = [
         '-B', buildDir,
-        ...(cfg.generator ? ['-G', cfg.generator] : []),
+        ...(!cacheExists && cfg.generator ? ['-G', cfg.generator] : []),
         `-DCMAKE_BUILD_TYPE=${config}`,
       ];
       const r = trySpawn('cmake', cfgArgs, { cwd: proj, timeout: 120 });
@@ -772,10 +796,11 @@ registerTool(
       }
     }
 
-    const args = ['--build', buildDir, '--config', config, '--parallel'];
+    const jobs = String(Math.max(1, os.availableParallelism?.() ?? os.cpus().length ?? 2));
+    const args = ['--build', buildDir, '--config', config, '--parallel', jobs];
     if (params.clean) args.push('--clean-first');
     if (params.target) args.push('--target', params.target);
-    const r = trySpawn('cmake', args, { cwd: proj });
+    const r = trySpawn('cmake', args, { cwd: proj, timeout: 600 });
 
     // Compilers write diagnostics to stderr and trySpawn keeps the streams
     // separate, so parsing only r.output left the "### Errors" section empty
@@ -938,18 +963,37 @@ registerTool(
       files = LINT_EXTENSIONS.some(e => searchRoot.endsWith(e)) ? [searchRoot] : [];
     } else {
       const cfg = loadProjectConfig(proj);
-      const skipDirs = params.target
-        ? new Set(['CMakeFiles', '_deps', 'node_modules'])
-        : new Set([path.basename(cfg.buildDir), '_tools', 'CMakeFiles', '_deps', 'node_modules']);
-      files = findFilesByExt(searchRoot, LINT_EXTENSIONS, skipDirs);
+      const resolvedBuildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
+      const resolvedToolsDir = path.resolve(proj, '_tools');
+      const skipNames = new Set(['CMakeFiles', '_deps', 'node_modules']);
+      const skipPaths = new Set();
+      if (searchRoot !== resolvedBuildDir && !searchRoot.startsWith(resolvedBuildDir + path.sep)) {
+        skipPaths.add(resolvedBuildDir);
+      }
+      if (searchRoot !== resolvedToolsDir && !searchRoot.startsWith(resolvedToolsDir + path.sep)) {
+        skipPaths.add(resolvedToolsDir);
+      }
+      files = findFilesByExt(searchRoot, LINT_EXTENSIONS, skipNames, skipPaths);
     }
 
     if (files.length === 0) {
       return { content: [{ type: 'text', text: 'No C/C++ source files found to lint.' }] };
     }
 
-    const args = params.fix ? ['-i', ...files] : ['--dry-run', '-Werror', ...files];
-    const r = trySpawn('clang-format', args, { cwd: proj, timeout: files.length > 100 ? 120 : 60 });
+    // Run clang-format in bounded batches so large projects never hit OS E2BIG.
+    const BATCH_SIZE = 200;
+    let allOk = true;
+    const combinedOut = [];
+    const combinedErr = [];
+    for (let i = 0; i < files.length; i += BATCH_SIZE) {
+      const batch = files.slice(i, i + BATCH_SIZE);
+      const args = params.fix ? ['-i', ...batch] : ['--dry-run', '-Werror', ...batch];
+      const batchRes = trySpawn('clang-format', args, { cwd: proj, timeout: batch.length > 100 ? 120 : 60 });
+      if (!batchRes.ok) allOk = false;
+      if (batchRes.output) combinedOut.push(batchRes.output);
+      if (batchRes.stderr) combinedErr.push(batchRes.stderr);
+    }
+    const r = { ok: allOk, output: combinedOut.join('\n'), stderr: combinedErr.join('\n') };
 
     // QA-01: with fix=true the exit status was never inspected, so a failing
     // clang-format reported "No formatting issues" — after it had already been
@@ -969,8 +1013,18 @@ registerTool(
     }
 
     if (!r.ok) {
-      // Extract filenames from stderr for the report
-      const badFiles = files.filter(f => r.stderr.includes(f) || r.output.includes(f));
+      // Match diagnostic lines `<file>:<line>:<col>:` (or exact path token) so
+      // `Gain.h` is not falsely matched when only `Gain.hpp` has formatting issues.
+      const diagStream = `${r.stderr}\n${r.output}`;
+      const badFiles = files.filter(f => {
+        const rel = path.relative(proj, f);
+        for (const candidate of [f, rel]) {
+          if (!candidate) continue;
+          const esc = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          if (new RegExp(`(?:^|\\r?\\n|\\s)${esc}(?::\\d+|\\s|$)`).test(diagStream)) return true;
+        }
+        return false;
+      });
       const relative = badFiles.map(f => path.relative(proj, f));
       const text = [
         '## Lint found issues',
@@ -1013,15 +1067,21 @@ registerTool(
     const details = plugins.map(name => {
       const statusPath = path.join(pluginsDir, name, 'status.json');
       let meta = { name };
-      if (fs.existsSync(statusPath)) {
+      let statusStat = null;
+      try { statusStat = fs.lstatSync(statusPath); } catch { /* absent */ }
+      if (statusStat) {
         try {
+          if (statusStat.isSymbolicLink()) {
+            throw new Error('refusing to read symlinked status.json');
+          }
+          assertWithinProject(proj, statusPath, 'Plugin status.json');
           const parsed = JSON.parse(fs.readFileSync(statusPath, 'utf-8'));
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
             meta = { ...parsed, name };
           }
         } catch (e) {
-          // A malformed status.json must not break the listing — but silently
-          // dropping it showed the user a plugin with no type and no reason.
+          // A malformed or symlinked status.json must not break the listing —
+          // surface a warning instead of leaking external files or dropping silently.
           meta = { ...meta, statusError: `status.json is unreadable: ${e.message}` };
         }
       }
@@ -1204,6 +1264,11 @@ registerTool(
         `## audio_plugin_create failed\n${typeInfo.formatsRejection}` }],
         isError: true };
     }
+    if (typeInfo.template === 'clap' && params.formats && params.formats !== 'CLAP') {
+      return { content: [{ type: 'text', text:
+        `## audio_plugin_create failed\n${typeInfo.formatsRejection}` }],
+        isError: true };
+    }
 
     const formats = params.formats || typeInfo.formats;
     if (typeInfo.formats !== null && typeInfo.template !== 'clap') {
@@ -1221,16 +1286,19 @@ registerTool(
       }
     }
 
+    // JUCE passes DESCRIPTION into target_compile_definitions as
+    // JucePlugin_Desc="$<TARGET_PROPERTY:${target},JUCE_DESCRIPTION>", so quotes
+    // and backslashes must survive both CMake string parsing and C++ macro quotes.
     const vars = {
       PLUGIN_NAME: params.name,
       PLUGIN_ID: id,
       PLUGIN_CLASS_NAME: id + 'Processor',
       PLUGIN_DISPLAY_NAME: displayName(params.name),
-      PLUGIN_DESCRIPTION: params.description,
       PLUGIN_DESCRIPTION_CXX: cxxStringEscape(params.description),
-      PLUGIN_DESCRIPTION_CMAKE: cmakeStringEscape(params.description),
+      PLUGIN_DESCRIPTION_CMAKE: cmakeStringEscape(cxxStringEscape(params.description)),
       PLUGIN_FORMATS: formats,
       VENDOR: params.vendor,
+      BUNDLE_VENDOR: bundleVendor(params.vendor),
       MANUFACTURER_CODE: fourCharCode(params.vendor),
       PLUGIN_CODE: fourCharCode(params.name, { exactlyOneUpper: true }),
       // Used only by templates/lv2, but computed for every scaffold so a template
@@ -1252,8 +1320,43 @@ registerTool(
       }
     }
 
-    try { copyDir(templateDir, pluginDir); }
-    catch (e) {
+    let cmakeRegistration;
+    try {
+      const rootCmakePath = assertWithinProject(proj, 'CMakeLists.txt', 'Root CMakeLists.txt');
+      if (fs.existsSync(rootCmakePath) && fs.lstatSync(rootCmakePath).isSymbolicLink()) {
+        throw new Error('Root CMakeLists.txt is a symlink — refusing to modify it');
+      }
+
+      copyDir(templateDir, pluginDir);
+
+      const relPluginDir = path.relative(proj, pluginDir).split(path.sep).join('/');
+      const subArg = relPluginDir.includes(' ') ? `"${relPluginDir}"` : relPluginDir;
+      const subLine = `add_subdirectory(${subArg})`;
+
+      if (!fs.existsSync(rootCmakePath)) {
+        fs.writeFileSync(
+          rootCmakePath,
+          `cmake_minimum_required(VERSION 3.22)\nproject(AudioPlugins LANGUAGES C CXX)\n\n${subLine}\n`,
+          'utf-8'
+        );
+        cmakeRegistration = `Created CMakeLists.txt with \`${subLine}\``;
+      } else {
+        const existing = fs.readFileSync(rootCmakePath, 'utf-8');
+        const uncommented = existing.split('\n').map(l => l.replace(/(^|\s)#.*$/, '')).join('\n');
+        const escapedRel = relPluginDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const alreadyWired = new RegExp(
+          `\\badd_subdirectory\\s*\\(\\s*"?(?:\\./)?${escapedRel}/?"?(?:\\s|\\))`,
+          'i'
+        ).test(uncommented);
+        if (!alreadyWired) {
+          const sep = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
+          fs.writeFileSync(rootCmakePath, `${existing}${sep}${subLine}\n`, 'utf-8');
+          cmakeRegistration = `Registered \`${subLine}\` in CMakeLists.txt`;
+        } else {
+          cmakeRegistration = `Already registered in CMakeLists.txt: \`${subLine}\``;
+        }
+      }
+    } catch (e) {
       return { content: [{ type: 'text', text: `Failed to create plugin: ${e.message}` }], isError: true };
     }
 
@@ -1270,7 +1373,13 @@ registerTool(
     // have no FORMATS list, and calling an LV2 plugin a standalone app would be
     // the sort of wrong-but-plausible message a model then repeats to the user.
     const kind = params.type === 'standalone' ? 'standalone app' : `${params.type} plugin`;
-    const text = [`## Created ${kind}: ${params.name}`, `Location: ${pluginDir}`, '', ...tree].join('\n');
+    const text = [
+      `## Created ${kind}: ${params.name}`,
+      `Location: ${pluginDir}`,
+      ...(cmakeRegistration ? [cmakeRegistration] : []),
+      '',
+      ...tree,
+    ].join('\n');
     return { content: [{ type: 'text', text }] };
   }
 );

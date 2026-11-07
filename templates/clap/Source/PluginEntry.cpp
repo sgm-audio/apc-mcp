@@ -62,7 +62,7 @@ namespace
 }
 
 // The symbol the host resolves when it loads the .clap bundle.
-CLAP_EXPORT const clap_plugin_entry_t clap_entry = {
+extern "C" CLAP_EXPORT const clap_plugin_entry_t clap_entry = {
     .clap_version = CLAP_VERSION_INIT,
     .init         = entryInit,
     .deinit       = entryDeinit,

@@ -46,7 +46,9 @@ public:
 
 private:
     static {{PLUGIN_CLASS_NAME}} *from(const clap_plugin_t *plugin) {
-        return static_cast<{{PLUGIN_CLASS_NAME}} *>(plugin->plugin_data);
+        return plugin != nullptr
+            ? static_cast<{{PLUGIN_CLASS_NAME}} *>(plugin->plugin_data)
+            : nullptr;
     }
 
     clap_plugin_t m_plugin {};
