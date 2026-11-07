@@ -29,24 +29,51 @@ function markdownFiles(dir = ROOT) {
 
 const rel = (abs) => path.relative(ROOT, abs).split(path.sep).join('/');
 
-// Blank out fenced code blocks and inline code so example snippets are not
-// mistaken for real links. Line structure is preserved for error messages.
-function proseOnly(text) {
+// Blank out fenced code blocks; line structure is preserved for error messages.
+// Anchors are computed from this (headings keep inline code, GitHub keeps the
+// enclosed words in the slug), while link extraction additionally strips inline
+// code so example snippets are not mistaken for real links.
+function withoutFences(text) {
   let fenced = false;
   return text.split('\n').map((line) => {
     if (/^\s*(```|~~~)/.test(line)) {
       fenced = !fenced;
       return '';
     }
-    if (fenced) return '';
-    return line.replace(/`[^`]*`/g, '');
+    return fenced ? '' : line;
   }).join('\n');
+}
+
+function proseOnly(text) {
+  return withoutFences(text)
+    .split('\n')
+    .map((line) => line.replace(/`[^`]*`/g, ''))
+    .join('\n');
+}
+
+// GitHub renders inline HTML in a heading before deriving its anchor, so tag
+// names must not leak into the slug. Scan characters rather than doing a
+// single regex replacement: one pass over "<<script>script>" would leave a
+// partial tag behind. The result is only compared with link fragments — it is
+// never emitted as HTML.
+function stripTags(text) {
+  let out = '';
+  let inTag = false;
+  for (const ch of text) {
+    if (ch === '<') {
+      inTag = true;
+    } else if (ch === '>') {
+      inTag = false;
+    } else if (!inTag) {
+      out += ch;
+    }
+  }
+  return out;
 }
 
 // GitHub heading anchors: lowercase, strip punctuation, spaces -> hyphens.
 function slugify(heading) {
-  return heading
-    .replace(/<[^>]*>/g, '')
+  return stripTags(heading)
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s\-_]/gu, '')
     .trim()
@@ -98,8 +125,9 @@ let checkedLinks = 0;
 let checkedAnchors = 0;
 
 for (const file of files) {
-  const text = proseOnly(fs.readFileSync(file, 'utf8'));
-  const fileAnchors = anchorsOf(text);
+  const rawText = fs.readFileSync(file, 'utf8');
+  const text = proseOnly(rawText);
+  const fileAnchors = anchorsOf(withoutFences(rawText));
   for (const { target } of linksIn(file, text)) {
     if (EXTERNAL.test(target) && !target.startsWith('#')) continue;
     const hash = target.indexOf('#');
@@ -122,7 +150,9 @@ for (const file of files) {
     if (anchor) {
       checkedAnchors += 1;
       if (anchor.startsWith('/') || anchor.startsWith(':')) continue; // route-style href
-      const targetAnchors = resolved === file ? fileAnchors : anchorsOf(fs.readFileSync(resolved, 'utf8'));
+      const targetAnchors = resolved === file
+        ? fileAnchors
+        : anchorsOf(withoutFences(fs.readFileSync(resolved, 'utf8')));
       if (!targetAnchors.has(anchor)) {
         failures.push(`${rel(file)}: missing anchor "#${anchor}" in ${rel(resolved)} -> ${target}`);
       }
