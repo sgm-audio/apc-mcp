@@ -649,7 +649,10 @@ function cppStringEscape(text) {
 }
 
 function cmakeStringEscape(text) {
-  return cppStringEscape(text).replace(/\$/g, '\\$');
+  // Keep the full chain local: this is a separate output language, and static
+  // analysis must be able to verify that backslashes are escaped before the
+  // quote and dollar-sign escapes introduce more backslashes.
+  return String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$');
 }
 
 // Falls back to 'Plugin' when the name has no alphanumerics at all, so a name
