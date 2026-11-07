@@ -15,7 +15,7 @@ namespace
 
     const clap_plugin_descriptor_t s_descriptor = {
         .clap_version = CLAP_VERSION_INIT,
-        .id           = "com.{{VENDOR}}.{{PLUGIN_ID}}",
+        .id           = "com.{{BUNDLE_VENDOR}}.{{PLUGIN_ID}}",
         .name         = "{{PLUGIN_DISPLAY_NAME}}",
         .vendor       = "{{VENDOR}}",
         .url          = "https://{{VENDOR}}.com/{{PLUGIN_ID}}",

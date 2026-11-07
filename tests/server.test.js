@@ -220,6 +220,23 @@ describe('apc-mcp MCP server', () => {
       const cmake = fs.readFileSync(
         path.join(dir, 'plugins', 'JuceVerb', 'CMakeLists.txt'), 'utf8');
       assert.match(cmake, /FORMATS VST3;AU/, `requested formats not emitted: ${cmake.slice(0, 400)}`);
+
+      const rootCmake = fs.readFileSync(path.join(dir, 'CMakeLists.txt'), 'utf8');
+      assert.match(rootCmake, /add_subdirectory\(plugins\/JuceVerb\)/,
+        `create should wire add_subdirectory into root CMakeLists.txt: ${rootCmake}`);
+    });
+
+    it('creates a minimal root CMakeLists.txt when initialized with apc-mcp.json only', async () => {
+      const dir = path.join(ROOT, 'config-only-proj');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'apc-mcp.json'), JSON.stringify({ config: 'Debug' }));
+
+      const r = await call('audio_plugin_create',
+        { projectPath: dir, name: 'BootPlug', type: 'juce', vendor: 'test' });
+      assert.equal(r.isError, false, textOf(r));
+      const rootCmake = fs.readFileSync(path.join(dir, 'CMakeLists.txt'), 'utf8');
+      assert.match(rootCmake, /project\(AudioPlugins LANGUAGES C CXX\)/);
+      assert.match(rootCmake, /add_subdirectory\(plugins\/BootPlug\)/);
     });
   });
 

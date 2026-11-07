@@ -231,7 +231,7 @@ my-plugin/
 git clone https://github.com/sgm-audio/apc-mcp.git
 cd apc-mcp
 npm install
-npm test          # 189 tests, node:test (compile checks need gcc/g++ or clang/clang++)
+npm test          # 215 tests, node:test (compile + link checks use gcc/g++ or clang/clang++)
 npm run lint      # ESLint + syntax check on server, scripts, tests, and WebView JS
 npm run check     # Full gate: lint + test + scaffold smoke + npm audit + license check
 ```
@@ -248,15 +248,15 @@ apc-mcp/
 │   │   └── Source/UI/          # the HTML/CSS/JS you edit
 │   ├── lv2/                    # Native C11 LV2 scaffold + Turtle metadata
 │   └── standalone/             # JUCE *application* (juce_add_gui_app), not a plugin
-├── tests/                      # 189 tests, node:test, no framework
+├── tests/                      # 215 tests, node:test, no framework
 │   ├── helpers/mcp-client.mjs  # shared MCP stdio client (full handshake)
-│   ├── fixtures/juce-api-stub/ # transcribed JUCE 9 API, for compile checks
-│   ├── server.test.js          # happy path + CLI flags
+│   ├── fixtures/juce-api-stub/ # transcribed JUCE 9 API, for compile + link checks
+│   ├── server.test.js          # happy path + CLI flags + root CMake wiring
 │   ├── security.test.js        # negative / traversal / symlink rejection tests
 │   ├── tool-output.test.js     # config precedence, parsers, failure reporting
 │   ├── templates.test.js       # generated-project structure (no toolchain)
 │   ├── artefacts.test.js       # build-artefact discovery per JUCE/CLAP/LV2 layouts
-│   ├── cpp-api.test.js         # real gcc/g++/clang over generated C/C++ sources
+│   ├── cpp-api.test.js         # real gcc/g++/clang compile + link over generated C/C++
 │   └── release.test.js         # versioning, CI pins, SPDX license & release guards
 ├── scripts/
 │   ├── smoke-scaffold.mjs      # npm run smoke — scaffold every type x ui
@@ -312,13 +312,18 @@ be skipped, and say which. A tool that says it failed is more useful than one th
 lies about succeeding; if your own automation branched on the old behaviour, this is
 what changed.
 
-**Q: `audio_plugin_create` says success but the project won't configure**  
-A: It should not — the templates are verified by `tests/templates.test.js`,
-`tests/cpp-api.test.js` and `npm run smoke`. If you hit this, please open an issue
-with the tool's full output. For JUCE projects specifically, the generated
-`CMakeLists.txt` expects JUCE to be available (a `JUCE` submodule or
-`CMAKE_PREFIX_PATH`); that is a prerequisite of the project, not something the
-scaffold can supply.
+**Q: `audio_plugin_create` says success — what SDKs do I need to build?**  
+A: `audio_plugin_create` registers `add_subdirectory(plugins/<Name>)` in your root
+`CMakeLists.txt` automatically (or creates one if you started with `apc-mcp.json`
+alone). To compile and link the target, supply the matching format SDK:
+- **JUCE (`juce`, `vst3`, `standalone`):** vendor JUCE at `_tools/JUCE`, pass
+  `-DJUCE_DIR=/path/to/JUCE` to `audio_plugin_configure`, or `add_subdirectory(JUCE)`
+  from your root `CMakeLists.txt` (on Linux, also install the system X11/ALSA/FreeType
+  dev headers, plus `libwebkit2gtk-4.1-dev` for `ui="webview"`).
+- **CLAP (`clap`):** vendor `free-audio/clap` at `_tools/clap` or install it on
+  `CMAKE_PREFIX_PATH`.
+- **LV2 (`lv2`):** install system LV2 headers (`apt install lv2-dev` / `brew install lv2`),
+  vendor `lv2/lv2` at `_tools/lv2`, or pass `-DLV2_INCLUDE_DIR=/path/to/lv2/include`.
 
 **Q: Does it work with VS Code / Cursor / Continue.dev?**  
 A: Yes — any MCP client works. Point it at `npx github:sgm-audio/apc-mcp` using whatever MCP config format that client uses.

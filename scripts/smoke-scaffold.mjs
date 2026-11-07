@@ -2,25 +2,21 @@
 // End-to-end scaffold smoke test.
 //
 // Drives the real MCP server to scaffold every plugin-type x ui combination into
-// a throwaway project, then checks the output. With --configure it also runs real
-// cmake, which is the only check that proves a scaffolded plugin actually
-// configures.
+// a throwaway project, then checks the output (including root CMakeLists.txt
+// registration). With --configure it runs real cmake configure; with --build it
+// also runs `cmake --build` to compile and link every target and verifies the
+// resulting plugin/app binaries on disk.
 //
-// audio_plugin_create requires an existing project root and never rewrites it, so
-// this script supplies a root CMakeLists.txt with project() + add_subdirectory(),
-// exactly as a user would.
-//
-// Configure-time dependencies come from the environment, so the script stays
+// Configure/build dependencies come from the environment, so the script stays
 // useful on a laptop with no toolchain:
 //   APC_JUCE_DIR   path to a JUCE checkout (symlinked to <proj>/_tools/JUCE)
 //   APC_CLAP_DIR   path to a free-audio/clap checkout (symlinked to <proj>/_tools/clap)
 //   APC_LV2_DIR    path to an lv2/lv2 include directory (contains lv2/core/lv2.h)
-// Each family is always scaffolded and structurally verified, and cmake-configured
-// when its corresponding APC_*_DIR variable is set.
 //
 // Usage:
 //   node scripts/smoke-scaffold.mjs                  # structural checks only
 //   node scripts/smoke-scaffold.mjs --configure      # + cmake configure
+//   node scripts/smoke-scaffold.mjs --build          # + cmake configure + compile/link + artefact check
 //
 // Exit code is non-zero if any check fails.
 
@@ -33,7 +29,8 @@ import { fileURLToPath } from 'node:url';
 const PKG_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const INDEX = path.join(PKG_DIR, 'index.js');
 
-const CONFIGURE = process.argv.includes('--configure');
+const BUILD_TARGETS = process.argv.includes('--build');
+const CONFIGURE = BUILD_TARGETS || process.argv.includes('--configure');
 const JUCE_DIR = process.env.APC_JUCE_DIR || '';
 const CLAP_DIR = process.env.APC_CLAP_DIR || '';
 const LV2_DIR = process.env.APC_LV2_DIR || '';
@@ -46,13 +43,12 @@ const CASES = [
   { name: 'SmokeVst3Wv',    type: 'vst3', ui: 'webview', family: 'juce' },
   { name: 'smoke-kebab',    type: 'clap', ui: 'generic', family: 'clap' },
   // A standalone application. `family` stays 'juce' because that is what
-  // groups it for the optional cmake configure step — it needs JUCE, just like
-  // the plugin templates. The CMake command it must use is different, and is
-  // derived from `type` below rather than from `family`.
+  // groups it for the optional cmake configure/build step — it needs JUCE, just
+  // like the plugin templates.
   { name: 'SmokeStandalone', type: 'standalone', ui: 'generic', family: 'juce' },
   { name: 'smoke_app',       type: 'standalone', ui: 'generic', family: 'juce' },
   // A native LV2 plugin: C, not C++, and it needs the LV2 headers rather than
-  // JUCE or CLAP, so it is its own family for the configure step.
+  // JUCE or CLAP, so it is its own family for the configure/build step.
   { name: 'SmokeLv2',        type: 'lv2', ui: 'generic', family: 'lv2' },
   { name: 'smoke-lv2_gain',  type: 'lv2', ui: 'generic', family: 'lv2' },
 ];
@@ -71,7 +67,12 @@ const CMAKE_COMMAND_FOR_TYPE = {
 let failures = 0;
 const fail = (label, detail) => {
   failures++;
-  console.error(`  FAIL ${label}\n       ${String(detail).split('\n').join('\n       ')}`);
+  const text = String(detail);
+  console.error(`  FAIL ${label}\n       ${text.split('\n').join('\n       ')}`);
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    const compact = text.trim().split('\n').slice(-15).join('%0A').replace(/\r/g, '');
+    console.error(`::error title=${label}::${compact}`);
+  }
 };
 const ok = label => console.log(`  ok   ${label}`);
 
@@ -81,8 +82,6 @@ function rpc(method, params) {
     const proc = spawn(process.execPath, [INDEX], { stdio: ['pipe', 'pipe', 'pipe'] });
     let buf = '', settled = false, stderr = '';
     const send = o => {
-      // Best effort: if stdin is already closed the server has exited and the
-      // close handler below produces the real error.
       try { proc.stdin.write(JSON.stringify(o) + '\n'); } catch { /* server gone */ }
     };
     const killer = setTimeout(() => proc.kill('SIGKILL'), 60000);
@@ -144,13 +143,11 @@ function vendorTools() {
 }
 
 function writeRootCMake(names) {
-  // One project() at the root, then every plugin as a subdirectory. Configuring
-  // several plugins at once is deliberate: it is the multi-plugin collision case
-  // (duplicate juce::* / clap targets) that an unguarded add_subdirectory causes.
+  // Deliberately minimal: NO explicit LANGUAGES and NO CMAKE_CXX_STANDARD here,
+  // proving each plugin/app template enables C/CXX and C++20 on its own.
   const lines = [
     'cmake_minimum_required(VERSION 3.22)',
-    'project(apc_smoke_host C CXX)',  // JUCE 9 requires C in LANGUAGES
-    'set(CMAKE_CXX_STANDARD 20)',
+    'project(apc_smoke_host)',
     '',
   ];
   for (const n of names) lines.push(`add_subdirectory(plugins/${n})`);
@@ -170,12 +167,73 @@ function readTree(dir) {
   return files;
 }
 
+function verifyBuiltArtefacts(c, buildDir) {
+  const artBase = path.join(buildDir, 'plugins', c.name, `${c.name}_artefacts`, 'Debug');
+  if (c.type === 'clap') {
+    const clapPath = path.join(artBase, 'CLAP', `${c.name}.clap`);
+    if (!fs.existsSync(clapPath)) {
+      fail(`${c.name} artefact`, `missing built CLAP binary at ${clapPath}`);
+      return;
+    }
+    ok(`${c.name}: built CLAP artefact verified`);
+    return;
+  }
+  if (c.type === 'lv2') {
+    const bundleDir = path.join(artBase, 'LV2', `${c.name}.lv2`);
+    for (const f of [`${c.name}.so`, 'manifest.ttl', 'plugin.ttl']) {
+      if (!fs.existsSync(path.join(bundleDir, f))) {
+        fail(`${c.name} artefact`, `missing ${f} inside ${bundleDir}`);
+        return;
+      }
+    }
+    ok(`${c.name}: built LV2 bundle verified (.so + manifest.ttl + plugin.ttl)`);
+    return;
+  }
+  if (c.type === 'vst3' || c.type === 'juce') {
+    const vst3Dir = path.join(artBase, 'VST3');
+    const vst3s = fs.existsSync(vst3Dir)
+      ? fs.readdirSync(vst3Dir).filter(n => n.toLowerCase().endsWith('.vst3'))
+      : [];
+    if (vst3s.length === 0) {
+      fail(`${c.name} artefact`, `no .vst3 produced in ${vst3Dir}`);
+      return;
+    }
+    if (c.type === 'juce') {
+      const lv2Dir = path.join(artBase, 'LV2');
+      const lv2s = fs.existsSync(lv2Dir)
+        ? fs.readdirSync(lv2Dir).filter(n => n.toLowerCase().endsWith('.lv2'))
+        : [];
+      if (lv2s.length === 0) {
+        fail(`${c.name} artefact`, `no .lv2 bundle produced in ${lv2Dir}`);
+        return;
+      }
+    }
+    ok(`${c.name}: built JUCE plugin artefact(s) verified`);
+    return;
+  }
+  if (c.type === 'standalone') {
+    const entries = fs.existsSync(artBase) ? fs.readdirSync(artBase, { withFileTypes: true }) : [];
+    const hasApp = entries.some(e =>
+      (e.isDirectory() && e.name.toLowerCase().endsWith('.app'))
+      || (e.isFile() && e.name !== 'JuceLibraryCode')
+    );
+    if (!hasApp) {
+      fail(`${c.name} artefact`, `no standalone executable/app found in ${artBase}`);
+      return;
+    }
+    ok(`${c.name}: built standalone application verified`);
+  }
+}
+
 // ── Run ───────────────────────────────────────────────────────────
 fs.mkdirSync(PLUGINS, { recursive: true });
 vendorTools();
 writeRootCMake([]); // create needs an existing root before it will scaffold
 
-console.log(`\nsmoke-scaffold${CONFIGURE ? ' (with cmake configure)' : ' (structural only)'}`);
+const modeLabel = BUILD_TARGETS
+  ? ' (with cmake configure + build)'
+  : (CONFIGURE ? ' (with cmake configure)' : ' (structural only)');
+console.log(`\nsmoke-scaffold${modeLabel}`);
 console.log(`project: ${PROJ}\n`);
 
 const created = [];
@@ -184,7 +242,7 @@ console.log('scaffolding:');
 for (const c of CASES) {
   const r = await call('audio_plugin_create', {
     projectPath: PROJ, name: c.name, type: c.type, ui: c.ui,
-    vendor: 'smokeco', description: 'smoke test',
+    vendor: 'smokeco', description: 'smoke "quoted" test',
   });
   if (r.isError) { fail(`create ${c.name}`, r.text); continue; }
 
@@ -197,10 +255,14 @@ for (const c of CASES) {
 }
 
 console.log('\nstructural checks:');
+const rootCmakeAfterCreate = fs.readFileSync(path.join(PROJ, 'CMakeLists.txt'), 'utf8');
 for (const c of created) {
   for (const [rel, content] of c.files) {
     const left = content.match(/\{\{[^}]*\}\}/g);
     if (left) fail(`${c.name}/${rel}`, `unsubstituted placeholders: ${left.join(', ')}`);
+  }
+  if (!rootCmakeAfterCreate.includes(`add_subdirectory(plugins/${c.name})`)) {
+    fail(`${c.name}`, 'audio_plugin_create did not register add_subdirectory() in root CMakeLists.txt');
   }
   const cm = c.files.get('CMakeLists.txt');
   const cmd = CMAKE_COMMAND_FOR_TYPE[c.type];
@@ -209,50 +271,60 @@ for (const c of created) {
   if (target !== c.name) {
     fail(`${c.name}`, `${cmd} target is "${target}", expected "${c.name}"`);
   } else {
-    ok(`${c.name}: ${cmd} target name is correct`);
+    ok(`${c.name}: ${cmd} target name & root CMake wiring verified`);
   }
 }
 
-writeRootCMake(created.map(c => c.name));
-
 if (!CONFIGURE) {
-  console.log('\nskipping cmake configure (pass --configure to run it)\n');
+  console.log('\nskipping cmake configure/build (pass --configure or --build to run it)\n');
 } else {
   const cmake = spawnSync('cmake', ['--version'], { encoding: 'utf-8' });
   if (cmake.status !== 0) {
     fail('--configure', 'cmake is not installed or not on PATH');
   } else {
-    console.log(`\nconfigure (${cmake.stdout.split('\n')[0]}):`);
+    const hasNinja = spawnSync('ninja', ['--version'], { encoding: 'utf-8' }).status === 0;
+    const genArgs = hasNinja ? ['-G', 'Ninja'] : [];
+    const jobs = String(Math.max(1, os.availableParallelism?.() ?? os.cpus().length ?? 2));
+
+    console.log(`\nconfigure${BUILD_TARGETS ? ' + build' : ''} (${cmake.stdout.split('\n')[0]}${hasNinja ? ', Ninja' : ''}):`);
     const juceReady = JUCE_DIR !== '' && fs.existsSync(JUCE_DIR);
     const clapReady = CLAP_DIR !== '' && fs.existsSync(CLAP_DIR);
-
-    // Configure the families separately so a missing dependency in one does not
-    // hide a real failure in the other.
     const lv2Ready = LV2_DIR !== '' && fs.existsSync(LV2_DIR);
 
-    // Per-family configure arguments. LV2's CMakeLists finds its headers with
-    // find_path(), so pointing it at a checkout is a -D rather than a
-    // add_subdirectory() the way JUCE and CLAP need.
     const extraArgsFor = family =>
       family === 'lv2' ? [`-DLV2_INCLUDE_DIR=${LV2_DIR}`] : [];
 
     for (const [family, ready, depName] of [['clap', clapReady, 'APC_CLAP_DIR'],
                                              ['juce', juceReady, 'APC_JUCE_DIR'],
                                              ['lv2', lv2Ready, 'APC_LV2_DIR']]) {
-      const names = created.filter(c => c.family === family).map(c => c.name);
+      const members = created.filter(c => c.family === family);
+      const names = members.map(c => c.name);
       if (names.length === 0) continue;
       if (!ready) { console.log(`  skip ${family}: ${depName} not set`); continue; }
 
       writeRootCMake(names);
       fs.rmSync(BUILD, { recursive: true, force: true });
       const res = spawnSync('cmake',
-        ['-S', PROJ, '-B', BUILD, '-DCMAKE_BUILD_TYPE=Debug', ...extraArgsFor(family)],
+        ['-S', PROJ, '-B', BUILD, ...genArgs, '-DCMAKE_BUILD_TYPE=Debug', ...extraArgsFor(family)],
         { encoding: 'utf-8', timeout: 600000 });
-      if (res.status === 0) {
-        ok(`${family}: configure succeeded (${names.join(', ')})`);
-      } else {
+      if (res.status !== 0) {
         fail(`${family}: cmake configure exited ${res.status}`,
           `${res.stdout ?? ''}\n${res.stderr ?? ''}`.split('\n').slice(-40).join('\n'));
+        continue;
+      }
+      ok(`${family}: configure succeeded (${names.join(', ')})`);
+
+      if (BUILD_TARGETS) {
+        const buildRes = spawnSync('cmake',
+          ['--build', BUILD, '--config', 'Debug', '--parallel', jobs],
+          { encoding: 'utf-8', timeout: 1800000 });
+        if (buildRes.status !== 0) {
+          fail(`${family}: cmake --build exited ${buildRes.status}`,
+            `${buildRes.stdout ?? ''}\n${buildRes.stderr ?? ''}`.split('\n').slice(-60).join('\n'));
+          continue;
+        }
+        ok(`${family}: cmake --build succeeded (${names.join(', ')})`);
+        for (const c of members) verifyBuiltArtefacts(c, BUILD);
       }
     }
   }

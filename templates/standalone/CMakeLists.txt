@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.22)
+enable_language(C CXX)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
+endif()
 
 # ── JUCE ─────────────────────────────────────────────────────────────
 # A multi-app repo adds JUCE once from the root CMakeLists, so guard on the
@@ -41,7 +46,7 @@ juce_add_gui_app({{PLUGIN_NAME}}
     COMPANY_WEBSITE "https://{{VENDOR}}.com"
     COMPANY_EMAIL "dev@{{VENDOR}}.com"
     COMPANY_COPYRIGHT "{{VENDOR}} 2026"
-    BUNDLE_ID "com.{{VENDOR}}.{{PLUGIN_ID}}"
+    BUNDLE_ID "com.{{BUNDLE_VENDOR}}.{{PLUGIN_ID}}"
     NEEDS_WEB_BROWSER FALSE
     NEEDS_CURL FALSE
     # Add these if you read a live input rather than only generating audio:
@@ -60,6 +65,8 @@ target_sources({{PLUGIN_NAME}} PRIVATE
     Source/MainComponent.cpp
     Source/MainComponent.h
 )
+
+target_compile_features({{PLUGIN_NAME}} PRIVATE cxx_std_20)
 
 target_compile_definitions({{PLUGIN_NAME}} PUBLIC
     JUCE_WEB_BROWSER=0
