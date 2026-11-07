@@ -67,7 +67,12 @@ const CMAKE_COMMAND_FOR_TYPE = {
 let failures = 0;
 const fail = (label, detail) => {
   failures++;
-  console.error(`  FAIL ${label}\n       ${String(detail).split('\n').join('\n       ')}`);
+  const text = String(detail);
+  console.error(`  FAIL ${label}\n       ${text.split('\n').join('\n       ')}`);
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    const compact = text.trim().split('\n').slice(-15).join('%0A').replace(/\r/g, '');
+    console.error(`::error title=${label}::${compact}`);
+  }
 };
 const ok = label => console.log(`  ok   ${label}`);
 
