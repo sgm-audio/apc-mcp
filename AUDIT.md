@@ -30,6 +30,60 @@
 
 ---
 
+## 0. Follow-up audit — 2026-11-07
+
+**Target:** current `main` (`e4bd5a5`) plus remediation on the audit branch
+
+**Environment:** Node 22.22.3, npm 10.9.8, Linux x64, real g++/gcc
+
+This follow-up reviewed the server, scripts, tests, all native templates, workflow
+configuration, dependency advisories, Markdown links and path references. The
+original report below remains historical and is not a description of the current
+tree.
+
+### New findings and remediation
+
+| ID | Severity | Finding | Resolution |
+|---|---|---|---|
+| FUP-01 | High | In-project symlinks could redirect lint/create/build paths outside the lexical project root. | `assertWithinProject()` now checks the real nearest existing ancestor; build and plugin directories use the same guard. Negative lint/create tests added. |
+| FUP-02 | Medium | `trySpawn()` discarded stderr on exit 0, hiding successful-build warnings. ctest details also omitted stderr. | Both streams are retained/combined; regression tests cover warning and failure output. |
+| FUP-03 | Medium | Builds omitted `--config`; existing single-config trees also ignored Debug/Release changes. | Builds pass `--config`; `buildNeedsConfigure()` regenerates mismatched single-config caches without needless multi-config regeneration. |
+| FUP-04 | Medium | Printable descriptions containing quotes/backslashes could generate invalid C++ or CMake. | Context-specific C++/CMake escaping added alongside the existing Turtle escaping; generated-output tests added. |
+| FUP-05 | Medium | Native Windows project paths were rejected because `SAFE_PATH` omitted backslash. | Backslash accepted without introducing shell execution; schema-boundary test added. |
+| FUP-06 | Medium | CLAP Linux/Windows output was a `.clap` directory containing a normally prefixed/suffixed library, not the `.clap` binary hosts and validation expect. | Non-macOS output is now `<name>.clap` in the discovered CLAP directory. macOS bundle packaging remains an explicit limitation. |
+| FUP-07 | Low | A failed template copy left a partial plugin that blocked retries. | The new destination is removed on copy failure. |
+| FUP-08 | Medium | `actions/setup-node` used two SHAs, failing the repository's own release-invariant suite. | All jobs use one immutable revision; baseline test is green. |
+| FUP-09 | Medium | Publish excluded `scaffold-juce` based on stale “never run/billing locked” notes despite a successful real run. | All three native configure jobs now gate publication; CI and handoff guidance updated. |
+| FUP-10 | Medium | Four moderate `minimatch` advisories in the ESLint development tree failed `npm run audit`. | Patched `minimatch` is enforced with an npm override while retaining supported ESLint 10. |
+| FUP-11 | Low | README/CONTRIBUTING/SECURITY/HANDOFF contained stale Node, test-count, LV2, CI and release claims; README omitted the LV2 template from its type table/tree. | Corrected and removed volatile duplicated counts/line references; rewrote HANDOFF as the current guide. |
+
+### Residual / explicitly accepted limitations
+
+- macOS CLAP bundle packaging still requires a dedicated platform step and is
+  documented in the template and HANDOFF.
+- ARA remains unimplemented and absent from the schema.
+- Native configure checks need external SDKs and CMake; compiler-only sandbox
+  checks do not prove those jobs locally. Their real GitHub runs were inspected.
+
+### Verification after remediation
+
+| Check | Result |
+|---|---|
+| `npm run check` with real CLAP/LV2 header env vars | PASS |
+| Test suite | **174 passed, 0 failed, 0 skipped** |
+| Native generated-source compilation | PASS — JUCE/generic, JUCE/WebView, VST3/WebView and standalone against the JUCE API fixture; CLAP and LV2 against real upstream headers |
+| Scaffold structural smoke | PASS — 9/9 cases |
+| `npm audit` | PASS — 0 vulnerabilities |
+| License gate | PASS — 163 lockfile entries checked |
+| Packed tarball installed into a clean temporary project | PASS — all 7 MCP tools listed |
+| Relative Markdown links and `git diff --check` | PASS |
+| Real CMake configure locally | NOT RUN — CMake is absent in this sandbox; current GitHub runner results were inspected instead |
+
+Reproduce the local gate with `npm run check`; volatile totals are intentionally
+not copied into the maintenance guide.
+
+---
+
 ## 1. Executive summary
 
 | Gate | Result |

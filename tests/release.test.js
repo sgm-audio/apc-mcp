@@ -98,18 +98,12 @@ describe('OPS-02 · a failed publish must fail the workflow', () => {
       ?.split(',').map(s => s.trim()).filter(Boolean) ?? [];
     assert.ok(needs.includes('test'), `publish must need test: ${needs.join(', ')}`);
     assert.ok(needs.includes('license'), `publish must need license: ${needs.join(', ')}`);
-    // scaffold-juce is deliberately excluded until it has one green run — see the
-    // comment in the workflow and HANDOFF.md §7.
-    assert.ok(!needs.includes('scaffold-juce'),
-      'scaffold-juce has never had a green run; do not gate publishing on it yet');
-    // The gating policy, stated as a test rather than as a comment nobody reads:
-    // a scaffold job gates the release when it needs nothing but cmake, a
-    // compiler and a git clone — no apt packages whose names can move when
-    // ubuntu-latest is rebased. scaffold-clap and scaffold-lv2 qualify;
-    // scaffold-juce installs JUCE's Linux dependency list and does not.
-    for (const cheap of ['scaffold-clap', 'scaffold-lv2']) {
-      assert.ok(needs.includes(cheap),
-        `${cheap} has no apt surface to drift, so publishing should be gated on it: ${needs.join(', ')}`);
+    // Every native scaffold job has passed on a real GitHub runner, so all of
+    // them gate publication. This prevents a green Node suite from shipping
+    // scaffolds that cannot configure against their actual SDKs.
+    for (const scaffold of ['scaffold-clap', 'scaffold-lv2', 'scaffold-juce']) {
+      assert.ok(needs.includes(scaffold),
+        `${scaffold} must gate publishing: ${needs.join(', ')}`);
     }
   });
 });
@@ -244,6 +238,24 @@ describe('OPS-05 · ship cannot tag a branch it is not on', () => {
     assert.ok(mode !== 0, 'scripts/ship.mjs should be executable');
     const check = spawnSync(process.execPath, ['--check', p], { encoding: 'utf-8' });
     assert.equal(check.status, 0, check.stderr);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+describe('documentation paths', () => {
+  it('every relative Markdown link in root documentation resolves', () => {
+    const docs = fs.readdirSync(PROJECT_ROOT).filter(f => f.endsWith('.md'));
+    for (const doc of docs) {
+      const text = fs.readFileSync(path.join(PROJECT_ROOT, doc), 'utf8');
+      for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
+        const target = match[1];
+        if (/^(?:[a-z]+:|#)/i.test(target)) continue;
+        const relative = target.split('#')[0];
+        if (!relative) continue;
+        assert.ok(fs.existsSync(path.join(PROJECT_ROOT, decodeURIComponent(relative))),
+          `${doc} links to missing path: ${target}`);
+      }
+    }
   });
 });
 

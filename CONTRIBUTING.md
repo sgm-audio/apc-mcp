@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 22+ (matching `package.json` and CI)
 - Familiarity with MCP (Model Context Protocol)
 
 ## Setup
@@ -46,9 +46,8 @@ Tests use Node's built-in `node:test` runner — no test framework dependency.
 runs lint, the tests, the scaffold smoke test, `npm audit` and the license gate.
 Run `npm run check` before committing; CI runs the same thing.
 
-- The server is a single file (`index.js`, ~900 lines). It has outgrown the old
-  "~800 lines" guidance; if you add a substantial subsystem, propose splitting it
-  rather than growing the file further.
+- The server is a single file (`index.js`, over 1,200 lines). If you add a
+  substantial subsystem, propose splitting it rather than growing the file further.
 - **Never build a shell string.** Use `spawnSync()` / `trySpawn()` with an argument
   array. ESLint bans importing `exec`/`execSync` for this reason.
 - Use `trySpawn()` for commands that might fail — it inspects `result.error` and

@@ -32,7 +32,7 @@ endif()
 # Literal target name, not ${PROJECT_NAME}: this file is a subdirectory of the
 # host project, so PROJECT_NAME belongs to that project and every scaffolded
 # plugin would otherwise collide on the same target name.
-add_library({{PLUGIN_NAME}} SHARED
+add_library({{PLUGIN_NAME}} MODULE
     Source/PluginEntry.cpp
     Source/PluginProcessor.cpp
 )
@@ -42,15 +42,25 @@ target_include_directories({{PLUGIN_NAME}} PRIVATE Source)
 
 set_target_properties({{PLUGIN_NAME}} PROPERTIES
     OUTPUT_NAME "{{PLUGIN_NAME}}"
-    # Emit into the same <build>/plugins/<name>/<name>_artefacts/<config>/CLAP
-    # layout that audio_plugin_validate scans, so a scaffolded plugin can be
-    # validated without the layout being hand-edited.
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/CLAP/{{PLUGIN_NAME}}.clap"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/CLAP/{{PLUGIN_NAME}}.clap"
 )
 
-# NOTE: a .clap bundle's internal layout is platform-specific (Linux: a shared
-# object at the bundle root; macOS: MacOS/<name> inside the bundle; Windows:
-# <name>.dll). The above covers Linux and Windows. Packaging a macOS bundle
-# correctly needs an extra POST_BUILD step — see the CLAP docs before shipping
-# a macOS build.
+if(APPLE)
+    # A macOS CLAP is a bundle. Keep its output directory distinct; producing
+    # the final Contents/MacOS layout requires platform bundle packaging.
+    set_target_properties({{PLUGIN_NAME}} PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/CLAP/{{PLUGIN_NAME}}.clap"
+    )
+else()
+    # On Linux and Windows a .clap plugin is the shared library itself, not a
+    # directory containing lib<name>.so or <name>.dll. Remove CMake's platform
+    # prefix/suffix so validation and hosts discover exactly <name>.clap.
+    set_target_properties({{PLUGIN_NAME}} PROPERTIES
+        PREFIX ""
+        SUFFIX ".clap"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/CLAP"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/CLAP"
+    )
+endif()
+
+# NOTE: packaging a macOS bundle correctly needs an extra POST_BUILD step — see
+# the CLAP docs before shipping a macOS build.

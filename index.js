@@ -52,8 +52,10 @@ const SAFE_REGEX = /^[\x20-\x7E]+$/;
 const SAFE_DESCRIPTION = /^[\x20-\x7E]+$/;
 // JUCE format list: semicolon-separated format names
 const SAFE_FORMATS = /^[a-zA-Z0-9_;-]+$/;
-// Project path: block shell metacharacters
-const SAFE_PATH = /^[a-zA-Z0-9_ /.\-:@~]+$/;
+// Project path: block shell metacharacters. Backslash is required for native
+// Windows paths (for example C:\\work\\MyPlugin); it is not a shell escape here
+// because paths are passed to filesystem APIs or as discrete argv entries.
+const SAFE_PATH = /^[a-zA-Z0-9_ /\\.\-:@~]+$/;
 
 function validatePath(p) {
   if (!SAFE_PATH.test(p)) {
@@ -77,6 +79,21 @@ function assertWithinProject(projectRoot, candidate, label = 'path') {
   const resolved = path.resolve(root, candidate);
   if (resolved !== root && !resolved.startsWith(root + path.sep)) {
     throw new Error(`${label} escapes project root — rejected: ${candidate}`);
+  }
+
+  // A lexical prefix check alone is not a filesystem boundary: an in-project
+  // symlink can still redirect reads/writes outside it. Resolve the nearest
+  // existing ancestor too (the final path may not exist yet during create).
+  const realRoot = fs.realpathSync(root);
+  let existing = resolved;
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    existing = parent;
+  }
+  const realExisting = fs.realpathSync(existing);
+  if (realExisting !== realRoot && !realExisting.startsWith(realRoot + path.sep)) {
+    throw new Error(`${label} escapes project root through a symlink — rejected: ${candidate}`);
   }
   return resolved;
 }
@@ -185,14 +202,20 @@ function trySpawn(cmd, args, opts = {}) {
   }
 
   const output = result.stdout || '';
-  if (result.status === 0) return { ok: true, output };
   const stderr = result.stderr || '';
+  // Warnings are commonly written to stderr even on a successful build. Keep
+  // both streams on success so callers can parse and report them accurately.
+  if (result.status === 0) return { ok: true, output, stderr };
   return {
     ok: false,
     output,
     stderr: stderr || `'${cmd}' exited with code ${result.status}` +
       (result.signal ? ` after signal ${result.signal}` : ''),
   };
+}
+
+function commandOutput(result) {
+  return [result.output, result.stderr].filter(Boolean).join('\n');
 }
 
 // ─── Config ──────────────────────────────────────────────────────────
@@ -618,6 +641,17 @@ function turtleEscape(text) {
   return String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+// Descriptions are printable ASCII, which includes quotes, backslashes and
+// CMake's ${...} syntax. Escape them for each generated language instead of
+// allowing metadata to break the scaffold (or inject extra CMake expansion).
+function cppStringEscape(text) {
+  return String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function cmakeStringEscape(text) {
+  return cppStringEscape(text).replace(/\$/g, '\\$');
+}
+
 // Falls back to 'Plugin' when the name has no alphanumerics at all, so a name
 // like "_" cannot produce an empty PLUGIN_ID and a class called just "Processor".
 function slugName(name) {
@@ -677,6 +711,22 @@ function registerTool(name, schema, handler) {
   });
 }
 
+function buildNeedsConfigure(buildDir, config) {
+  const cachePath = path.join(buildDir, 'CMakeCache.txt');
+  if (!fs.existsSync(cachePath)) return true;
+  let cache;
+  try { cache = fs.readFileSync(cachePath, 'utf8'); }
+  catch { return true; }
+
+  // Multi-config generators select at build time with --config. On Makefiles,
+  // Ninja and other single-config generators, --config is ignored: changing
+  // Debug/Release requires regenerating CMAKE_BUILD_TYPE instead.
+  const multi = cache.match(/^CMAKE_CONFIGURATION_TYPES:STRING=(.*)$/m)?.[1];
+  if (multi) return false;
+  const configured = cache.match(/^CMAKE_BUILD_TYPE:STRING=(.*)$/m)?.[1] ?? '';
+  return configured !== config;
+}
+
 // ─── audio_plugin_build ────────────────────────────────────────────
 registerTool(
   'audio_plugin_build',
@@ -695,18 +745,21 @@ registerTool(
     requireTool('cmake');
     const cfg = loadProjectConfig(proj);
     const config = params.config ?? cfg.config ?? 'Debug';
-    const buildDir = path.join(proj, cfg.buildDir);
+    const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
 
-    // Auto-configure if needed
-    if (!fs.existsSync(path.join(buildDir, 'CMakeCache.txt'))) {
+    // Auto-configure if needed, including when a single-config tree's selected
+    // Debug/Release configuration no longer matches the request.
+    if (buildNeedsConfigure(buildDir, config)) {
       fs.mkdirSync(buildDir, { recursive: true });
       const r = trySpawn('cmake', ['-B', buildDir, '-G', cfg.generator, `-DCMAKE_BUILD_TYPE=${config}`], { cwd: proj, timeout: 120 });
       if (!r.ok) {
-        return { content: [{ type: 'text', text: `Configure failed:\n${r.stderr}` }], isError: true };
+        return { content: [{ type: 'text', text: `Configure failed:\n${commandOutput(r)}` }], isError: true };
       }
     }
 
-    const args = ['--build', buildDir, '--parallel'];
+    // --config is required by Visual Studio, Xcode and other multi-config
+    // generators; single-config generators safely ignore it.
+    const args = ['--build', buildDir, '--config', config, '--parallel'];
     if (params.clean) args.push('--clean-first');
     if (params.target) args.push('--target', params.target);
     const r = trySpawn('cmake', args, { cwd: proj });
@@ -722,6 +775,8 @@ registerTool(
       ...(parsed.errors.length ? ['', '### Errors', ...parsed.errors] : []),
       ...(parsed.warnings.length ? ['', '### Warnings', ...parsed.warnings] : []),
       ...(parsed.truncated ? ['', '_(truncated to first 20 items)_'] : []),
+      ...(!r.ok && parsed.errors.length === 0
+        ? ['', '### Details', commandOutput(r).slice(-2000)] : []),
     ].join('\n');
 
     // errorCount was already computed and printed above but never reached
@@ -750,7 +805,7 @@ registerTool(
     const cfg = loadProjectConfig(proj);
     const config = params.config ?? cfg.config ?? 'Debug';
     const generator = params.generator || cfg.generator;
-    const buildDir = path.join(proj, cfg.buildDir);
+    const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
     fs.mkdirSync(buildDir, { recursive: true });
 
     const args = ['-B', buildDir, '-G', generator, `-DCMAKE_BUILD_TYPE=${config}`];
@@ -761,7 +816,7 @@ registerTool(
       }
     }
     const r = trySpawn('cmake', args, { cwd: proj, timeout: 120 });
-    return { content: [{ type: 'text', text: r.ok ? 'Configure succeeded.' : r.stderr }], isError: !r.ok };
+    return { content: [{ type: 'text', text: r.ok ? 'Configure succeeded.' : commandOutput(r) }], isError: !r.ok };
   }
 );
 
@@ -781,13 +836,14 @@ registerTool(
     requireTool('ctest');
     const cfg = loadProjectConfig(proj);
     const config = params.config ?? cfg.config ?? 'Debug';
-    const buildDir = path.join(proj, cfg.buildDir);
+    const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
 
     const args = ['--test-dir', buildDir, '-C', config, '--output-on-failure'];
     if (params.testName) args.push('--tests-regex', params.testName);
     const r = trySpawn('ctest', args, { cwd: proj, timeout: 300 });
 
-    const parsed = parseTestOutput(r.output);
+    const output = commandOutput(r);
+    const parsed = parseTestOutput(output);
     const text = [
       `## Tests ${r.ok ? 'passed' : 'failed'}`,
       // Reporting invented counts was the original bug (QA-02). When neither
@@ -798,11 +854,11 @@ registerTool(
       // Include the raw tail when tests failed, when the run failed, or when the
       // output could not be parsed — otherwise the model has nothing to act on.
       ...((parsed.failed > 0 || !r.ok || !parsed.recognized)
-        ? ['', '### Details', r.output.slice(-2000)]
+        ? ['', '### Details', output.slice(-2000)]
         : []),
     ].join('\n');
 
-    return { content: [{ type: 'text', text }], isError: !r.ok };
+    return { content: [{ type: 'text', text }], isError: !r.ok || parsed.failed > 0 };
   }
 );
 
@@ -912,7 +968,7 @@ registerTool(
   async (params) => {
     const proj = requireProjectPath(params.projectPath);
     const cfg = loadProjectConfig(proj);
-    const pluginsDir = path.join(proj, cfg.pluginsDir);
+    const pluginsDir = assertWithinProject(proj, cfg.pluginsDir, 'Plugins directory');
     if (!fs.existsSync(pluginsDir)) {
       return { content: [{ type: 'text', text: `No ${cfg.pluginsDir}/ directory found in project.` }] };
     }
@@ -971,7 +1027,7 @@ registerTool(
     const proj = requireProjectPath(params.projectPath);
     const cfg = loadProjectConfig(proj);
     const config = params.config ?? cfg.config ?? 'Debug';
-    const buildDir = path.join(proj, cfg.buildDir);
+    const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
 
     const formats = params.format === 'all' ? cfg.validateFormats : [params.format];
 
@@ -1125,7 +1181,8 @@ registerTool(
       PLUGIN_ID: id,
       PLUGIN_CLASS_NAME: id + 'Processor',
       PLUGIN_DISPLAY_NAME: displayName(params.name),
-      PLUGIN_DESCRIPTION: params.description,
+      PLUGIN_DESCRIPTION_CPP: cppStringEscape(params.description),
+      PLUGIN_DESCRIPTION_CMAKE: cmakeStringEscape(params.description),
       PLUGIN_FORMATS: formats,
       VENDOR: params.vendor,
       MANUFACTURER_CODE: fourCharCode(params.vendor),
@@ -1151,6 +1208,9 @@ registerTool(
 
     try { copyDir(templateDir, pluginDir); }
     catch (e) {
+      // A failed copy must not leave a partial directory that both looks like a
+      // plugin and prevents a clean retry ("Already exists").
+      fs.rmSync(pluginDir, { recursive: true, force: true });
       return { content: [{ type: 'text', text: `Failed to create plugin: ${e.message}` }], isError: true };
     }
 

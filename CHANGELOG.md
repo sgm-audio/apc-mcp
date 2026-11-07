@@ -21,6 +21,9 @@
 
 ### Security
 
+- **Project boundaries now include symlink resolution.** Lexical `..`/absolute-path
+  checks are backed by `realpath` checks on the nearest existing ancestor, closing
+  redirection through in-project `pluginsDir`, `buildDir` and lint-target symlinks.
 - **Path traversal in `audio_plugin_lint` closed (critical).** `target` was validated
   only against `SAFE_PATH`, which permits `.`, so `../x` passed and was joined onto the
   project root before being handed to `clang-format -i`. A single tool argument could
@@ -47,6 +50,13 @@
 
 ### Fixed
 
+- **Follow-up QA (2026-11-07):** successful commands retain stderr for warning
+  diagnostics; ctest stderr/failed counts affect failure reporting; builds pass
+  `--config` and regenerate single-config trees when Debug/Release changes;
+  native Windows paths are accepted; descriptions are escaped for C++, CMake and
+  Turtle; failed scaffold copies clean up partial output; CLAP builds emit the
+  actual `.clap` binary on Linux/Windows; CI action pins are consistent and every
+  native scaffold job gates publishing.
 - **Prerequisite detection actually works now.** `findBinary()` wrapped `spawnSync` in
   `try/catch` and returned `true` unconditionally — `spawnSync` does not throw on a
   missing binary, it returns `{ error, status }`. Every tool was reported as installed,

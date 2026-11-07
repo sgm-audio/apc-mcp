@@ -419,12 +419,43 @@ describe('FUNC-13/20 · CLAP template targets the modern CLAP API', () => {
     }
   });
 
-  it('emits into the artefacts layout audio_plugin_validate scans', () => {
+  it('emits a loadable .clap binary where audio_plugin_validate scans', () => {
     for (const s of claps()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
-      const expected = `plugins/${s.name}/${s.name}_artefacts/$<CONFIG>/CLAP/${s.name}.clap`;
+      const expected = `plugins/${s.name}/${s.name}_artefacts/$<CONFIG>/CLAP`;
       assert.ok(cm.includes(expected),
-        `${s.name}: validate scans <build>/${expected} — a scaffolded CLAP could never be validated`);
+        `${s.name}: validate scans <build>/${expected}`);
+      assert.match(cm, /PREFIX\s+""/,
+        `${s.name}: Linux must not prefix the CLAP binary with "lib"`);
+      assert.match(cm, /SUFFIX\s+"\.clap"/,
+        `${s.name}: the shared library itself must be named <target>.clap`);
+      assert.ok(!cm.includes(`${expected}/${s.name}.clap"\n        RUNTIME`),
+        `${s.name}: Linux/Windows output must not be a directory named .clap`);
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+describe('metadata escaping', () => {
+  it('escapes quotes, backslashes and CMake expansion in descriptions', async () => {
+    const suffix = Date.now().toString(36).slice(-4);
+    const description = 'A "quoted" \\path with ${HOME}';
+    for (const type of ['clap', 'juce']) {
+      const name = `Escaped${type}${suffix}`;
+      const r = await call('audio_plugin_create',
+        { projectPath: PROJ, name, type, description });
+      assert.equal(r.isError, false, `${type}: ${r.text}`);
+      const dir = path.join(PLUGINS, name);
+      const cmake = fs.readFileSync(path.join(dir, 'CMakeLists.txt'), 'utf8');
+      assert.ok(!cmake.match(/\{\{[^}]*\}\}/), `${type}: unresolved placeholder`);
+      if (type === 'clap') {
+        const cpp = fs.readFileSync(path.join(dir, 'Source', 'PluginProcessor.cpp'), 'utf8');
+        assert.match(cpp, /\.description\s*= "A \\"quoted\\" \\\\path with \$\{HOME\}"/,
+          'the description must remain one valid C++ string literal');
+      } else {
+        assert.match(cmake, /DESCRIPTION "A \\"quoted\\" \\\\path with \\\$\{HOME\}"/,
+          'the description must remain one literal CMake argument');
+      }
     }
   });
 });

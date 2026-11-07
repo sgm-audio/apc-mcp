@@ -80,16 +80,14 @@ jobs:
   # preinstalled) plus a git clone, so there is no apt surface to drift — which
   # is the property that makes it safe to gate publishing on.
   #
-  # CAVEAT: first green on 2026-10-08, but LOCAL (WSL Ubuntu 26.04, cmake
-  # 4.1.2, lv2/lv2 headers) -- GitHub Actions remain billing-locked, so it has
-  # still never run on a real runner (AUDIT.md OPS-07). LV2 core is
-  # header-only, so the only system requirement is a C compiler.
+  # LV2 core is header-only, so the only system requirement is a C compiler.
+  # This job has passed on GitHub Actions and gates publication.
   scaffold-lv2:
     name: Scaffolded LV2 configures with real cmake
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
           cache: npm
@@ -124,13 +122,8 @@ jobs:
   # This is the check that proves a scaffolded JUCE plugin actually configures,
   # which no amount of Node-side testing can do.
   #
-  # CAVEAT: first green on 2026-10-08, but LOCAL (WSL Ubuntu 26.04, cmake
-  # 4.1.2, JUCE 9.0.3, five JUCE/standalone scaffolds configured) -- GitHub
-  # Actions remain billing-locked, so it has still never run on a real runner
-  # (AUDIT.md OPS-07). The apt package names below were validated on Ubuntu
-  # 26.04 during that run (including libwebkit2gtk-4.1-dev), so they are known
-  # good for the `ubuntu-latest` to Ubuntu 26 migration on 2026-10-19; no need
-  # to pin to ubuntu-24.04.
+  # This job has passed on GitHub Actions with JUCE 9.0.3 and the WebKit
+  # dependency below, so it also gates publication.
   scaffold-juce:
     name: Scaffolded JUCE configures with real cmake
     runs-on: ubuntu-latest
@@ -169,11 +162,7 @@ jobs:
         run: node scripts/check-licenses.mjs
 
   publish:
-    # scaffold-juce is intentionally NOT in `needs` yet: it has passed locally
-    # (2026-10-08, Ubuntu 26.04 + exactly the apt list below) but never on a
-    # real runner — add it once it has passed once on main. (Blocked on
-    # AUDIT.md OPS-07 either way: Actions are billing-locked.)
-    needs: [test, license, compile-scaffold, scaffold-clap, scaffold-lv2]
+    needs: [test, license, compile-scaffold, scaffold-clap, scaffold-lv2, scaffold-juce]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

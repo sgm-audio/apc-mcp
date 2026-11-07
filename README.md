@@ -22,30 +22,15 @@
 
 Works with any MCP client: Claude Code, OpenCode, VS Code with MCP, Continue.dev, and more.
 
-> **Project status.** A full build/QA/security audit found **36 defects** —
-> including a path traversal in `audio_plugin_lint` that allowed arbitrary writes
-> outside the project, scaffold templates that could neither configure nor
-> compile, and tools that reported success when the underlying command had failed.
-> `package.json` on `main` is version **2.0.0**, but there is no `v2.0.0` tag or
-> release (latest tag: `v1.5.0`) and it is not on npm.
+> **Project status.** Version **2.0.0** is still unreleased: the latest tag and
+> GitHub release are `v1.5.0`, and `@sgm-audio/apc-mcp` is not yet on npm.
+> Versions 1.4.0 and 1.5.0 contain a path traversal in `audio_plugin_lint`;
+> see [`SECURITY.md`](SECURITY.md) before using them.
 >
-> Checked 2026-10-31 on Linux, Node 24: `npm test` runs 147 tests — 141 pass,
-> 2 skip, 4 fail. The 4 failures are the C++ compile checks; with no system
-> C++ compiler they cannot pass, and with the zig-clang wrapper used for this
-> check they failed on a toolchain cache error, so those checks remain
-> unverified. `npm run lint` passes.
->
-> CI: GitHub Actions does run on this repo (100 most recent runs: 64 success,
-> 36 failure). The recent `CI` and `CodeQL` runs since 2026-10-20 have failed.
->
-> Releases: `v1.4.0`, `v1.4.1` and `v1.5.0` exist as git tags.
-> [`SECURITY.md`](SECURITY.md) states that 1.4.0 and 1.5.0 have the path traversal.
-> `@sgm-audio/apc-mcp` is not on npm. An npm package named `apc-mcp`
-> exists (0.1.0, 0.2.0); its link to this repo was not checked.
->
-> [`AUDIT.md`](AUDIT.md) has the findings and evidence;
-> [`HANDOFF.md`](HANDOFF.md) has what remains and how to verify it;
-> [`TODO.md`](TODO.md) has the unbuilt feature scope (ARA, LV2).
+> A follow-up audit on **2026-11-07** rechecked the runtime, templates, CI,
+> dependencies and documentation. Its findings and current verification results
+> are recorded in [`AUDIT.md`](AUDIT.md). [`HANDOFF.md`](HANDOFF.md) is the
+> current maintenance guide; [`TODO.md`](TODO.md) tracks the remaining ARA scope.
 
 ---
 
@@ -74,7 +59,8 @@ Add one entry to your MCP config — no npm, no clone, no setup:
 - **clang-format** — required for lint tool
 - **pluginval** — required for VST3 validation
 - **clap-validator** — required for CLAP validation
-- A JUCE/CLAP/VST3 audio plugin project with a `plugins/` directory
+- A JUCE/CLAP/VST3/LV2 audio plugin project with a `plugins/` directory
+- The relevant SDK/headers when scaffolding: JUCE, free-audio/clap, or LV2
 
 ---
 
@@ -152,6 +138,7 @@ audio_plugin_create(name="MyVerb", type="juce", vendor="MyCompany", formats="VST
 audio_plugin_create(name="SimpleDelay", type="clap", vendor="MyCompany", description="A simple delay effect")
 audio_plugin_create(name="MyVerb", type="juce", ui="webview", vendor="MyCompany")
 audio_plugin_create(name="ToneGen", type="standalone", vendor="MyCompany")
+audio_plugin_create(name="Lv2Gain", type="lv2", vendor="MyCompany")
 ```
 
 Generates a working plugin stub: `CMakeLists.txt`, source files, and either a
@@ -166,6 +153,7 @@ modern CLAP entry (the `clap_entry` → plugin-factory chain) or a JUCE
 | `juce` | `templates/juce/` or `templates/juce-webview/` | Full `juce_add_plugin` project. `formats` accepts any of JUCE's: `AU AUv3 AAX LV2 Standalone Unity VST VST3`. |
 | `vst3` | same JUCE templates | Convenience alias that defaults `formats` to VST3. |
 | `standalone` | `templates/standalone/` | A standalone audio **application**, not a plugin: `juce_add_gui_app` builds one executable that owns its audio device via `AudioAppComponent`. Scaffolds `Source/Main.cpp` (a `JUCEApplication` plus its `DocumentWindow`) and `Source/MainComponent.{h,cpp}` (a 440 Hz sine generator with a level slider). Has no `FORMATS`, so passing `formats` with this type is rejected rather than silently ignored. |
+| `lv2` | `templates/lv2/` | A native LV2 plugin in C, with a stereo gain stage, control port and Turtle metadata. Uses LV2 headers directly rather than JUCE. Has no `FORMATS`; passing that argument is rejected. |
 
 > `type="ara"` was removed in 2.0.0. It emitted `FORMATS ARA`, which
 > `juce_add_plugin` does not accept, from a plain `juce::AudioProcessor` rather
@@ -180,8 +168,9 @@ modern CLAP entry (the `clap_entry` → plugin-factory chain) or a JUCE
 | `generic` *(default)* | `juce::GenericAudioProcessorEditor` — sliders for every parameter, no UI code to write. |
 | `webview` | A `juce::WebBrowserComponent` editor serving an embedded HTML/CSS/JS UI from BinaryData, with a two-way bridge: C++ pushes state via `window.updateState(...)`, and JS calls back by navigating to `apc://callback?action=...&data=...`. Edit `Source/UI/{index.html,style.css,app.js}`. |
 
-`ui` applies to the JUCE *plugin* types only. `clap` ships its own editor and
-`standalone` ships its own window, so both ignore it.
+`ui` applies to the JUCE *plugin* types only. `clap` ships its own editor,
+`standalone` ships its own window, and native `lv2` has no editor scaffold, so
+those types ignore it.
 
 The webview template needs a browser backend, so its `CMakeLists.txt` sets
 `NEEDS_WEB_BROWSER TRUE` and `NEEDS_WEBVIEW2 TRUE` — WebView2 on Windows, WebKit
@@ -231,8 +220,8 @@ my-plugin/
 git clone https://github.com/sgm-audio/apc-mcp.git
 cd apc-mcp
 npm install
-npm test          # 147 tests, node:test (compile checks need g++ or clang++)
-npm run lint      # syntax check on the server code itself
+npm test          # node:test (native compile checks need a C/C++ compiler)
+npm run lint      # ESLint plus a server syntax check
 ```
 
 ### Project structure
@@ -245,8 +234,9 @@ apc-mcp/
 │   ├── juce/                   # JUCE scaffold, generic editor
 │   ├── juce-webview/           # JUCE scaffold + WebBrowserComponent UI
 │   │   └── Source/UI/          # the HTML/CSS/JS you edit
-│   └── standalone/             # JUCE *application* (juce_add_gui_app), not a plugin
-├── tests/                      # 147 tests, node:test, no framework
+│   ├── standalone/             # JUCE *application* (juce_add_gui_app), not a plugin
+│   └── lv2/                    # Native LV2 plugin in C + Turtle metadata
+├── tests/                      # node:test, no framework
 │   ├── helpers/mcp-client.mjs  # shared MCP stdio client (full handshake)
 │   ├── fixtures/juce-api-stub/ # transcribed JUCE 9 API, for compile checks
 │   ├── server.test.js          # happy path
@@ -262,8 +252,8 @@ apc-mcp/
 │   └── ship.mjs                # npm run ship — guarded tag + push
 ├── .github/
 │   ├── workflows/
-│   │   ├── publish.yml         # CI: test, compile-scaffold, scaffold-{clap,juce},
-│   │   │                       #     license, publish on v* tags
+│   │   ├── publish.yml         # CI: tests + all native scaffolds, license,
+│   │   │                       #     publish on v* tags
 │   │   └── codeql.yml          # CodeQL security analysis
 │   ├── dependabot.yml          # Automated dependency updates
 │   ├── pull_request_template.md

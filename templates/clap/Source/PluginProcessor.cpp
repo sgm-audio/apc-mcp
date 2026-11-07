@@ -20,7 +20,7 @@ namespace
         .manual_url   = "",
         .support_url  = "",
         .version      = "1.0.0",
-        .description  = "{{PLUGIN_DESCRIPTION}}",
+        .description  = "{{PLUGIN_DESCRIPTION_CPP}}",
         .features     = s_features,
     };
 }
