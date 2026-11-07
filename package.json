@@ -15,11 +15,12 @@
     "lint": "eslint . && node --check index.js",
     "audit": "npm audit && echo '\u2705 No known vulnerabilities'",
     "licenses": "node scripts/check-licenses.mjs",
+    "docs:check": "node scripts/check-docs.mjs",
     "smoke": "node scripts/smoke-scaffold.mjs",
     "smoke:configure": "node scripts/smoke-scaffold.mjs --configure",
     "quality": "npm run lint && npm test",
     "security": "npm audit --audit-level=high && echo '\u2705 Security gate passed'",
-    "check": "npm run quality && npm run smoke && npm run audit && npm run licenses",
+    "check": "npm run quality && npm run smoke && npm run audit && npm run licenses && npm run docs:check",
     "ship": "node scripts/ship.mjs"
   },
   "engines": {

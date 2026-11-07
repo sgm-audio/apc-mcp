@@ -6,7 +6,7 @@
 // model acts on the report.
 //
 // Findings covered: FUNC-06, QA-01, QA-02, QA-03, QA-04, QA-06, QA-07, HYG-12.
-// QA-07 was found while writing these tests and is new to AUDIT.md.
+// QA-07 was found while writing these tests and is new to docs/archive/AUDIT.md.
 //
 // Method: the real toolchain is absent, so each test drives PATH shims that emit
 // canned output and a chosen exit code. That exercises the real handler code

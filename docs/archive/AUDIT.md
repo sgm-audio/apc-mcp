@@ -1,5 +1,15 @@
 # apc-mcp — Full Build Audit, QA & Test Report
 
+> **ARCHIVED SNAPSHOT — not maintained.** This is the audit as run against v1.5.0,
+> plus the 2026-11-07 follow-up. Findings, counts, line numbers, commit hashes and
+> file paths describe the tree *at that time*. For the current state see
+> [Project status](../project-status.md); for the security model see
+> [Security](../security.md); for contributing see [Development](../development.md).
+> The original text below is preserved verbatim as evidence.
+>
+> ---
+>
+
 **Date:** 2026-10-06
 **Target:** `sgm-audio/apc-mcp` @ `3e38426` (branch `arena/353ee88c-apc-mcp`)
 **Version audited:** 1.5.0

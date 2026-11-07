@@ -27,6 +27,8 @@ jobs:
       - name: Lint
         # `npm run lint` is ESLint over the whole repo plus a parse check.
         run: npm run lint
+      - name: Documentation links
+        run: npm run docs:check
       - name: Test
         run: npm test
       - name: Scaffold smoke (every type x ui)
