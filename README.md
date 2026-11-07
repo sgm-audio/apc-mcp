@@ -30,7 +30,7 @@ Works with any MCP client: Claude Code, OpenCode, VS Code with MCP, Continue.dev
 > handling.
 >
 > Current baseline on Node 22+: `npm run check` passes cleanly — ESLint (0
-> warnings), **189 tests** (`node:test`, including real `gcc`/`g++` compile
+> warnings), **215 tests** (`node:test`, including real `gcc`/`g++` compile + link
 > checks against JUCE 9, `free-audio/clap`, and `lv2/lv2` headers), `10/10`
 > scaffold smoke cases, `0` `npm audit` vulnerabilities, and `163/163`
 > allowlisted lockfile licenses.
@@ -46,7 +46,9 @@ Works with any MCP client: Claude Code, OpenCode, VS Code with MCP, Continue.dev
 
 ## Quick Start
 
-Add one entry to your MCP config — no npm, no clone, no setup:
+`apc-mcp` produces real, compilable, host-loadable plugins, **but it wraps your local toolchain rather than bundling or auto-downloading compilers and SDKs**. Follow the three steps below to go from an empty folder to a built binary without hitting any surprises.
+
+### 1. Add `apc-mcp` to your MCP client
 
 ```json
 {
@@ -60,16 +62,66 @@ Add one entry to your MCP config — no npm, no clone, no setup:
 }
 ```
 
-`npx` fetches the repo and caches it (published npm package name: `@sgm-audio/apc-mcp`). You can also check the installed binary version directly with `apc-mcp --version`.
+> **Version quirk (`main` vs. npm `1.x`):** Use `github:sgm-audio/apc-mcp` until `v2.0.0` is tagged and published to npm (`@sgm-audio/apc-mcp`). Older `1.4.0` / `1.5.0` tags predate the template rewrites, CMake wiring, and security fixes (see [`SECURITY.md`](SECURITY.md)). Verify the active version with `npx -y github:sgm-audio/apc-mcp --version` (or clear a stale `npx` cache with `rm -rf ~/.npm/_npx` on macOS/Linux, `%LocalAppData%\npm-cache\_npx` on Windows).
 
-### Requirements
+### 2. Install toolchain, SDKs & optional validators
 
-- **Node.js 22+** (Node 18 and 20 are both end of life)
-- **CMake 3.22+** — required for build/configure tools
-- **clang-format** — required for lint tool
-- **pluginval** — required for VST3 validation
-- **clap-validator** — required for CLAP validation (`free-audio/clap-validator`)
-- A JUCE, CLAP, VST3, or LV2 audio plugin project with a `plugins/` directory
+#### Core build prerequisites (always required)
+- **[Node.js 22+](https://nodejs.org/)** — runs the MCP server (Node 18 and 20 are EOL).
+- **[CMake 3.22+](https://cmake.org/download/)** (includes `ctest`) + optional **[Ninja](https://ninja-build.org/)** for fast parallel builds.
+- **C11 / C++20 compiler** — [Xcode Command Line Tools](https://developer.apple.com/xcode/resources/) (macOS), [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) (Windows), or GCC / [Clang](https://llvm.org/) (Linux).
+
+#### Third-party audio plugin SDKs (pick the format you are building)
+
+| Scaffold `type` | Required SDK | How CMake finds it |
+|---|---|---|
+| `clap` | **[CLAP](https://github.com/free-audio/clap)** *(header-only C API)* | Clone to `<project>/_tools/clap`, `add_subdirectory()` it from your root `CMakeLists.txt`, or install it so `clap-config.cmake` is on `CMAKE_PREFIX_PATH`. |
+| `juce`, `vst3`, `standalone` | **[JUCE 9](https://github.com/juce-framework/JUCE)** *(C++ framework; bundles VST3 & LV2 wrappers — no separate [Steinberg VST3 SDK](https://github.com/steinbergmedia/vst3sdk) download needed; [Avid AAX SDK](https://developer.avid.com/aax/) only if `formats` includes `AAX`)* | Clone (e.g. `--branch 9.0.3`) to `<project>/_tools/JUCE`, pass `options="-DJUCE_DIR=/path/to/JUCE"` to `audio_plugin_configure`, or `add_subdirectory(JUCE)` from your root `CMakeLists.txt`. For `ui="webview"` on Windows, JUCE uses [Microsoft Edge WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/). |
+| `lv2` | **[LV2](https://github.com/lv2/lv2)** *(header-only C11 spec)* | Install via package manager (`brew install lv2` / `apt install lv2-dev`), clone to `<project>/_tools/lv2`, or pass `options="-DLV2_INCLUDE_DIR=/path/to/lv2/include"` (also checks `APC_LV2_DIR` / `LV2_DIR` env vars). |
+
+#### Optional lint & validation tools
+- **[clang-format](https://clang.llvm.org/docs/ClangFormat.html)** — required for `audio_plugin_lint`.
+- **[pluginval](https://github.com/Tracktion/pluginval/releases)** — required by `audio_plugin_validate` for **VST3** and macOS **AudioUnit** bundles.
+- **[clap-validator](https://github.com/free-audio/clap-validator/releases)** — required by `audio_plugin_validate` for **CLAP** binaries.
+
+### 3. Bootstrap a project folder & build in 60 seconds
+
+**Step A — Mark the project root & drop in an SDK** *(one-time shell setup)*:
+
+```sh
+mkdir my-plugins && cd my-plugins
+echo '{}' > apc-mcp.json   # required root marker (or create a root CMakeLists.txt)
+
+# Pick ONE (or more) SDKs to vendor under _tools/:
+git clone --depth 1 https://github.com/free-audio/clap.git _tools/clap
+# git clone --depth 1 --branch 9.0.3 https://github.com/juce-framework/JUCE.git _tools/JUCE
+# git clone --depth 1 https://github.com/lv2/lv2.git _tools/lv2
+```
+
+**Step B — Ask your MCP agent (or call the tools directly)**:
+
+```text
+1. audio_plugin_create(projectPath="/path/to/my-plugins", name="MyGain", type="clap", vendor="Acme")
+2. audio_plugin_build(projectPath="/path/to/my-plugins", config="Release")
+3. audio_plugin_validate(projectPath="/path/to/my-plugins", format="CLAP")
+```
+
+Your built binary lands at:
+```text
+build/plugins/MyGain/MyGain_artefacts/Release/CLAP/MyGain.clap
+```
+*(Or `.../VST3/My Gain.vst3`, `.../LV2/MyGain.lv2/`, etc. depending on `type`.)*
+
+### Good-to-Know Quirks & Gotchas
+
+- **Empty folders are rejected on purpose:** Every tool (including `audio_plugin_create`) requires `<project>/apc-mcp.json` or `<project>/CMakeLists.txt` to exist first so a typo'd `projectPath` cannot write outside a real project. If `apc-mcp.json` is present without `CMakeLists.txt`, `audio_plugin_create` creates a minimal root `CMakeLists.txt` and appends `add_subdirectory(plugins/<Name>)` automatically.
+- **`_tools/` relative path depth:** The built-in `_tools/{JUCE,clap,lv2}` fallback looks two directories up from `<project>/plugins/<Name>/CMakeLists.txt`. If you customize `"pluginsDir"` in `apc-mcp.json` to a deeper path (e.g. `"src/audio/plugins"`), pass `-DJUCE_DIR=...` / `-DLV2_INCLUDE_DIR=...` via `audio_plugin_configure` or `add_subdirectory()` the SDK in your root `CMakeLists.txt`.
+- **System plugin folders are never modified during builds:** JUCE templates set `COPY_PLUGIN_AFTER_BUILD FALSE` so builds never silently overwrite `~/Library/Audio/Plug-Ins` or `/Library/Audio/Plug-Ins` (and never fail on CI/sandbox permissions). Copy or symlink from `build/plugins/<Name>/<Name>_artefacts/<Config>/` into your DAW's scan path when ready.
+- **JUCE on Linux needs system dev headers (and a display for LV2):** Install the packages listed in JUCE's [`Linux Dependencies.md`](https://github.com/juce-framework/JUCE/blob/9.0.3/docs/Linux%20Dependencies.md) (`libasound2-dev`, `libjack-jackd2-dev`, `ladspa-sdk`, `libcurl4-openssl-dev`, `libfreetype-dev`, `libfontconfig1-dev`, `libx11-dev`, `libxcomposite-dev`, `libxcursor-dev`, `libxext-dev`, `libxinerama-dev`, `libxrandr-dev`, `libxrender-dev`, `libxi-dev`, `libglu1-mesa-dev`, `mesa-common-dev`, `libegl-dev`, plus `libwebkit2gtk-4.1-dev` for `ui="webview"`). On headless Linux CI, wrap builds that include JUCE's `LV2` format in `xvfb-run -a` because JUCE's `juce_lv2_helper` initializes GUI context during `POST_BUILD` `.ttl` generation.
+- **Two different LV2 paths:** `type="lv2"` scaffolds a zero-dependency **pure C11** LV2 plugin (`templates/lv2/`, always naming the binary `<Name>.so` inside `<Name>.lv2/` to match `manifest.ttl` across platforms). `type="juce"` (whose default `formats` is `VST3;LV2`) builds a **C++ JUCE** plugin using JUCE's LV2 wrapper.
+- **`type="standalone"` vs. `formats="Standalone"`:** `type="standalone"` scaffolds a standalone GUI audio *application* (`juce_add_gui_app`) and rejects `formats=...`. If you want a DAW plugin *plus* a standalone app wrapper from the same processor, use `type="juce"` with `formats="VST3;Standalone"`.
+- **Validator coverage:** `audio_plugin_validate` runs `pluginval` on `VST3` and (on macOS) `AudioUnit`, and `clap-validator` on `CLAP`. `LV2` and `Standalone` artefacts are discovered and reported as skipped rather than validated; for LV2 Turtle/spec checks, use external tools such as [`sord_validate`](https://gitlab.com/drobilla/sord) or [`lv2lint`](https://gitlab.com/OpenMusicKontrollers/lv2lint).
+- **Single-config vs. multi-config CMake trees:** `audio_plugin_build` auto-configures `build/` on first run, and automatically reconfigures single-config caches (Ninja / Unix Makefiles) when switching between `Debug` and `Release` without clobbering your chosen CMake generator.
 
 ---
 
@@ -315,15 +367,9 @@ what changed.
 **Q: `audio_plugin_create` says success — what SDKs do I need to build?**  
 A: `audio_plugin_create` registers `add_subdirectory(plugins/<Name>)` in your root
 `CMakeLists.txt` automatically (or creates one if you started with `apc-mcp.json`
-alone). To compile and link the target, supply the matching format SDK:
-- **JUCE (`juce`, `vst3`, `standalone`):** vendor JUCE at `_tools/JUCE`, pass
-  `-DJUCE_DIR=/path/to/JUCE` to `audio_plugin_configure`, or `add_subdirectory(JUCE)`
-  from your root `CMakeLists.txt` (on Linux, also install the system X11/ALSA/FreeType
-  dev headers, plus `libwebkit2gtk-4.1-dev` for `ui="webview"`).
-- **CLAP (`clap`):** vendor `free-audio/clap` at `_tools/clap` or install it on
-  `CMAKE_PREFIX_PATH`.
-- **LV2 (`lv2`):** install system LV2 headers (`apt install lv2-dev` / `brew install lv2`),
-  vendor `lv2/lv2` at `_tools/lv2`, or pass `-DLV2_INCLUDE_DIR=/path/to/lv2/include`.
+alone). To compile and link the target, supply the matching format SDK (`_tools/clap`,
+`_tools/JUCE`, or `_tools/lv2` / system LV2 headers) — see the SDK table and
+gotchas in [Quick Start](#quick-start).
 
 **Q: Does it work with VS Code / Cursor / Continue.dev?**  
 A: Yes — any MCP client works. Point it at `npx github:sgm-audio/apc-mcp` using whatever MCP config format that client uses.
