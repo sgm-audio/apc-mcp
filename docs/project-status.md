@@ -29,7 +29,7 @@ Verified on **2026-11-16** in this checkout (Node v22.22.3 / npm 10.9.8, Linux):
 | `npm run check` | PASS (exit 0) |
 | `git tag` / npm registry | Latest tag `v1.5.0`; `@sgm-audio/apc-mcp` returns 404 (not published) |
 
-CI on the same work (run `43816148791`, PR #35) reports **11/11 verification jobs green**: configure/compile/link of generated CLAP, LV2 and JUCE targets against real SDKs; `audio_plugin_validate` against a real `clap-validator 0.4.1` and a real `pluginval 1.0.4` on built artefacts; and the whole Node suite on macOS as well as Linux (`publish` is skipped unless the ref is a `v*` tag). Treat the table above as a dated snapshot, not a promise: re-run the commands rather than copying the numbers into other docs.
+CI on the same work (run `43817093143`, PR #35) reports **11/11 verification jobs green**: configure/compile/link of generated CLAP, LV2 and JUCE targets against real SDKs; `audio_plugin_validate` against a real `clap-validator 0.4.1` and a real `pluginval 1.0.4` on built artefacts; and the whole Node suite on macOS as well as Linux (`publish` is skipped unless the ref is a `v*` tag). Treat the table above as a dated snapshot, not a promise: re-run the commands rather than copying the numbers into other docs.
 
 ## What 2.0.0 changed
 
