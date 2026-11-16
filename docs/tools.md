@@ -29,7 +29,12 @@ audio_plugin_configure(options="-DJUCE_DIR=/path/to/JUCE -DLV2_INCLUDE_DIR=/path
 | `projectPath` | string, optional | Auto-detected from CWD |
 | `config` | `Debug` \| `Release` | Falls back to `apc-mcp.json` → `Debug` |
 | `generator` | string, optional | CMake default on Windows, `Unix Makefiles` on POSIX. Common: `Ninja`, `Xcode` |
-| `options` | string, optional | Space-separated `-DNAME=VALUE` flags; each becomes its own argv entry |
+| `options` | string, optional | `-DNAME=VALUE` flags; each becomes its own argv entry |
+
+Separate flags with `;` when a value itself contains a space:
+`options="-DCMAKE_CXX_FLAGS=-O3 -g;-DJUCE_DIR=/path/to/JUCE"`. A space-only
+string still works for the common case, but it cannot tell `-DNAME=a b` from
+two flags, so it splits there — use `;` whenever a value has a space in it.
 
 Only pass `-G` when creating a fresh cache; an existing cache created with a different generator must not be re-issued a `-G` flag, so `audio_plugin_build` handles reconfiguration itself.
 
@@ -89,6 +94,8 @@ audio_plugin_plugins(format="json")
 ```
 
 Lists directories under the configured `pluginsDir` that contain a `CMakeLists.txt`, with optional `status.json` metadata. `format` is `text` (default) or `json`. Symlinked `status.json` files are refused.
+
+`status.json` is **user-authored**: no tool creates or edits it, so a plugin without one simply has no metadata beyond what is on disk. See the layout note in [configuration](configuration.md).
 
 ### audio_plugin_validate
 

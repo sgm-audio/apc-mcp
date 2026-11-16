@@ -20,14 +20,23 @@
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 
 <{{PLUGIN_URI}}>
-  a lv2:Plugin , lv2:UtilityPlugin ;
+  # AmplifierPlugin, not UtilityPlugin: lv2core defines AmplifierPlugin as "a
+  # plugin primarily designed to change the volume of its input", and hosts sort
+  # their menus by this class. UtilityPlugin is its superclass, so declaring only
+  # the subclass is enough.
+  a lv2:Plugin , lv2:AmplifierPlugin ;
 
   doap:name "{{PLUGIN_DISPLAY_NAME}}" ;
   doap:shortdesc "{{PLUGIN_DESCRIPTION_TTL}}" ;
-  doap:license <https://opensource.org/licenses/MIT> ;
   doap:maintainer [
     foaf:name "{{VENDOR_TTL}}" ;
   ] ;
+
+  # No doap:license. A scaffolder cannot pick a licence for your project, and
+  # stating MIT here while shipping no LICENSE file asserts something untrue in
+  # a file hosts display. Add the triple yourself when you choose one, e.g.
+  #   doap:license <https://spdx.org/licenses/MIT.html> ;
+  # (SPDX identifiers are listed at https://spdx.org/licenses/).
 
   # Hosts use these to decide whether a saved project's preset is still
   # compatible. Bump microVersion for any change, and minorVersion for a
@@ -40,6 +49,9 @@
   # Remove this line if you add anything that does not.
   lv2:optionalFeature lv2:hardRTCapable ;
 
+  # lv2:designation tells a host which physical channel a port carries, so it can
+  # pair in_l with out_l and route a mono host into both sides instead of
+  # guessing from the symbol. Without it the ports are five anonymous channels.
   lv2:port [
     a lv2:InputPort , lv2:ControlPort ;
     lv2:index 0 ;
@@ -54,20 +66,24 @@
     a lv2:InputPort , lv2:AudioPort ;
     lv2:index 1 ;
     lv2:symbol "in_l" ;
+    lv2:designation lv2:left ;
     lv2:name "Input Left" ;
   ] , [
     a lv2:InputPort , lv2:AudioPort ;
     lv2:index 2 ;
     lv2:symbol "in_r" ;
+    lv2:designation lv2:right ;
     lv2:name "Input Right" ;
   ] , [
     a lv2:OutputPort , lv2:AudioPort ;
     lv2:index 3 ;
     lv2:symbol "out_l" ;
+    lv2:designation lv2:left ;
     lv2:name "Output Left" ;
   ] , [
     a lv2:OutputPort , lv2:AudioPort ;
     lv2:index 4 ;
     lv2:symbol "out_r" ;
+    lv2:designation lv2:right ;
     lv2:name "Output Right" ;
   ] .

@@ -733,6 +733,78 @@ behaviour here is new — it is the difference between a claim and a check.
   drive POSIX shebang shims, so a Windows job would test the fixtures, not the
   server.
 
+### Static-quality review (S-1 … S-22)
+
+Root-cause fixes for the findings in [REVIEW-STATIC-QUALITY.md](REVIEW-STATIC-QUALITY.md).
+Each one is now guarded by a probe, a test, or a real toolchain run.
+
+A subset (S-1, S-2, S-3, S-8 and the `npm.cmd` half of S-19) was fixed in a parallel
+change that landed first; the entries below describe the code as it ships now, and
+the review's §8 records which change carries which fix.
+
+- **The no-shell lint rule now bans the option, not the variable name (S-1).** It
+  matched an object literally named `child_process` and an import named `exec`, so a
+  default import, a namespace import and `{ shell: true }` on the sanctioned
+  `spawnSync` all passed. All four are rejected now, and `tests/release.test.js`
+  lints each one through the real config so the rule cannot rot.
+- **A crashed lint tool is no longer reported as "0 of N files with issues" (S-2)**,
+  and unreadable directories are listed as skipped instead of vanishing (S-3).
+- **`cmake --install` honours `--prefix` for LV2 (S-4).** The install `DESTINATION`
+  was expanded from `CMAKE_INSTALL_PREFIX` at configure time, which froze the path
+  into `cmake_install.cmake`: `cmake --install build --prefix X` installed into the
+  configure-time prefix and left `X` empty. It is now relative
+  (`${CMAKE_INSTALL_LIBDIR}/lv2`) via `GNUInstallDirs`.
+- **The WebView gain is smooth and bounded (S-5).** The parameter was quantised to
+  0.01 and applied as one multiply per block — zipper noise. It is now continuous
+  and driven by a 20 ms `juce::SmoothedValue` advanced once per sample; the page's
+  `setGain` message is clamped to 0..1 with NaN rejected instead of being trusted.
+- **`strictnessLevel` is configurable (S-9)** — 1..10 in `apc-mcp.json`, still 10 by
+  default — and the validator runs with the project as its working directory so its
+  logs land inside the project.
+- **`options` accepts values containing spaces (S-10)** by splitting on `;` first;
+  plain whitespace separation still works. `;` was added to the schema charset and a
+  space to the value class of `SAFE_CMAKE_OPTION_TOKEN` — each token is still one
+  argv entry and is still validated, so `-DA=ON; rm -rf /` is still rejected.
+- **Templates no longer assert things that are not true.** `JUCE_DISPLAY_SCALE_ENABLED`
+  is gone (0 references in JUCE 9.0.5), `COMPANY_WEBSITE`/`COMPANY_EMAIL` are gone
+  (they shipped a guessed domain in DLL properties and VST3 metadata), the LV2 gain
+  is an `lv2:AmplifierPlugin` with `lv2:designation` on its ports instead of an
+  anonymous `lv2:UtilityPlugin`, and the fabricated `doap:license` triple was
+  replaced by a comment telling the user to state their own. `JUCE_MODAL_LOOPS_PERMITTED`
+  is no longer defined for plugin targets, so a nested event loop cannot be compiled
+  into a host callback (the standalone app keeps it deliberately).
+- **The JUCE templates now pass an explicit `LV2URI`.** JUCE derives it as
+  `<COMPANY_WEBSITE>/plugins/<Name>` when it is not given, which meant the LV2 identity
+  of every scaffolded JUCE plugin was `https://<vendor>.com/plugins/<Name>` built from
+  an invented domain — and the plugin's LV2 URI is permanent once a host saves a
+  session. It is now `urn:<vendor>:<name>`, derived once in `index.js` and shared with
+  the native LV2 template. Without this the LV2 target stopped compiling outright
+  (`static assertion failed: Your configured LV2 URI must include a leading scheme
+  specifier`) as soon as the fabricated `COMPANY_WEBSITE` was removed.
+- **The LV2 NULL-port guard actually silences the output (S-14)** instead of
+  returning early and leaving the host's previous block in the buffer.
+- **Two templates stopped teaching the wrong buffer pattern.** The JUCE
+  pass-through copied each channel onto itself (S-15; the loop is deleted, the
+  comment says why a pass-through needs no code), and the standalone generator
+  hoists `getArrayOfWritePointers()` instead of calling `setSample()` per sample
+  (S-16).
+- **`ship` is Windows-correct and cannot hang (S-19).** It spawns `npm.cmd`, which
+  Node refuses to spawn without `shell: true` (`EINVAL`); it now runs npm's CLI JS
+  with `process.execPath`. Every child has a timeout and git runs with
+  `GIT_TERMINAL_PROMPT=0`, so a missing credential fails the release instead of
+  blocking it forever.
+- **`assertWithinProject()` fails closed (S-21)**: a `realpath` error now rejects
+  instead of silently skipping the symlink check.
+- Schema fields gained `.max()` caps (S-6), the single `spawn()` wrapper diagnoses
+  `ENOBUFS` as a 16 MB output overflow rather than a failed start (S-8), the template
+  map throws on an unknown type instead of falling through a `default:` arm (S-17),
+  and the docs now say that **no tool** writes
+  `status.json` (S-18).
+
+`outputSchema` / `structuredContent` (S-20) is deferred: it is an additive feature,
+not a defect, and the existing `format: "json"` modes remain machine-readable.
+
+
 ## [1.5.0] — 2026-06-17
 
 ### Added

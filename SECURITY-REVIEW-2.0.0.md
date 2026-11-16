@@ -690,7 +690,7 @@ Every finding above was implemented on this branch, with a regression test that 
 | F-10 | `docs/security.md` layers 1, 3, 3b, 4, 5, 7 and the residual-risk section rewritten; audit-history row added | `npm run docs:check` |
 | F-11 | Validator `### Output` labelled untrusted; plugin names, status values and skip reasons pass through `cleanScalar()` | `SEC-NEW-04` |
 | F-12 | `docs/development.md` recommends npm Trusted Publishing over `NPM_TOKEN`; `docs/getting-started.md` documents pinning `github:…#<ref>` and preferring the registry once published | `npm run docs:check` |
-| F-13 | LV2 `run()` clears reachable outputs instead of returning early; CLAP zeroes a channel with a null input; standalone caches write pointers (bounded, allocation-free); JUCE generic state documented as intentionally empty | `tests/cpp-api.test.js`, `tests/templates.test.js` |
+| F-13 | CLAP zeroes a channel whose input pointer is null instead of leaving stale audio; JUCE generic state documented as intentionally empty (it has no parameters). The LV2 output-clearing and standalone write-pointer items landed on `main` in PR #41 first and are taken from there. | `tests/cpp-api.test.js`, `tests/templates.test.js` |
 
 Two notes on scope:
 
@@ -764,7 +764,7 @@ import { call } from './tests/helpers/mcp-client.mjs';
 ## Appendix — commands used for the "holds up" claims
 
 ```
-npm ci && npm test          # 232 tests on fdbb0ce; 244 after the fixes in this branch
+npm ci && npm test          # 232 tests on fdbb0ce; 254 after the fixes in this branch
 npm run lint                # clean
 node tests/helpers/...      # in-process client for every PoC above
 cmake --version             # 4.4.5 ; g++ 12.2.0 for the C++ round-trip replays

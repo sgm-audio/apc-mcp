@@ -42,9 +42,12 @@ const SAFE_TARGET = /^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/;
 // CMake generators: start with a letter, then alphanumeric, spaces, underscores, hyphens
 const SAFE_GENERATOR = /^[a-zA-Z][a-zA-Z0-9_ -]*$/;
 // CMake options flags: -DNAME=VALUE, space-separated (allows Windows `\` paths)
-const SAFE_OPTIONS = /^[a-zA-Z0-9_= /.\-\\+:@,]+$/;
+// `;` is allowed because it is the documented option separator (see the split
+// in audio_plugin_configure); it can never reach cmake — every token is checked
+// against SAFE_CMAKE_OPTION_TOKEN, which has no `;` in any of its branches.
+const SAFE_OPTIONS = /^[a-zA-Z0-9_= /.\-\\+:@,;]+$/;
 // Allowed individual CMake configure option token (-DVAR[:TYPE]=VAL, -UVAR, -W[no-]dev/deprecated)
-const SAFE_CMAKE_OPTION_TOKEN = /^(?:-D[A-Za-z_][A-Za-z0-9_]*(?::[A-Z]+)?=[a-zA-Z0-9_=/.\-\\+:@,]*|-U[A-Za-z_][A-Za-z0-9_]*|-W(?:no-)?(?:dev|error(?:=dev)?|deprecated|error=deprecated))$/;
+const SAFE_CMAKE_OPTION_TOKEN = /^(?:-D[A-Za-z_][A-Za-z0-9_]*(?::[A-Z]+)?=[a-zA-Z0-9_=/.\-\\+:@, ]*|-U[A-Za-z_][A-Za-z0-9_]*|-W(?:no-)?(?:dev|error(?:=dev)?|deprecated|error=deprecated))$/;
 
 // CMake variables whose *value* is not data: CMake parses it as a script, loads
 // it as a toolchain, or hands it a command line. The character allowlist above
@@ -157,8 +160,13 @@ function assertWithinProject(projectRoot, candidate, label = 'path') {
   let realRoot;
   try {
     realRoot = fs.realpathSync(root);
-  } catch {
-    return resolved;
+  } catch (e) {
+    // Fail *closed*. Returning `resolved` here silently skipped the symlink
+    // check whenever the root was not resolvable, turning a containment guard
+    // into a decorative one under a race or a permission problem.
+    throw new Error(
+      `${label} cannot be checked — project root is not resolvable (${e.message}): ${projectRoot}`,
+      { cause: e });
   }
 
   // Walk up to the deepest existing ancestor (via lstat so dangling symlinks
@@ -391,6 +399,9 @@ function checkOptionalTool(binName) {
 // (AUDIT SEC-NEW-07: the doc said 2 MB while the code used 16 MB).
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
+// Synchronous by construction (spawnSync) despite the name; `spawn` is kept
+// because every call site reads like the async API it replaces, and the ESLint
+// rules in eslint.config.js are written against that name.
 function spawn(cmd, args, opts = {}) {
   return spawnSync(cmd, args, {
     timeout: (opts.timeout ?? 180) * 1000,
@@ -431,6 +442,9 @@ function trySpawn(cmd, args, opts = {}) {
       return { ok: false, output: '', stderr: installHint(cmd) };
     }
     if (code === 'ENOBUFS') {
+      // maxBuffer (16 MB) was exceeded. spawnSync reports this on `error`, but
+      // the process ran fine — reporting "could not be started" misdiagnoses the
+      // one case (a verbose build) where the output is the whole point.
       return {
         ok: false,
         output,
@@ -475,6 +489,10 @@ const defaultConfig = {
   validateFormats: ['VST3', 'CLAP'],
   validateCommand: 'pluginval',
   clapValidatorCommand: 'clap-validator',
+  // pluginval's own scale is 1-10; 10 enables the fuzz/GUI categories, which is
+  // the right default for a scaffold (CI asserts a fresh plugin passes it) but
+  // the wrong ceiling to hard-code for every user's work-in-progress plugin.
+  strictnessLevel: 10,
 };
 
 // Formats findPluginBinaries() actually knows how to locate.
@@ -494,6 +512,7 @@ const VALIDATOR_CONFIG_KEY = { VST3: 'validateCommand', CLAP: 'clapValidatorComm
 // all, so a non-array `validateFormats` crashed on .join() and a `buildDir` of
 // "../x" escaped the project root (AUDIT SEC-03).
 const RELATIVE_DIR = z.string()
+  .max(1024)
   // No backslash and no colon: these values are pasted into CMake *source*
   // (`add_subdirectory(${CMAKE_BINARY_DIR}/{{PLUGINS_DIR}}/...)`), where `\`
   // begins an escape sequence — `pluginsDir: "pl\ugins"` produced a plugin that
@@ -511,6 +530,7 @@ const CONFIG_SCHEMA = {
   validateFormats: z.array(z.enum(KNOWN_FORMATS)).min(1),
   validateCommand: z.string().regex(SAFE_TARGET, 'may contain only letters, digits, _ . and -'),
   clapValidatorCommand: z.string().regex(SAFE_TARGET, 'may contain only letters, digits, _ . and -'),
+  strictnessLevel: z.number().int().min(1).max(10),
 };
 
 // Validates each key independently so one bad value degrades to its default
@@ -742,11 +762,21 @@ function parseTestOutput(text) {
 
 const LINT_EXTENSIONS = ['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx'];
 
+// Returns { files, skipped }. `skipped` exists because the previous version did
+// `catch { return; }` on readdirSync: an unreadable subtree vanished from the
+// walk, and the caller then reported "No formatting issues found across project"
+// with isError false — a false clean from a tool that can rewrite sources.
 function findFilesByExt(dir, exts, skipNames = new Set(), skipPaths = new Set()) {
   const results = [];
+  const skipped = [];
   function walk(d) {
     let entries;
-    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch (e) {
+      skipped.push({ path: d, reason: e.code || e.message });
+      return;
+    }
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue;
       if (entry.isSymbolicLink()) continue;
@@ -760,7 +790,7 @@ function findFilesByExt(dir, exts, skipNames = new Set(), skipPaths = new Set())
     }
   }
   walk(dir);
-  return results;
+  return { files: results, skipped };
 }
 
 // JUCE's artefact layout, taken from `_juce_set_plugin_target_properties()` and
@@ -908,8 +938,7 @@ function mapPluginType(type, ui) {
         + 'JUCE FORMATS list. Remove the `formats` argument (or use type="juce" for multi-format builds).',
     };
     case 'vst3': return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3' };
-    case 'juce':
-    default:     return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3;LV2;Standalone' };
+    case 'juce': return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3;LV2;Standalone' };
     // A standalone *application*: juce_add_gui_app() builds one executable that
     // owns its audio device, so it has no plugin FORMATS at all. `formats: null`
     // is what tells the create handler to skip format validation. `ui` is not
@@ -935,6 +964,10 @@ function mapPluginType(type, ui) {
         + 'AudioProcessor instead, use type="juce" with formats="LV2".)',
     };
   }
+  // The `type` enum in the tool schema is the real gate; this is the belt to its
+  // braces. A `default:` arm here would silently scaffold a JUCE plugin if a new
+  // enum member were ever added without a template.
+  throw new Error(`no template for plugin type "${type}"`);
 }
 
 // An LV2 plugin is identified by URI, and that URI appears in three places that
@@ -962,15 +995,14 @@ function bundleVendor(vendor) {
     .replace(/^\.+|\.+$/g, '') || 'apc-mcp';
 }
 
-// Turtle string literals are delimited by `"` and honour backslash escapes, so a
-// value containing either character would terminate the literal early and
-// produce invalid metadata. SAFE_TEXT permits both, so they must be escaped
-// rather than assumed absent.
-function turtleEscape(text) {
-  return String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
-
-function cxxStringEscape(text) {
+// C++ string literals and Turtle string literals are delimited by `"` and honour
+// backslash escapes, so a value containing either character terminates the
+// literal early and produces invalid source or metadata. SAFE_TEXT permits both,
+// so they must be escaped rather than assumed absent. Both grammars need exactly
+// the same two escapes (Turtle's extra \n \t \r escapes are unreachable while
+// control characters are rejected), so there is one implementation: two
+// identical functions with different names were free to drift apart.
+function escapeBackslashQuote(text) {
   return String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
@@ -1193,11 +1225,11 @@ function buildNeedsConfigure(buildDir, config) {
 registerTool(
   'audio_plugin_build',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD if you have apc-mcp.json or CMakeLists.txt in a parent directory.'),
     config: z.enum(['Debug', 'Release']).optional()
       .describe('Build configuration. Debug includes symbols and assertions; Release is optimized. Falls back to "config" in apc-mcp.json, else Debug.'),
-    target: z.string().regex(SAFE_TARGET).optional()
+    target: z.string().max(256).regex(SAFE_TARGET).optional()
       .describe('Build only this CMake target (e.g. "MyPlugin_VST3", "MyPlugin_Standalone"). Omit to build all.'),
     clean: z.boolean().default(false)
       .describe('Clean build: rebuild everything from scratch.'),
@@ -1271,7 +1303,7 @@ registerTool(
 registerTool(
   'audio_plugin_configure',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
     config: z.enum(['Debug', 'Release']).optional()
       .describe('Build configuration. Falls back to "config" in apc-mcp.json, else Debug.'),
@@ -1299,8 +1331,17 @@ registerTool(
       `-DCMAKE_BUILD_TYPE=${config}`,
     ];
     if (params.options) {
-      // Split space-separated flags safely — each token becomes its own argv entry
-      for (const flag of params.options.split(/\s+/)) {
+      // Each token becomes its own argv entry — there is no shell. `;` is the
+      // documented separator because a CMake value may legitimately contain a
+      // space (`-DCMAKE_PREFIX_PATH=/Users/me/My Plugins`) and there is no quote
+      // character in the allowed charset to protect it. Whitespace splitting
+      // remains for backwards compatibility with existing callers and docs.
+      // Every token is still validated: `;` is a separator, never a payload.
+      const tokens = params.options.includes(';')
+        ? params.options.split(';')
+        : params.options.split(/\s+/);
+      for (const raw of tokens) {
+        const flag = raw.trim();
         if (!flag) continue;
         if (hasDotDot(flag) || !SAFE_CMAKE_OPTION_TOKEN.test(flag)) {
           return {
@@ -1333,11 +1374,11 @@ registerTool(
 registerTool(
   'audio_plugin_test',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
     config: z.enum(['Debug', 'Release']).optional()
       .describe('Build configuration for the test executable. Falls back to "config" in apc-mcp.json, else Debug.'),
-    testName: z.string().regex(SAFE_REGEX).optional()
+    testName: z.string().max(512).regex(SAFE_REGEX).optional()
       .describe('Run only tests matching this regex. Example: "MyPluginTest.*" to run a subset.'),
   },
   async (params) => {
@@ -1395,11 +1436,11 @@ registerTool(
 registerTool(
   'audio_plugin_lint',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
     fix: z.boolean().default(false)
       .describe('Auto-fix formatting in place. Without this flag, runs as dry-run and reports files that would change.'),
-    target: z.string().min(1)
+    target: z.string().min(1).max(4096)
       .refine(t => !t.includes('\0'), 'must not contain a NUL byte')
       .optional()
       .describe('Specific file or subdirectory to lint, relative to project root. Example: "plugins/Foo/Source". Must stay inside the project. Lints the whole project if omitted.'),
@@ -1443,6 +1484,7 @@ registerTool(
     // for LV2 plugins while skipping build trees and vendored SDKs (`_tools/`).
     const stat = fs.statSync(searchRoot);
     let files;
+    let skipped = [];
     if (stat.isFile()) {
       files = LINT_EXTENSIONS.some(e => searchRoot.endsWith(e)) ? [searchRoot] : [];
     } else {
@@ -1457,14 +1499,27 @@ registerTool(
       if (searchRoot !== resolvedToolsDir && !searchRoot.startsWith(resolvedToolsDir + path.sep)) {
         skipPaths.add(resolvedToolsDir);
       }
-      files = findFilesByExt(searchRoot, LINT_EXTENSIONS, skipNames, skipPaths);
+      ({ files, skipped } = findFilesByExt(searchRoot, LINT_EXTENSIONS, skipNames, skipPaths));
     }
 
     if (files.length === 0) {
-      // Asking for a specific target and linting nothing is not a clean result.
-      // The old message ("No C/C++ source files found to lint." with isError
-      // false) reads as success and lets a model report a clean file that was
-      // never opened (AUDIT SEC-NEW-08).
+      // A directory walk that could not read part of the tree is a *read*
+      // failure, not an empty project: say which directories, and fail.
+      if (skipped.length) {
+        const text = [
+          '## Lint could not read the project',
+          `No source file was linted: ${skipped.length} director${skipped.length === 1 ? 'y' : 'ies'} could not be read.`,
+          '',
+          '```',
+          ...skipped.slice(0, 10).map(s => `${s.path}  (${s.reason})`),
+          '```',
+        ].join('\n');
+        return { content: [{ type: 'text', text }], isError: true };
+      }
+      // Asking for a specific target and linting nothing is not a clean result
+      // either: the old message ("No C/C++ source files found to lint." with
+      // isError false) reads as success and lets a model report a clean file
+      // that was never opened (AUDIT SEC-NEW-08).
       const text = params.target
         ? `No C/C++ source files found under "${params.target}" — nothing was linted. ` +
           'Check the path and that it contains .c/.cpp/.cc/.h/.hpp files.'
@@ -1517,6 +1572,21 @@ registerTool(
         }
         return false;
       });
+      // A non-zero exit that names no file is a *tool* failure (crash, timeout,
+      // missing style config, permission denied), not "0 files had issues".
+      if (badFiles.length === 0) {
+        const detail = (r.stderr || r.output || '').trim().slice(0, 2000);
+        const text = [
+          '## Lint could not run',
+          '`clang-format` exited non-zero without naming any file, so this is a tool',
+          'failure rather than a formatting problem. No file was rewritten.',
+          '',
+          '```',
+          detail || '(no output)',
+          '```',
+        ].join('\n');
+        return { content: [{ type: 'text', text }], isError: true };
+      }
       const relative = badFiles.map(f => path.relative(proj, f));
       const text = [
         '## Lint found issues',
@@ -1528,10 +1598,15 @@ registerTool(
       return { content: [{ type: 'text', text }], isError: true };
     }
 
-    return { content: [{ type: 'text', text: params.target
+    const skipNote = skipped.length
+      ? `\n\n_${skipped.length} director${skipped.length === 1 ? 'y was' : 'ies were'} unreadable and ` +
+        `not linted: ${skipped.slice(0, 5).map(s => s.path).join(', ')}. The result above covers only the ` +
+        `${files.length} file(s) that could be read._`
+      : '';
+    const clean = params.target
       ? `No formatting issues in ${params.target}.`
-      : 'No formatting issues found across project.'
-    }] };
+      : `No formatting issues found in ${files.length} file(s).`;
+    return { content: [{ type: 'text', text: clean + skipNote }] };
   }
 );
 
@@ -1539,7 +1614,7 @@ registerTool(
 registerTool(
   'audio_plugin_plugins',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
     format: z.enum(['text', 'json']).default('text')
       .describe('Output format. "json" returns structured data the LLM can process. "text" is human-readable.'),
@@ -1612,7 +1687,7 @@ registerTool(
 registerTool(
   'audio_plugin_validate',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
     config: z.enum(['Debug', 'Release']).optional()
       .describe('Build configuration (matches the build you ran). Falls back to "config" in apc-mcp.json, else Debug.'),
@@ -1681,9 +1756,11 @@ registerTool(
       // Tracktion/pluginval uses --strictness-level (out-of-process is already
       // default); free-audio/clap-validator requires the `validate` subcommand.
       const args = b.format === 'VST3'
-        ? ['--strictness-level', '10', b.path]
+        ? ['--strictness-level', String(cfg.strictnessLevel ?? 10), b.path]
         : ['validate', b.path];
-      const r = trySpawn(bin, args, { timeout: 120 });
+      // cwd: validators write logs; without this they land wherever the MCP
+      // client happened to spawn the server, i.e. outside the project.
+      const r = trySpawn(bin, args, { cwd: proj, timeout: 120 });
       results.push({
         ...b,
         status: r.ok ? 'pass' : 'fail',
@@ -1744,9 +1821,9 @@ registerTool(
 registerTool(
   'audio_plugin_create',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Parent project root where the plugins/ directory lives. Auto-detected from CWD.'),
-    name: z.string().min(1).regex(SAFE_PLUGIN_NAME)
+    name: z.string().min(1).max(64).regex(SAFE_PLUGIN_NAME)
       .describe('Plugin name. Use kebab-case, snake_case, or CamelCase. Examples: "Phaser9000", "my-delay", "TapeEcho".'),
     type: z.enum(['clap', 'vst3', 'juce', 'standalone', 'lv2']).default('clap')
       .describe('What to scaffold. "clap" generates a CLAP plugin against the free-audio/clap headers. "vst3" generates a JUCE plugin targeting VST3 only. "juce" generates a JUCE AudioProcessor for VST3;LV2;Standalone. "standalone" generates a standalone audio APPLICATION (juce_add_gui_app) — one executable that owns its audio device, not a plugin a host loads. "lv2" generates a native LV2 plugin in C with Turtle metadata, unrelated to the LV2 that type="juce" can emit from C++. (ARA is not offered yet — it needs a dedicated template.)'),
@@ -1831,16 +1908,16 @@ registerTool(
       PLUGIN_ID: id,
       PLUGIN_CLASS_NAME: id + 'Processor',
       PLUGIN_DISPLAY_NAME: displayName(params.name),
-      PLUGIN_DESCRIPTION_CXX: cxxStringEscape(params.description),
+      PLUGIN_DESCRIPTION_CXX: escapeBackslashQuote(params.description),
       PLUGIN_DESCRIPTION_CMAKE: juceDescriptionEscape(params.description),
       PLUGIN_FORMATS: formats,
       PLUGINS_DIR: cfg.pluginsDir.split(path.sep).join('/'),
       // One placeholder per output grammar. There is deliberately no bare
       // {{VENDOR}}: a template that referenced it would leave a literal
       // placeholder behind, which the scaffold smoke test treats as a failure.
-      VENDOR_CXX: cxxStringEscape(params.vendor),
+      VENDOR_CXX: escapeBackslashQuote(params.vendor),
       VENDOR_CMAKE: juceDescriptionEscape(params.vendor),
-      VENDOR_TTL: turtleEscape(params.vendor),
+      VENDOR_TTL: escapeBackslashQuote(params.vendor),
       VENDOR_HTML: htmlEscape(params.vendor),
       BUNDLE_VENDOR: bundleVendor(params.vendor),
       MANUFACTURER_CODE: fourCharCode(params.vendor),
@@ -1848,7 +1925,7 @@ registerTool(
       // Used only by templates/lv2, but computed for every scaffold so a template
       // can never reference a variable that was never supplied.
       PLUGIN_URI: lv2Uri(params.vendor, id),
-      PLUGIN_DESCRIPTION_TTL: turtleEscape(params.description),
+      PLUGIN_DESCRIPTION_TTL: escapeBackslashQuote(params.description),
     };
 
     // SEC-NEW-05: every directory level is created and re-verified, and every
