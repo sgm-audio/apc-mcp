@@ -31,7 +31,7 @@ const STRICT_DEV = process.argv.includes('--strict-dev');
 // whose value is a list of scalar strings, plus `#` comments and a leading
 // document marker. This is deliberately not a general YAML parser — if the
 // decisions file grows nested structures, swap this for a real parser.
-function readDecisions(file) {
+export function readDecisions(file) {
   if (!fs.existsSync(file)) {
     fail(`license decisions file not found: ${file}`);
   }
@@ -40,8 +40,8 @@ function readDecisions(file) {
   let current = null;
 
   for (const raw of lines) {
-    const line = raw.replace(/\s+$/, '');
-    if (!line.trim() || line.trim().startsWith('#') || line.trim() === '---') continue;
+    const line = raw.replace(/(^|\s)#.*$/, '').replace(/\s+$/, '');
+    if (!line.trim() || line.trim() === '---') continue;
 
     const listStart = line.match(/^([A-Za-z_][\w-]*):\s*$/);
     if (listStart) { current = listStart[1]; lists[current] ??= []; continue; }

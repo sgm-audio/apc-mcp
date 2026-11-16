@@ -1088,4 +1088,96 @@ describe('native LV2 template', () => {
     assert.ok(!fs.existsSync(path.join(PLUGINS, name)),
       'a rejected scaffold must not leave a directory behind');
   });
+
+  it('NODE-03: fourCharCode guarantees >=1 uppercase letter for digit-leading vendors and distinct PLUGIN_CODEs for shared prefixes', async () => {
+    const rLead = await call('audio_plugin_create', {
+      projectPath: PROJ, name: 'MySynthLead', type: 'juce', vendor: '112dB',
+    });
+    const rPad = await call('audio_plugin_create', {
+      projectPath: PROJ, name: 'MySynthPad', type: 'juce', vendor: '1010',
+    });
+    assert.equal(rLead.isError, false, rLead.text);
+    assert.equal(rPad.isError, false, rPad.text);
+
+    const cmLead = fs.readFileSync(path.join(PLUGINS, 'MySynthLead', 'CMakeLists.txt'), 'utf8');
+    const cmPad = fs.readFileSync(path.join(PLUGINS, 'MySynthPad', 'CMakeLists.txt'), 'utf8');
+    const mcLead = cmLead.match(/PLUGIN_MANUFACTURER_CODE\s+(\S+)/)?.[1] ?? '';
+    const mcPad = cmPad.match(/PLUGIN_MANUFACTURER_CODE\s+(\S+)/)?.[1] ?? '';
+    const pcLead = cmLead.match(/PLUGIN_CODE\s+(\S+)/)?.[1] ?? '';
+    const pcPad = cmPad.match(/PLUGIN_CODE\s+(\S+)/)?.[1] ?? '';
+
+    assert.ok(mcLead.length === 4 && /[A-Z]/.test(mcLead),
+      `digit-leading vendor "112dB" must produce 4-char MANUFACTURER_CODE with >=1 uppercase letter, got "${mcLead}"`);
+    assert.ok(mcPad.length === 4 && /[A-Z]/.test(mcPad),
+      `all-digit vendor "1010" must produce 4-char MANUFACTURER_CODE with >=1 uppercase letter, got "${mcPad}"`);
+    assert.notEqual(pcLead, pcPad,
+      `MySynthLead and MySynthPad must not collide on PLUGIN_CODE "${pcLead}"`);
+  });
+
+  it('CPP-01, CPP-02, UI-01: juce-webview notifies host on parameter gesture, performs ready handshake, and avoids Math.random meter', () => {
+    for (const s of [...scaffolded.values()].filter(x => x.type === 'juce' && x.ui === 'webview')) {
+      const editorCpp = cppCode(s.files.get('Source/WebViewEditor.cpp'));
+      assert.match(editorCpp, /beginChangeGesture\s*\(\s*\)/,
+        `${s.name}: WebViewEditor must call beginChangeGesture()`);
+      assert.match(editorCpp, /setValueNotifyingHost\s*\(/,
+        `${s.name}: WebViewEditor must call setValueNotifyingHost()`);
+      assert.match(editorCpp, /endChangeGesture\s*\(\s*\)/,
+        `${s.name}: WebViewEditor must call endChangeGesture()`);
+      assert.match(editorCpp, /jlimit\s*\(\s*0\.0f\s*,\s*1\.0f/,
+        `${s.name}: WebViewEditor must clamp gain to [0.0f, 1.0f]`);
+      assert.match(editorCpp, /action\s*==\s*"ready"/,
+        `${s.name}: WebViewEditor must handle the "ready" handshake from JS`);
+
+      const appJs = s.files.get('Source/UI/app.js');
+      assert.doesNotMatch(appJs, /Math\.random\s*\(\s*\)/,
+        `${s.name}: app.js must not drive the audio meter with Math.random()`);
+      assert.match(appJs, /sendAction\s*\(\s*['"]ready['"]/,
+        `${s.name}: app.js must send the "ready" handshake on load`);
+    }
+  });
+
+  it('CPP-03, CPP-04: clap reset() preserves parameter values, factoryCreatePlugin uses std::nothrow, and standalone uses ScopedNoDenormals', () => {
+    for (const s of [...scaffolded.values()].filter(x => x.type === 'clap')) {
+      const procCpp = cppCode(s.files.get('Source/PluginProcessor.cpp'));
+      const resetBody = procCpp.match(/void\s+\w+::reset\s*\([^)]*\)\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+      assert.doesNotMatch(resetBody, /\bm_gain\s*=/,
+        `${s.name}: CLAP reset() must not overwrite parameter value m_gain`);
+
+      const entryCpp = cppCode(s.files.get('Source/PluginEntry.cpp'));
+      assert.match(entryCpp, /new\s*\(\s*std::nothrow\s*\)/,
+        `${s.name}: CLAP factoryCreatePlugin must use new (std::nothrow) across CLAP_ABI`);
+    }
+
+    for (const s of [...scaffolded.values()].filter(x => x.type === 'standalone')) {
+      const mainCompCpp = cppCode(s.files.get('Source/MainComponent.cpp'));
+      assert.match(mainCompCpp, /\bScopedNoDenormals\b/,
+        `${s.name}: standalone getNextAudioBlock must guard denormals with ScopedNoDenormals`);
+    }
+  });
+
+  it('CMAKE-01, CMAKE-02: templates check CMAKE_SOURCE_DIR/_tools first, use {{PLUGIN_NAME}}_WebData target, and honour custom pluginsDir', async () => {
+    for (const s of scaffolded.values()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      assert.match(cm, /\$\{CMAKE_SOURCE_DIR\}\/_tools\//,
+        `${s.name}: CMakeLists.txt must check \${CMAKE_SOURCE_DIR}/_tools/ first`);
+      if (s.type === 'juce' && s.ui === 'webview') {
+        assert.ok(cm.includes(`juce_add_binary_data(${s.name}_WebData`),
+          `${s.name}: binary data CMake target must use PLUGIN_NAME (${s.name}_WebData) so hyphen/underscore siblings do not collide`);
+      }
+    }
+
+    const customProj = fs.mkdtempSync(path.join(os.tmpdir(), 'apc-custom-pluginsdir-'));
+    try {
+      fs.writeFileSync(path.join(customProj, 'apc-mcp.json'), JSON.stringify({ pluginsDir: 'modules/audio' }));
+      const rClap = await call('audio_plugin_create', {
+        projectPath: customProj, name: 'CustomClap', type: 'clap',
+      });
+      assert.equal(rClap.isError, false, rClap.text);
+      const clapCm = fs.readFileSync(path.join(customProj, 'modules', 'audio', 'CustomClap', 'CMakeLists.txt'), 'utf8');
+      assert.ok(clapCm.includes('modules/audio/CustomClap/CustomClap_artefacts/$<CONFIG>/CLAP'),
+        `CLAP CMakeLists.txt must honour custom pluginsDir: ${clapCm}`);
+    } finally {
+      fs.rmSync(customProj, { recursive: true, force: true });
+    }
+  });
 });

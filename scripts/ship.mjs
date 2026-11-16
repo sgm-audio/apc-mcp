@@ -38,13 +38,22 @@ if (unknown) {
 }
 
 function git(args) {
-  return spawnSync('git', args, { cwd: PKG_DIR, encoding: 'utf-8' });
+  const r = spawnSync('git', args, { cwd: PKG_DIR, encoding: 'utf-8' });
+  if (r.error) {
+    console.error(`\nship: failed to execute git (${r.error.message}).`);
+    process.exit(1);
+  }
+  return r;
 }
 
 function run(cmd, args, label) {
   console.log(`\n$ ${cmd} ${args.join(' ')}`);
   if (DRY_RUN) { console.log('  (dry run — not executed)'); return { status: 0 }; }
   const r = spawnSync(cmd, args, { cwd: PKG_DIR, stdio: 'inherit' });
+  if (r.error) {
+    console.error(`\nship: ${label} failed to start (${r.error.message}).`);
+    process.exit(1);
+  }
   if (r.status !== 0) {
     console.error(`\nship: ${label} failed (exit ${r.status}).`);
     process.exit(r.status ?? 1);
@@ -66,7 +75,13 @@ if (!/^\d+\.\d+\.\d+([-+].+)?$/.test(version)) {
   stop(`"${version}" is not a valid semver version.`);
 }
 
-const NPM_CMD = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+// On Windows Node >= 20.12.2 (CVE-2024-27980), spawnSync('npm.cmd', ...) throws
+// EINVAL without shell:true. Running npm's JS entrypoint through process.execPath
+// stays 100% shell-free on every OS.
+const npmExecPath = process.env.npm_execpath;
+const [NPM_BIN, NPM_PREFIX_ARGS] = (npmExecPath && fs.existsSync(npmExecPath))
+  ? [process.execPath, [npmExecPath]]
+  : [process.platform === 'win32' ? 'npm.exe' : 'npm', []];
 
 // ── Guard 1: quality gates ────────────────────────────────────────
 // Run here rather than only via `npm run ship &&`, so invoking this file
@@ -76,11 +91,12 @@ if (NO_CHECK) {
 } else if (DRY_RUN) {
   console.log('\nship: dry run — skipping `npm run check` (it would run for real).');
 } else {
-  run(NPM_CMD, ['run', 'check'], 'npm run check');
+  run(NPM_BIN, [...NPM_PREFIX_ARGS, 'run', 'check'], 'npm run check');
 }
 
 // ── Guard 2: git state ────────────────────────────────────────────
-const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout?.trim();
+const branchRes = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+const branch = branchRes.status === 0 ? branchRes.stdout?.trim() : '';
 if (!branch || branch === 'HEAD') {
   stop(`HEAD is detached, not "${REQUIRED_BRANCH}". Check out ${REQUIRED_BRANCH} first.`);
 }
@@ -91,7 +107,11 @@ if (branch !== REQUIRED_BRANCH) {
        `  or pass --branch=${branch} if you really mean to tag this branch.`);
 }
 
-const dirty = git(['status', '--porcelain']).stdout?.trim();
+const statusRes = git(['status', '--porcelain']);
+if (statusRes.status !== 0) {
+  stop(`git status failed: ${(statusRes.stderr || '').trim()}`);
+}
+const dirty = statusRes.stdout?.trim();
 if (dirty) {
   const n = dirty.split('\n').length;
   stop(`the working tree has ${n} uncommitted change(s):\n` +

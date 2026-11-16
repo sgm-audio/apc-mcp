@@ -2,6 +2,7 @@
 #include "WebViewEditor.h"
 #include <BinaryData.h>
 
+#include <cmath>
 #include <cstddef>
 #include <vector>
 
@@ -73,9 +74,12 @@ void WebViewEditor::resized()
 
 std::optional<juce::WebBrowserComponent::Resource> WebViewEditor::getResource (const juce::String &url)
 {
-    // "/" is the initial document request; anything else is a sub-resource path.
-    const auto wanted = url == "/" ? juce::String ("index.html")
-                                   : url.fromFirstOccurrenceOf ("/", false, false);
+    // Strip any query string or fragment before matching "/" or sub-resources.
+    const auto cleanUrl = url.upToFirstOccurrenceOf ("?", false, false)
+                             .upToFirstOccurrenceOf ("#", false, false);
+    const auto wanted = (cleanUrl.isEmpty() || cleanUrl == "/")
+        ? juce::String ("index.html")
+        : cleanUrl.fromFirstOccurrenceOf ("/", false, false);
 
     struct Entry { const char *name; const char *data; int size; const char *mime; };
 
@@ -143,12 +147,26 @@ bool WebViewEditor::handleJSAction (const juce::String &url)
     const auto params = parseQuery (url);
     const auto action = params["action"];
 
+    if (action == "ready")
+    {
+        if (auto *gainParam = m_processor.getGainParam())
+            m_sentGain = gainParam->get();
+        sendStateToJS();
+        return true;
+    }
+
     if (action == "setGain")
     {
         auto *gainParam = m_processor.getGainParam();
 
         if (gainParam != nullptr)
-            *gainParam = static_cast<float> (params.getValue ("data", "1.0").getDoubleValue());
+        {
+            const auto raw = static_cast<float> (params.getValue ("data", "1.0").getDoubleValue());
+            const auto clamped = std::isfinite (raw) ? juce::jlimit (0.0f, 1.0f, raw) : 0.75f;
+            gainParam->beginChangeGesture();
+            gainParam->setValueNotifyingHost (gainParam->convertTo0to1 (clamped));
+            gainParam->endChangeGesture();
+        }
     }
 
     return true; // consumed — block the navigation

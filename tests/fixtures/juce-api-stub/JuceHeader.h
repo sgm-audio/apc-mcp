@@ -82,6 +82,10 @@
 namespace juce
 {
     template <typename T> T jmax (T a, T b) { return a > b ? a : b; }
+    template <typename T> constexpr T jlimit (T lowerLimit, T upperLimit, T valueToConstrain) noexcept
+    {
+        return valueToConstrain < lowerLimit ? lowerLimit : (upperLimit < valueToConstrain ? upperLimit : valueToConstrain);
+    }
     template <typename... Args> void ignoreUnused (Args&&...) {}
 
     class String;
@@ -97,6 +101,7 @@ namespace juce
         String upToFirstOccurrenceOf (const String &, bool, bool) const { return {}; }
         bool contains (const String &) const { return false; }
         bool startsWith (const String &) const { return false; }
+        bool isEmpty() const noexcept { return false; }
         String trim() const { return {}; }
         double getDoubleValue() const { return 0.0; }
         static String fromUTF8 (const char *, int = -1) { return {}; }
@@ -229,6 +234,9 @@ namespace juce
     {
     public:
         virtual ~AudioProcessorParameter() = default;
+        void beginChangeGesture() {}
+        void endChangeGesture() {}
+        void setValueNotifyingHost (float) {}
     };
 
     class ParameterID
@@ -250,6 +258,7 @@ namespace juce
     public:
         AudioParameterFloat (const ParameterID &, const String &, NormalisableRange<float>, float) {}
         float get() const noexcept { return 0.0f; }
+        float convertTo0to1 (float v) const noexcept { return v; }
         operator float() const noexcept { return 0.0f; }
         AudioParameterFloat &operator= (float) { return *this; }
     };

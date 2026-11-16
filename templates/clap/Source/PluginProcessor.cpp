@@ -120,8 +120,9 @@ void {{PLUGIN_CLASS_NAME}}::stopProcessing(const clap_plugin_t *plugin) {
 }
 
 void {{PLUGIN_CLASS_NAME}}::reset(const clap_plugin_t *plugin) {
-    if (auto *self = from(plugin))
-        self->m_gain = 1.0f;
+    // Reset DSP state (filter histories, delay lines, oscillator phase) here.
+    // Parameter values must NOT be reset on transport jump / loop reset.
+    (void) plugin;
 }
 
 clap_process_status {{PLUGIN_CLASS_NAME}}::process(const clap_plugin_t *plugin,
@@ -146,7 +147,7 @@ clap_process_status {{PLUGIN_CLASS_NAME}}::process(const clap_plugin_t *plugin,
         return CLAP_PROCESS_ERROR;
 
     const auto channels = std::min<uint32_t>(in.channel_count, out.channel_count);
-    const float gain = self->m_gain;
+    const float gain = self->m_gain.load(std::memory_order_relaxed);
 
     for (uint32_t ch = 0; ch < channels; ++ch) {
         const float *src = in.data32[ch];
