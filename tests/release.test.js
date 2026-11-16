@@ -133,7 +133,9 @@ describe('QA-08 · every static-analysis gate is wired into CI', () => {
     for (const flag of ['--install', '--lv2lint', '--clang-tidy']) {
       assert.ok(t.includes(flag), `no CI job passes ${flag} to smoke-scaffold.mjs`);
     }
-    assert.match(t, /apt-get install[^\n]*lv2lint/, 'lv2lint is never installed');
+    // lv2lint is packaged by neither Debian, Ubuntu nor Homebrew, so CI builds it
+    // from the upstream mirror; clang-tidy is a normal package.
+    assert.match(t, /git clone[^\n]*lv2lint/, 'lv2lint is never obtained');
     assert.match(t, /apt-get install[^\n]*clang-tidy/, 'clang-tidy is never installed');
   });
 

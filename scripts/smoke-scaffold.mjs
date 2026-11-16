@@ -270,18 +270,38 @@ function verifyLv2Install(members, buildDir) {
 
 // S-13: the Turtle is copied into the bundle and never parsed by anything in
 // this repo otherwise. lv2lint is the reference validator: it loads the bundle
-// through lilv, checks the description against lv2core, and exits non-zero on a
-// violation.
+// through lilv, checks the description against lv2core, loads the plugin and
+// exits non-zero when a test fails.
+//
+// It takes a plugin URI and searches the directories given with -I, not a path;
+// and it exits non-zero when the URI cannot be found, so a typo here cannot turn
+// into a quiet pass. No distribution packages it (not Debian, not Ubuntu, not
+// Homebrew), hence the build-from-source hint.
 function verifyLv2Metadata(members) {
-  if (!needTool('lv2lint', 'Debian/Ubuntu: apt install lv2lint; macOS: brew install lv2lint')) return;
+  if (!needTool('lv2lint', 'build it from source: git clone https://git.open-music-kontrollers.ch/~hp/lv2lint && meson setup build && meson compile -C build')) return;
   for (const c of members) {
     const bundle = lv2BundleDir(c, BUILD);
-    const res = spawnSync('lv2lint', ['-o', bundle], { encoding: 'utf-8', timeout: 120000 });
+    if (!fs.existsSync(bundle)) {
+      fail(`${c.name} lv2lint`, `no built bundle at ${bundle}`);
+      continue;
+    }
+    // Read the URI out of the manifest rather than re-deriving it: the bundle is
+    // the thing under test.
+    const uri = (fs.readFileSync(path.join(bundle, 'manifest.ttl'), 'utf8').match(/^<([^>]+)>/m) ?? [])[1];
+    if (!uri) {
+      fail(`${c.name} lv2lint`, 'manifest.ttl has no <plugin-uri> subject');
+      continue;
+    }
+    const res = spawnSync('lv2lint', ['-I', path.dirname(bundle), uri],
+      { encoding: 'utf-8', timeout: 120000 });
     const out = `${res.stdout ?? ''}${res.stderr ?? ''}`.trim();
     if (res.status !== 0) {
-      fail(`${c.name} lv2lint`, `lv2lint rejected the bundle (exit ${res.status}):\n${out.slice(0, 4000)}`);
+      fail(`${c.name} lv2lint`, `lv2lint rejected ${uri} (exit ${res.status}):\n${out.slice(0, 4000)}`);
     } else {
-      ok(`${c.name}: lv2lint accepts the bundle${out ? ` (${out.split('\n').length} lines)` : ''}`);
+      // Default policy: a failed test exits non-zero, a warning is only reported.
+      // Surface the warnings anyway — they are the S-13 class of finding.
+      const warn = out.split('\n').filter(l => /WARN/i.test(l)).length;
+      ok(`${c.name}: lv2lint accepts ${uri}${warn ? ` (${warn} warning lines)` : ''}`);
     }
   }
 }

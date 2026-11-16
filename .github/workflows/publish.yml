@@ -99,12 +99,30 @@ jobs:
       - run: npm ci
       - name: Clone lv2/lv2 for the headers
         run: git clone --depth 1 https://github.com/lv2/lv2.git "${RUNNER_TEMP}/lv2"
-      - name: Install lv2lint and clang-tidy
-        # lv2lint loads each built bundle through lilv and checks the Turtle
-        # against lv2core; nothing else in this repo ever parses those files.
+      - name: Install clang-tidy and the lilv build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends lv2lint clang-tidy ninja-build
+          sudo apt-get install -y --no-install-recommends \
+            clang-tidy ninja-build meson pkg-config build-essential \
+            lv2-dev liblilv-dev libsord-dev libserd-dev libsratom-dev
+      - name: Build lv2lint from source
+        # No distribution packages lv2lint (not Debian, not Ubuntu, not Homebrew),
+        # so it is built from the upstream mirror at a pinned commit. The two
+        # meson subprojects it needs are vendored in the mirror, so this builds
+        # without fetching anything else.
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/lv2lint"
+          git clone --quiet https://github.com/amsynth/lv2lint.git "$dir"
+          git -C "$dir" checkout --quiet ec29cfed3193a89a8091a4c18e22bb36e6b43b24
+          meson setup "$dir/build" "$dir" --buildtype=release
+          meson compile -C "$dir/build"
+          bin=$(find "$dir/build" -maxdepth 2 -type f -name lv2lint -perm -u+x | head -1)
+          test -n "$bin"
+          mkdir -p "${RUNNER_TEMP}/bin"
+          cp "$bin" "${RUNNER_TEMP}/bin/lv2lint"
+          "${RUNNER_TEMP}/bin/lv2lint" -v || true
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
       - name: Build, install and validate every scaffolded LV2 plugin
         # --install  proves `cmake --install --prefix X` honours X (an absolute
         #            DESTINATION silently ignores --prefix).
@@ -230,7 +248,7 @@ jobs:
           fi
           chmod +x "$BIN"
           "$BIN" --version || true
-          echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
+          dirname "$BIN" >> "$GITHUB_PATH"
       - name: Build a real CLAP plugin
         env:
           APC_CLAP_DIR: ${{ runner.temp }}/clap
@@ -289,7 +307,7 @@ jobs:
             exit 1
           fi
           chmod +x "$BIN"
-          echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
+          dirname "$BIN" >> "$GITHUB_PATH"
       - name: Build a real VST3 plugin
         env:
           APC_JUCE_DIR: ${{ runner.temp }}/JUCE
