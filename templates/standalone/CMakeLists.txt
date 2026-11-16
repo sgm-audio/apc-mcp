@@ -77,8 +77,12 @@ target_compile_features({{PLUGIN_NAME}} PRIVATE cxx_std_20)
 target_compile_definitions({{PLUGIN_NAME}} PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
+    # Deliberate for a desktop app: the synchronous dialog helpers
+    # (AlertWindow::showMessageBox, FileChooser::browseForFileToOpen) are a
+    # legitimate thing for an app to call. JUCE defaults this to 0; the plugin
+    # templates leave it at 0 because a nested event loop inside a host
+    # callback deadlocks the host.
     JUCE_MODAL_LOOPS_PERMITTED=1
-    JUCE_DISPLAY_SCALE_ENABLED=1
 )
 
 # Without this the target has no JUCE modules attached and every juce:: symbol

@@ -83,8 +83,14 @@ target_compile_definitions({{PLUGIN_NAME}} PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
-    JUCE_MODAL_LOOPS_PERMITTED=1
-    JUCE_DISPLAY_SCALE_ENABLED=1
+    # NOT setting JUCE_MODAL_LOOPS_PERMITTED (JUCE default: 0) is the point:
+    # the synchronous dialog helpers then refuse to compile, which is the
+    # correct outcome for plugin code — a nested event loop started from a
+    # host callback deadlocks the host. Use the ...Async variants.
+    #
+    # JUCE_DISPLAY_SCALE_ENABLED was deleted rather than kept: it stopped
+    # existing in JUCE (0 references in the current tree), so defining it
+    # only implied a behaviour that no longer exists.
 )
 
 # Without this the target has no JUCE modules attached and every juce:: symbol
