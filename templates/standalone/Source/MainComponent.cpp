@@ -79,6 +79,15 @@ void {{PLUGIN_ID}}MainComponent::getNextAudioBlock(const juce::AudioSourceChanne
     const double phaseStep = frequencyHz * juce::MathConstants<double>::twoPi / rate;
     const int numChannels = bufferToFill.buffer->getNumChannels();
 
+    // Cache the channel pointers once per block. Indexing a raw pointer in the
+    // inner loop avoids a bounds check per sample (setSample) without allocating
+    // anything on the audio thread; anything beyond the first 8 channels falls
+    // back to the bounds-checked API.
+    float *channelData[8] = {};
+    const int cachedChannels = numChannels < 8 ? numChannels : 8;
+    for (int channel = 0; channel < cachedChannels; ++channel)
+        channelData[channel] = bufferToFill.buffer->getWritePointer(channel);
+
     for (int i = 0; i < bufferToFill.numSamples; ++i)
     {
         // Advance the phase ONCE per sample and write that sample to every
@@ -86,9 +95,13 @@ void {{PLUGIN_ID}}MainComponent::getNextAudioBlock(const juce::AudioSourceChanne
         // numChannels times too fast and put the outputs out of phase.
         const auto sample = static_cast<float>(currentLevel * std::sin(phase));
         phase += phaseStep;
+        const int index = bufferToFill.startSample + i;
 
-        for (int channel = 0; channel < numChannels; ++channel)
-            bufferToFill.buffer->setSample(channel, bufferToFill.startSample + i, sample);
+        for (int channel = 0; channel < cachedChannels; ++channel)
+            if (channelData[channel] != nullptr) channelData[channel][index] = sample;
+
+        for (int channel = cachedChannels; channel < numChannels; ++channel)
+            bufferToFill.buffer->setSample(channel, index, sample);
     }
 
     // Keep the phase inside one cycle. Left unbounded it grows for the lifetime

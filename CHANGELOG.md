@@ -68,6 +68,35 @@
   original fix pinned `minimatch@^11.0.5` through an override while `eslint`
   declared `^10.2.6`; that worked for the audit but left `npm ls` reporting an
   invalid tree across a declared major, and the override is gone.)
+- **Second security review (`SECURITY-REVIEW-2.0.0.md`), all findings fixed.**
+  - `audio_plugin_configure` no longer forwards `-D` variables whose value CMake
+    executes or loads (`CMAKE_PROJECT_TOP_LEVEL_INCLUDES`, `CMAKE_PROJECT_INCLUDE*`,
+    toolchain/module paths, compilers, launchers, `*_FLAGS`, `CMAKE_MAKE_PROGRAM`, …).
+    A single option could previously run an arbitrary `.cmake` script or binary.
+  - A `CMakeCache.txt` that belongs to another source tree, or that carries one of
+    those settings, is deleted before `configure` and before `build`'s
+    auto-configure — a committed cache used to execute code with no arguments at all.
+  - Every write in `audio_plugin_create` now re-resolves the real path immediately
+    before use, refuses to traverse a symlinked directory, creates directories one
+    level at a time and opens files with `O_NOFOLLOW`/`O_EXCL`. A `plugins/`
+    directory swapped for a symlink mid-call could previously redirect the scaffold
+    outside the project root (reproduced: three plugin trees written outside).
+  - `#` and `;` in `description`/`vendor` are escaped as octal C escapes (`\043`,
+    `\073`). They reach a generated compile definition, where a raw `#` comments out
+    the rest of the Makefile line and `;` splits the CMake list — either one made a
+    legally-named JUCE plugin fail to compile.
+  - `audio_plugin_plugins` caps `status.json` at 4 KiB, echoes only
+    `type`/`status`/`version`, and flattens every project-authored string to one
+    short line. A 2 MB or newline-bearing `status.json` was echoed verbatim.
+  - `audio_plugin_validate` skips artefacts that are symlinks or resolve outside the
+    project instead of handing them to the validator, and reports what it skipped.
+  - `audio_plugin_lint` returns `isError` when an explicit target contains no C/C++
+    files instead of reporting a clean result for zero files checked.
+  - `buildDir`/`pluginsDir` reject `\` and `:` — values that produced CMake that
+    could not configure (`Invalid character escape '\u'`) after a successful scaffold.
+  - `htmlEscape()` also escapes quotes; diagnostic lines are capped at 500 characters;
+    the documented `maxBuffer` (16 MB) now matches the code; timeouts kill the whole
+    process group instead of just `cmake`.
 
 ### Fixed
 

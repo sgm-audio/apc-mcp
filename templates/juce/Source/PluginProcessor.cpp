@@ -47,6 +47,9 @@ juce::AudioProcessorEditor *{{PLUGIN_CLASS_NAME}}::createEditor() {
     return new juce::GenericAudioProcessorEditor(*this);
 }
 
+// This processor has no parameters, so its state is empty: a host that saves a
+// preset gets an empty block and restores nothing, which is the correct answer.
+// The webview template shows the ValueTree round-trip once there is state.
 void {{PLUGIN_CLASS_NAME}}::getStateInformation(juce::MemoryBlock &destData) {
     juce::ignoreUnused(destData);
 }

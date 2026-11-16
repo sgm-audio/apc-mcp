@@ -106,6 +106,8 @@ apc-mcp/
 
 `npm run ship` refuses to release unless every precondition holds. It runs `npm run check`, then verifies HEAD is on `main`, the working tree is clean, the version tag does not exist locally or on origin, and `CHANGELOG.md` has a `## [<version>]` heading — then tags `v<version>` and pushes. CI publishes to npm on `v*` tags.
 
+**Publishing credential.** The publish job authenticates with an `NPM_TOKEN` repository secret. Prefer [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC) instead: the workflow already requests `id-token: write` for `--provenance`, and a trusted publisher needs no long-lived secret at all — so a leaked token stops being a way to publish as the package. The trade-off is a one-time publisher configuration on npmjs.com; after that, delete the `NPM_TOKEN` secret.
+
 Human steps:
 
 1. Bump `version` in `package.json`. That is the **only** copy — `index.js` reads it at startup, so `initialize` cannot report a stale version.
