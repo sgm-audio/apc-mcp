@@ -137,8 +137,8 @@ Details of the wiring, and the two deliberate omissions, are in §8.
 | **`{ shell: true }` + binding-aware `child_process` rules** | S-1 | `eslint.config.js` | **Done in PR #37** — the rule is exercised by linting four violations through the real config (`tests/release.test.js`) |
 | **`tsc --noEmit --checkJs` over `index.js` + `scripts/`** | S-6, S-8, S-21, the `var`→`float` casts | `package.json`, `tsconfig.json` | **Done** — `npm run typecheck`, inside `npm run quality` and the CI `test` job. Found 4 real defects: `.error.code` read behind a type without `code` (4 sites); `audio_plugin_validate` rows mixing `reason`/`output` across statuses |
 | **`-Wall -Wextra -Wpedantic -Werror` in `templates/clap` and `templates/lv2`** | Nothing today — it keeps it that way | template CMakeLists | **Done** — `PRIVATE` on the generated target, `/W4 /WX` under MSVC, third-party headers `SYSTEM`. Both templates build with 0 warnings against real headers; `tests/templates.test.js` fails if a flag is dropped |
-| **`clang-tidy` in the `scaffold-clap` / `scaffold-lv2` jobs** | S-14, S-15, S-16 class | `.github/workflows/publish.yml`, `.clang-tidy` | **Done** — driven by `compile_commands.json` through `smoke-scaffold.mjs --clang-tidy`; findings are errors. `readability-*`/`cppcoreguidelines-*` excluded on purpose (§8) |
-| **`lv2lint` / `sord_validate` on the generated bundle** | S-13 | `scaffold-lv2` job | **Done (lv2lint)** — `--lv2lint` fails when the tool is absent. `sord_validate` skipped: it needs the LV2 schemas staged on disk and `lv2lint` already validates through lilv against lv2core |
+| **`clang-tidy` in the `scaffold-clap` / `scaffold-lv2` jobs** | S-14, S-15, S-16 class | `.github/workflows/publish.yml`, `.clang-tidy` | **Done** — driven by `compile_commands.json` through `smoke-scaffold.mjs --clang-tidy`, with the config passed explicitly (`--config-file=`); findings are errors. Found `performance-trivially-destructible` on the CLAP template's out-of-line `= default` destructor. `readability-*`/`cppcoreguidelines-*` excluded on purpose (§8) |
+| **`lv2lint` / `sord_validate` on the generated bundle** | S-13 | `scaffold-lv2` job | **Done (lv2lint)** — `--lv2lint` fails when the tool is absent, and CI builds lv2lint from the pinned upstream mirror (no distribution packages it). `sord_validate` skipped: it needs the LV2 schemas staged on disk and `lv2lint` already validates through lilv against lv2core |
 | **`cmake --install` smoke (with `--prefix`)** | S-4 | `scaffold-lv2` job | **Done** — `--install` asserts the bundle lands under the prefix with binary + both `.ttl`, and fails if `/usr/local/lib/lv2/<name>.lv2` appeared anyway |
 | **`cmake-lint` / `cmakelang`** | S-4 class, inconsistent `cmake_minimum_required` | `scripts/`, CI | **Done** — `npm run cmake:lint` + the CI `lint-config` job, configured by `.cmake-format.py` that states the house style instead of disabling `C0301`/`C0307`. Found two 121-column `OUTPUT_DIRECTORY` lines in the LV2 template |
 | **`shellcheck` + `actionlint`** | The CI bash and workflow syntax | CI | **Done** — the `lint-config` job runs `actionlint` (which runs `shellcheck` over every `run:` block), pinned to a commit, and `publish` now needs it |
@@ -233,7 +233,12 @@ table now carries the status of each gate and what it found; the wiring is:
 - **`clang-tidy`** runs through the compile database with `.clang-tidy` enabling the analyzers plus
   `bugprone-*`/`performance-*`/`portability-*` and `WarningsAsErrors: '*'`. The style families
   (`readability-*`, `cppcoreguidelines-*`, `modernize-*`) are excluded: they rewrite working code to
-  taste, and this review has no finding that they would have caught.
+  taste, and this review has no finding that they would have caught. The config is passed with
+  `--config-file=` because the generated project lives in a temp directory, out of reach of
+  clang-tidy's upward search — the first CI run showed exactly that (warnings reported, none
+  promoted). Three checks are excluded, each with its reason beside the setting; the first run
+  also found a real nit, `performance-trivially-destructible` on the CLAP template's out-of-line
+  `~Processor() = default;`, which is now defaulted on its first declaration.
 - **`cmake-lint`** runs with `.cmake-format.py` declaring the templates' actual style (4-space
   indents, 100 columns) rather than disabling the two codes that complained, so `C0301` and `C0307`
   still fire on a genuine violation. That is how the two 121-column `OUTPUT_DIRECTORY` lines were
@@ -245,6 +250,11 @@ table now carries the status of each gate and what it found; the wiring is:
 Deliberately not done: **`sord_validate`** (it needs the LV2 schema files staged on disk; `lv2lint`
 already validates each description through lilv against lv2core) and the `clang-tidy` style
 families (above).
+
+The gates also caught two of their own integration mistakes, which is the point of running
+them: `lv2lint` takes a plugin URI plus a *bundle* directory (`-I` goes straight to
+`lilv_world_load_bundle()`) and is packaged by no distribution, so CI builds it from the
+upstream mirror; `clang-tidy` needs `--config-file=` for a project outside this checkout.
 
 Verified after the gates were wired: `npm run check` exit 0 — `npm run lint`, `npm run typecheck`,
 **248 tests / 240 pass / 0 fail / 8 environment skips**, `npm run smoke` 10/10,

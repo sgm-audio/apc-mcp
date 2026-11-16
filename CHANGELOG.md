@@ -806,7 +806,10 @@ being kept.
   (analyzers plus `bugprone-*`, `performance-*`, `portability-*`, findings promoted to
   errors) and driven through CMake's `compile_commands.json`. The style families
   (`readability-*`, `cppcoreguidelines-*`, `modernize-*`) are deliberately excluded: a
-  scaffold that ships a stranger's taste is not thereby more correct.
+  scaffold that ships a stranger's taste is not thereby more correct. It runs with
+  `--config-file=` because the scaffolded sources live in a temp directory, so
+  clang-tidy's own upward search would never find the config — the first CI run proved
+  that by reporting warnings that were not promoted to errors.
 - **`lv2lint`** on every built bundle. Nothing in the repo previously parsed the Turtle
   that gets copied into the bundle, so a malformed or mis-typed description could only
   be found by a host.
@@ -833,6 +836,16 @@ absent, for the same reason.
 
 `license_decisions.yml` gained `PSF-2.0`, reached dev-only through
 `eslint-plugin-n → js-yaml → argparse`; nothing under it is distributed.
+
+Bringing the gates up found three more things, all fixed here: `lv2lint` takes a plugin
+URI and a *bundle* directory (`-I` is handed to `lilv_world_load_bundle()`), not a path,
+and it is packaged by neither Debian, Ubuntu nor Homebrew, so CI builds it from the
+upstream mirror at a pinned commit; `clang-tidy`'s `performance-trivially-destructible`
+flagged the CLAP template's out-of-line `~Processor() = default;`, which hid that the
+class is trivially destructible (now defaulted on its first declaration); and
+`portability-avoid-pragma-once` is disabled, argued in `.clang-tidy`, because
+`#pragma once` is what these templates use and what GCC, Clang and MSVC all support.
+Three checks are excluded in total, each with its reason written next to the setting.
 
 Not done, and why: `sord_validate` (it needs the LV2 schema files staged on disk, and
 `lv2lint` already validates the description through lilv against lv2core) and
