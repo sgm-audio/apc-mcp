@@ -154,6 +154,46 @@ describe('QA-07 · the validators are exercised for real, not only through shims
 });
 
 // ═══════════════════════════════════════════════════════════════════
+describe('LINT-01 · the no-shell rule is binding-based, not name-based', () => {
+  // The rule used to match an object literally named `child_process` and a named
+  // import called `exec`. Three things slipped past it: a default import, a
+  // namespace import, and `{ shell: true }` on the sanctioned spawnSync — which
+  // is the one option that turns an argv array back into a shell string. Each is
+  // run through the real ESLint config here, because a static assertion on the
+  // config text would pass even if the selectors did not match anything.
+  const eslintBin = path.join(PROJECT_ROOT, 'node_modules', '.bin', 'eslint');
+
+  const lintSnippet = source => spawnSync(
+    eslintBin,
+    ['--no-ignore', '--stdin', '--stdin-filename', 'index.js'],
+    { cwd: PROJECT_ROOT, input: source, encoding: 'utf-8' });
+
+  const VIOLATIONS = {
+    'a default import of child_process': "import cp from 'node:child_process';\nexport const f = () => cp.execSync('x');\n",
+    'a namespace import of child_process': "import * as cp from 'node:child_process';\nexport const f = () => cp.exec('x');\n",
+    'the shell option on spawnSync': "import { spawnSync } from 'node:child_process';\nexport const f = () => spawnSync('cmake', [], { shell: true });\n",
+    'spawning a shell by name': "import { spawnSync } from 'node:child_process';\nexport const f = () => spawnSync('bash', ['-c', 'id']);\n",
+  };
+
+  for (const [label, source] of Object.entries(VIOLATIONS)) {
+    it(`rejects ${label}`, () => {
+      const r = lintSnippet(source);
+      assert.notEqual(r.status, 0, `eslint accepted ${label}:\n${source}`);
+      assert.match(r.stdout + r.stderr, /no-restricted-(syntax|properties)/,
+        `expected a no-restricted-* violation for ${label}`);
+    });
+  }
+
+  it('does not reject RegExp.prototype.exec or an ordinary spawnSync', () => {
+    const r = lintSnippet(
+      "import { spawnSync } from 'node:child_process';\n"
+      + "export const ok = (re, s) => re.exec(s) ?? spawnSync('cmake', ['-B', 'build']);\n");
+    assert.equal(r.status, 0,
+      `the rule must not fire on legitimate code:\n${r.stdout}${r.stderr}`);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 describe('OPS-06 · actions pinned to immutable revisions', () => {
   const usesLines = () => {
     const out = [];
@@ -255,6 +295,28 @@ describe('OPS-05 · ship cannot tag a branch it is not on', () => {
     assert.match(r.stderr, /refusing to release/);
     assert.match(r.stderr, /definitely-not-checked-out/);
     assert.match(r.stderr, /not "definitely-not-checked-out"|not 'definitely-not-checked-out'/);
+  });
+
+  it('spawns no .cmd shim and bounds every child process', () => {
+    const src = fs.readFileSync(path.join(PROJECT_ROOT, 'scripts', 'ship.mjs'), 'utf8');
+    // Node throws EINVAL when asked to spawn a .cmd without shell:true, and a
+    // shell would reintroduce the argument-quoting hazard index.js bans. npm
+    // ships as JS, so the Windows path runs npm-cli.js with node itself.
+    assert.ok(!/'npm\.cmd'|"npm\.cmd"/.test(src),
+      'ship must not spawn npm.cmd — Node cannot spawn batch files without a shell');
+    assert.match(src, /npm-cli\.js/,
+      'the Windows path must run npm\'s CLI JS with process.execPath');
+
+    // A missing key or a 2FA prompt must fail the release, not hang it.
+    const callSites = src.split('spawnSync(').slice(1);
+    assert.equal(callSites.length, 2, `expected two spawnSync call sites, found ${callSites.length}`);
+    for (const site of callSites) {
+      const options = site.slice(0, site.indexOf('});'));
+      assert.match(options, /timeout:\s*\S+/,
+        'every spawnSync needs a timeout, or a credential prompt blocks the release forever');
+    }
+    assert.match(src, /GIT_TERMINAL_PROMPT:\s*'0'/,
+      'git must run non-interactively so a missing credential fails instead of prompting');
   });
 
   it('rejects unknown options with a usage message', () => {

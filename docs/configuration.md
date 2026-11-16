@@ -12,7 +12,8 @@ Drop this file in your project root to set defaults. Every key is optional; unkn
   "pluginsDir": "plugins",
   "validateFormats": ["VST3", "CLAP"],
   "validateCommand": "pluginval",
-  "clapValidatorCommand": "clap-validator"
+  "clapValidatorCommand": "clap-validator",
+  "strictnessLevel": 10
 }
 ```
 
@@ -25,6 +26,7 @@ Drop this file in your project root to set defaults. Every key is optional; unkn
 | `validateFormats` | `["VST3", "CLAP"]` | Non-empty array of `VST3`, `CLAP`, `LV2`, `AudioUnit`, `Standalone` | `validate(format="all")` |
 | `validateCommand` | `pluginval` | Binary name (no path separators) | `validate` on VST3 |
 | `clapValidatorCommand` | `clap-validator` | Binary name (no path separators) | `validate` on CLAP |
+| `strictnessLevel` | `10` | Integer 1-10 (pluginval's own scale) | `validate` on VST3 |
 
 Precedence for `config` and `generator`: explicit tool argument → `apc-mcp.json` → built-in default. Binary names are resolved via `PATH`, never executed as paths — see [Security](security.md#residual-risk).
 
@@ -49,11 +51,16 @@ my-plugin/
 │   ├── MyPlugin/
 │   │   ├── CMakeLists.txt   # Per-plugin CMake target
 │   │   ├── Source/
-│   │   └── status.json      # Optional metadata read by audio_plugin_plugins
+│   │   └── status.json      # Optional, hand-written; nothing creates it (see below)
 │   └── ...
 ├── common/                  # Optional shared sources
 └── build/                   # Auto-created build tree
 ```
+
+`status.json` is read by `audio_plugin_plugins` and written by **no tool** — there
+is no `audio_plugin_*` call that creates or edits it. Write it yourself (keys:
+`name`, `version`, `description`, `formats`, `status`, `notes`) when you want the
+listing to show metadata that the CMake targets do not carry.
 
 With `apc-mcp.json` present, `projectPath` is optional for every tool — useful when the MCP client starts the server inside the project. `audio_plugin_create` appends `add_subdirectory(plugins/<Name>)` to the root `CMakeLists.txt` (creating it with `cmake_minimum_required(VERSION 3.22)` and `project(AudioPlugins LANGUAGES C CXX)` when it is missing). It will not touch a symlinked root `CMakeLists.txt`.
 

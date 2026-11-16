@@ -37,16 +37,36 @@ if (unknown) {
   process.exit(2);
 }
 
-function git(args) {
-  return spawnSync('git', args, { cwd: PKG_DIR, encoding: 'utf-8' });
+// Every child gets a deadline and a non-interactive git. Without them a missing
+// SSH key or a 2FA-backed push opens a credential prompt on a terminal that may
+// not exist (CI) and the release hangs forever instead of failing — the one
+// failure mode that looks like "still working".
+const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '' };
+
+function git(args, timeoutMs = 30000) {
+  const r = spawnSync('git', args, { cwd: PKG_DIR, encoding: 'utf-8', timeout: timeoutMs, env: GIT_ENV });
+  if (r.error?.code === 'ETIMEDOUT') {
+    console.error(`\nship: git ${args[0]} timed out after ${timeoutMs / 1000}s — a credential prompt or a hung network?`);
+    process.exit(1);
+  }
+  // status === null without ETIMEDOUT means the signal killed it; the guard
+  // checks below treat that as a failure, so say so here rather than after.
+  if (r.status === null) {
+    console.error(`\nship: git ${args[0]} produced no exit status (${r.signal ?? r.error?.code ?? 'unknown'}).`);
+    process.exit(1);
+  }
+  return r;
 }
 
-function run(cmd, args, label) {
-  console.log(`\n$ ${cmd} ${args.join(' ')}`);
+function run(cmd, args, label, timeoutMs = 900000) {
+  console.log(`\n$ ${path.basename(cmd)} ${args.join(' ')}`);
   if (DRY_RUN) { console.log('  (dry run — not executed)'); return { status: 0 }; }
-  const r = spawnSync(cmd, args, { cwd: PKG_DIR, stdio: 'inherit' });
+  const r = spawnSync(cmd, args, { cwd: PKG_DIR, stdio: 'inherit', timeout: timeoutMs, env: GIT_ENV });
   if (r.status !== 0) {
-    console.error(`\nship: ${label} failed (exit ${r.status}).`);
+    const why = r.error?.code === 'ETIMEDOUT'
+      ? `timed out after ${timeoutMs / 1000}s`
+      : `exit ${r.status ?? `${r.signal ?? 'unknown signal'}`}`;
+    console.error(`\nship: ${label} failed (${why}).`);
     process.exit(r.status ?? 1);
   }
   return r;
@@ -66,7 +86,22 @@ if (!/^\d+\.\d+\.\d+([-+].+)?$/.test(version)) {
   stop(`"${version}" is not a valid semver version.`);
 }
 
-const NPM_CMD = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+// Node refuses to spawn a .cmd shim without `shell: true` (it throws EINVAL),
+// and turning on a shell would reintroduce exactly the argument-quoting hazard
+// this repo bans in index.js. npm is JS that ships next to node, so run it with
+// the same node binary instead of asking Windows to interpret a batch file.
+function npmArgs() {
+  if (process.platform !== 'win32') return [];
+  const cli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (!fs.existsSync(cli)) {
+    console.error(`ship: cannot find npm's CLI at ${cli}.`);
+    console.error('ship: run `npm run check` yourself, then re-run with --no-check.');
+    process.exit(1);
+  }
+  return [cli];
+}
+
+const npmCmd = process.platform === 'win32' ? process.execPath : 'npm';
 
 // ── Guard 1: quality gates ────────────────────────────────────────
 // Run here rather than only via `npm run ship &&`, so invoking this file
@@ -76,7 +111,7 @@ if (NO_CHECK) {
 } else if (DRY_RUN) {
   console.log('\nship: dry run — skipping `npm run check` (it would run for real).');
 } else {
-  run(NPM_CMD, ['run', 'check'], 'npm run check');
+  run(npmCmd, [...npmArgs(), 'run', 'check'], 'npm run check');
 }
 
 // ── Guard 2: git state ────────────────────────────────────────────
@@ -121,7 +156,7 @@ if (existing.status === 0) {
   stop(`tag ${tagName} already exists and points at ${existing.stdout?.trim()}.\n` +
        '  Bump the version in package.json before shipping again.');
 }
-const remoteTag = git(['ls-remote', '--tags', 'origin', `refs/tags/${tagName}`]);
+const remoteTag = git(['ls-remote', '--tags', 'origin', `refs/tags/${tagName}`], 120000);
 if (remoteTag.status === 0 && remoteTag.stdout?.trim()) {
   stop(`tag ${tagName} already exists on origin (${remoteTag.stdout.trim().split(/\s+/)[0]}).\n` +
        '  Bump the version in package.json before shipping again.');
@@ -151,9 +186,9 @@ if (/^## \[Unreleased\]/m.test(changelog) && DRY_RUN) {
 // Push the branch BEFORE creating the local tag so a failed branch push does
 // not leave an unpushed local tag blocking a retry.
 console.log('\nship: all guards passed.');
-run('git', ['push', 'origin', branch], `git push origin ${branch}`);
+run('git', ['push', 'origin', branch], `git push origin ${branch}`, 300000);
 run('git', ['tag', '-a', tagName, '-m', `${pkg.name} ${tagName}`], `git tag ${tagName}`);
-run('git', ['push', 'origin', tagName], `git push origin ${tagName}`);
+run('git', ['push', 'origin', tagName], `git push origin ${tagName}`, 300000);
 
 console.log(DRY_RUN
   ? `\nship: dry run complete — would have tagged ${tagName} and pushed ${branch}.\n`
