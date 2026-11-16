@@ -14,3 +14,7 @@ allowed_licenses:
   # used by npm's own tooling (e.g. minimatch, pulled in by ESLint). Permissive
   # and dev-only here, but listed so `npm run licenses` stays quiet.
   - BlueOak-1.0.0
+  # PSF-2.0 — the Python Software Foundation licence, permissive and
+  # OSI-approved. Reached dev-only through eslint-plugin-n -> js-yaml ->
+  # argparse; nothing under it is distributed in the published package.
+  - PSF-2.0

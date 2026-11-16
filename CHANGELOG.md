@@ -776,6 +776,81 @@ the review's §8 records which change carries which fix.
 not a defect, and the existing `format: "json"` modes remain machine-readable.
 
 
+### Static-analysis gates (review §5)
+
+The review's §5 listed analysis that was missing. PR #37 left it open on purpose: it
+is new CI machinery rather than a defect fix. Each gate below is wired into CI, was
+run in this checkout, and was shown to fail on a deliberately broken input before
+being kept.
+
+- **`tsc --checkJs` over `index.js` and `scripts/`** — `tsconfig.json`, `npm run
+  typecheck`, and `npm run quality` is now lint + typecheck + test. It found four
+  defects: `spawnSync(...).error.code` was read at four sites behind a type that says
+  `code` does not exist (narrowed now, through `trySpawn()`'s `spawnError` and
+  `ship.mjs`'s `errno()`); `audio_plugin_validate`'s result rows mixed `reason` and
+  `output` freely across statuses (now a JSDoc union that says which status owns
+  which field); and two test helpers passed loosely-typed options.
+- **`eslint-plugin-n`** — its recommended module rules plus `n/prefer-node-protocol`.
+  It caught two defects in code that shipped in 2.0.0: `scripts/smoke-stdio.mjs` used
+  `import.meta.dirname`, which exists only on Node ≥ 22.16.0 (and 24), while
+  `engines.node` promises `>=22` — so the stdio smoke test threw on its first line on
+  Node 22.0–22.15; and `index.js` imported `path`/`fs`/`os`/`url` without the `node:`
+  prefix. `n/no-process-exit` and `n/hashbang` are off, with the reason written where
+  they are configured rather than suppressed inline.
+- **`-Wall -Wextra -Wpedantic -Werror` in `templates/clap` and `templates/lv2`**
+  (`/W4 /WX` under MSVC, guarded by `if(MSVC)`), applied `PRIVATE` to the generated
+  target so a host project's targets are unaffected, with the third-party headers
+  included `SYSTEM` so `-Werror` only judges generated code. Both templates build
+  clean against real `free-audio/clap` and `lv2/lv2` headers.
+- **`clang-tidy`** over the generated sources, configured by a new `.clang-tidy`
+  (analyzers plus `bugprone-*`, `performance-*`, `portability-*`, findings promoted to
+  errors) and driven through CMake's `compile_commands.json`. The style families
+  (`readability-*`, `cppcoreguidelines-*`, `modernize-*`) are deliberately excluded: a
+  scaffold that ships a stranger's taste is not thereby more correct. It runs with
+  `--config-file=` because the scaffolded sources live in a temp directory, so
+  clang-tidy's own upward search would never find the config — the first CI run proved
+  that by reporting warnings that were not promoted to errors.
+- **`lv2lint`** on every built bundle. Nothing in the repo previously parsed the Turtle
+  that gets copied into the bundle, so a malformed or mis-typed description could only
+  be found by a host.
+- **`cmake --install --prefix` smoke** — the thing that would have caught S-4. It fails
+  if the bundle lands under `/usr/local/lib/lv2` despite `--prefix`, and it checks the
+  installed bundle for the binary and both `.ttl` files.
+- **`cmake-lint`** (`npm run cmake:lint`, and the CI `lint-config` job) with a new
+  `.cmake-format.py` that *declares* the house style — 4-space indents, 100 columns —
+  instead of disabling the two checks that complained, so `C0301`/`C0307` still fire on
+  a real violation. It found two 121-column `OUTPUT_DIRECTORY` lines in the LV2
+  template, now the `LV2_ARTEFACTS_DIR`/`LV2_BUNDLE_DIR` variables.
+- **`actionlint` + `shellcheck`** in a new `lint-config` CI job, which `publish` now
+  needs along with the rest. `actionlint` checks the workflow schema and expressions and
+  runs `shellcheck` over every `run:` block; it is pinned to a commit like every other
+  action here.
+
+`scripts/smoke-scaffold.mjs` no longer reports a pass for work it did not do: a
+`--build` run with a missing SDK used to print `skip <family>` and finish with exit 0,
+so a misconfigured job looked green. A build run now names the family it was asked for
+(`--family=clap|juce|lv2`, once per family) and fails if that family has no SDK; each
+CI job passes exactly the one it has. Outside a `--build` run the skip is still a skip.
+The new `--install`, `--lv2lint` and `--clang-tidy` flags fail when their tool is
+absent, for the same reason.
+
+`license_decisions.yml` gained `PSF-2.0`, reached dev-only through
+`eslint-plugin-n → js-yaml → argparse`; nothing under it is distributed.
+
+Bringing the gates up found three more things, all fixed here: `lv2lint` takes a plugin
+URI and a *bundle* directory (`-I` is handed to `lilv_world_load_bundle()`), not a path,
+and it is packaged by neither Debian, Ubuntu nor Homebrew, so CI builds it from the
+upstream mirror at a pinned commit; `clang-tidy`'s `performance-trivially-destructible`
+flagged the CLAP template's out-of-line `~Processor() = default;`, which hid that the
+class is trivially destructible (now defaulted on its first declaration); and
+`portability-avoid-pragma-once` is disabled, argued in `.clang-tidy`, because
+`#pragma once` is what these templates use and what GCC, Clang and MSVC all support.
+Three checks are excluded in total, each with its reason written next to the setting.
+
+Not done, and why: `sord_validate` (it needs the LV2 schema files staged on disk, and
+`lv2lint` already validates the description through lilv against lv2core) and
+`clang-tidy`'s style families (above).
+
 ## [1.5.0] — 2026-06-17
 
 ### Added

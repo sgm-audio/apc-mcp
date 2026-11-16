@@ -14,9 +14,12 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 const timeoutMs = Number(process.argv.find(a => a.startsWith('--timeout='))?.slice(10) ?? 10000);
-const serverPath = path.join(import.meta.dirname, '..', 'index.js');
+// NOT import.meta.dirname: that is Node >= 22.16 / 24 only, while this package
+// supports >= 22.0, where it is undefined and path.join() throws on the first line.
+const serverPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.js');
 
 const EXPECTED = [
   'audio_plugin_build',

@@ -1014,8 +1014,23 @@ describe('native LV2 template', () => {
     for (const s of lv2Only()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       const expected = `plugins/${s.name}/${s.name}_artefacts/$<CONFIG>/LV2/${s.name}.lv2`;
-      assert.ok(cm.includes(expected),
-        `${s.name}: LIBRARY_OUTPUT_DIRECTORY must be ${expected} so the built bundle is discoverable`);
+      // The paths live in LV2_ARTEFACTS_DIR/LV2_BUNDLE_DIR so that no line runs
+      // past the length the lint enforces; expand one level of `set(VAR "...")`
+      // so this still asserts the path that ends up in the property.
+      const vars = new Map([...cm.matchAll(/^\s*set\s*\(\s*(\w+)\s+"([^"]*)"\s*\)/gm)]
+        .map(m => [m[1], m[2]]));
+      const expand = t => {
+        for (let i = 0; i < 5; i++) {
+          const next = t.replace(/\$\{(\w+)\}/g, (all, n) => (vars.has(n) ? vars.get(n) : all));
+          if (next === t) break;
+          t = next;
+        }
+        return t;
+      };
+      const outputs = cm.match(/LIBRARY_OUTPUT_DIRECTORY\s+"?([^"\s)]+)/)?.[1];
+      assert.ok(outputs, `${s.name}: no LIBRARY_OUTPUT_DIRECTORY set`);
+      assert.ok(expand(outputs).endsWith(`/${expected}`),
+        `${s.name}: LIBRARY_OUTPUT_DIRECTORY must end in ${expected} so the built bundle is discoverable, got ${expand(outputs)}`);
       // A bundle is a directory holding the binary AND the metadata.
       assert.ok(/copy_if_different[\s\S]*manifest\.ttl[\s\S]*plugin\.ttl/.test(cm),
         `${s.name}: the .ttl files must be copied into the bundle next to the binary`);
@@ -1324,6 +1339,56 @@ describe('native LV2 template', () => {
         `CLAP CMakeLists.txt must honour custom pluginsDir: ${clapCm}`);
     } finally {
       fs.rmSync(customProj, { recursive: true, force: true });
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+describe('the native templates compile with warnings as errors', () => {
+  // These templates generate C/C++ that the user then owns. A scaffold that
+  // ships warnings on day one teaches its owner to ignore warnings on day two,
+  // so the flags are part of the contract, not a convenenience: CI builds both
+  // templates with the real headers on every push (scaffold-clap /
+  // scaffold-lv2), and those builds stay green only because the generated code
+  // is genuinely warning-free.
+  const nativeCmake = () => [
+    ...scaffolded.values().filter(s => s.type === 'clap' || s.type === 'lv2'),
+  ];
+
+  it('every native template turns on -Wall -Wextra -Wpedantic -Werror', () => {
+    const seen = new Set();
+    for (const s of nativeCmake()) {
+      const code = cmakeCode(s.files.get('CMakeLists.txt'));
+      // cmake may receive the flags either as one argument or as a list; assert
+      // on the presence of each flag inside a target_compile_options call rather
+      // than on one particular spelling.
+      const m = code.match(/target_compile_options\s*\(\s*([^\s)]+)[\s\S]*?\)/);
+      assert.ok(m, `${s.name}: no target_compile_options() in CMakeLists.txt`);
+      assert.equal(m[1], s.name,
+        `${s.name}: warning flags must apply to the generated target PRIVATE, not to ${m[1]}`);
+      for (const flag of ['-Wall', '-Wextra', '-Wpedantic', '-Werror']) {
+        assert.ok(code.includes(flag), `${s.name}: CMakeLists.txt does not pass ${flag}`);
+      }
+      // MSVC spells these differently and rejects the GCC ones, so the flags
+      // have to be behind a compiler switch.
+      assert.match(code, /if\s*\(\s*MSVC\s*\)/,
+        `${s.name}: -Werror-style flags must be guarded by if(MSVC) or the Windows build breaks`);
+      for (const flag of ['/W4', '/WX']) {
+        assert.ok(code.includes(flag), `${s.name}: no MSVC equivalent ${flag}`);
+      }
+      seen.add(s.type);
+    }
+    assert.deepEqual([...seen].sort(), ['clap', 'lv2'],
+      'both native template families must be covered');
+  });
+
+  it('LV2 headers are included as SYSTEM so -Werror only judges generated code', () => {
+    for (const s of lv2Only()) {
+      const code = cmakeCode(s.files.get('CMakeLists.txt'));
+      assert.match(code, /target_include_directories\s*\(\s*[^\s)]+\s+SYSTEM\s+PRIVATE\s+\$\{LV2_INCLUDE_DIR\}/,
+        `${s.name}: the third-party LV2 headers must be SYSTEM, or a warning inside lv2/lv2 fails a user's build`);
+      assert.match(code, /target_include_directories\s*\(\s*[^\s)]+\s+PRIVATE\s+Source\s*\)/,
+        `${s.name}: Source/ must NOT be SYSTEM — its warnings are ours to fix`);
     }
   });
 });
