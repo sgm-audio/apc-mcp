@@ -1,0 +1,29 @@
+# clang-tidy configuration for the C and C++ that templates/{clap,lv2} generate.
+#
+# Run through `node scripts/smoke-scaffold.mjs --build --clang-tidy` (and by the
+# scaffolded-build CI jobs), which points clang-tidy at the compile database
+# CMake emits, so the checks see exactly the flags of the real build.
+#
+# Scope: the analyzers, plus the classes of defect that bit these templates
+# before — uninitialised state, discarded return values, and integer-width
+# mistakes. The style families (readability-*, cppcoreguidelines-*, modernize-*)
+# are deliberately absent: they rewrite working code to taste, and a scaffold
+# that ships a stranger's taste is not thereby more correct.
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  performance-*,
+  portability-*
+
+# A finding is a failure. A warning that nobody fails on is a warning nobody
+# reads; smoke-scaffold treats "warning not promoted to error" as proof that this
+# file was not loaded.
+WarningsAsErrors: '*'
+
+# Diagnose the generated sources in Source/ too, not just the .c/.cpp files
+# clang-tidy is invoked on.
+HeaderFilterRegex: 'Source/'
+
+FormatStyle: none

@@ -97,10 +97,61 @@ describe('OPS-02 · a failed publish must fail the workflow', () => {
     const text = workflowText('publish.yml');
     const needs = /^\s*needs:\s*\[([^\]]+)\]/m.exec(text)?.[1]
       ?.split(',').map(s => s.trim()).filter(Boolean) ?? [];
-    for (const job of ['test', 'license', 'compile-scaffold', 'scaffold-clap', 'scaffold-lv2', 'scaffold-juce',
-      'scaffold-clap-validate', 'scaffold-juce-validate']) {
+    for (const job of ['test', 'license', 'lint-config', 'compile-scaffold', 'scaffold-clap', 'scaffold-lv2',
+      'scaffold-juce', 'scaffold-clap-validate', 'scaffold-juce-validate']) {
       assert.ok(needs.includes(job), `publish must need ${job}: ${needs.join(', ')}`);
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+describe('QA-08 · every static-analysis gate is wired into CI', () => {
+  // A gate that exists only as a config file is a gate nobody runs. Each of
+  // these was a hole in the previous release: TypeScript never checked the JS,
+  // nothing parsed the workflow YAML or the CMake templates, no installer was
+  // ever run, and the Turtle metadata was never read by a validator.
+  const text = () => workflowText('publish.yml');
+
+  it('CI typechecks the JavaScript with tsc --checkJs', () => {
+    assert.match(text(), /run:\s*npm run typecheck/,
+      'publish.yml never runs `npm run typecheck`; tests alone do not typecheck scripts/');
+    const ts = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'tsconfig.json'), 'utf8'));
+    assert.equal(ts.compilerOptions.checkJs, true, 'tsconfig.json must set checkJs: true');
+    assert.equal(ts.compilerOptions.allowJs, true, 'tsconfig.json must set allowJs: true');
+    assert.equal(ts.compilerOptions.noEmit, true, 'tsconfig.json must set noEmit: true');
+  });
+
+  it('CI runs actionlint and cmake-lint', () => {
+    const t = text();
+    assert.match(t, /uses:\s*[\w-]+\/actionlint@[0-9a-f]{40}/, 'actionlint is never run');
+    assert.match(t, /cmake-lint\s+templates\/\*\.\/CMakeLists\.txt|cmake-lint['"]?\s+.*CMakeLists\.txt/,
+      'cmake-lint is never run over templates/*/CMakeLists.txt');
+  });
+
+  it('the scaffolded-build jobs ask for install, lv2lint and clang-tidy', () => {
+    const t = text();
+    for (const flag of ['--install', '--lv2lint', '--clang-tidy']) {
+      assert.ok(t.includes(flag), `no CI job passes ${flag} to smoke-scaffold.mjs`);
+    }
+    assert.match(t, /apt-get install[^\n]*lv2lint/, 'lv2lint is never installed');
+    assert.match(t, /apt-get install[^\n]*clang-tidy/, 'clang-tidy is never installed');
+  });
+
+  it('the tool configurations the gates depend on are present and strict', () => {
+    const tidy = fs.readFileSync(path.join(PROJECT_ROOT, '.clang-tidy'), 'utf8');
+    // smoke-scaffold treats a non-promoted warning as proof the config was not
+    // loaded, so WarningsAsErrors is what makes that check non-vacuous.
+    assert.match(tidy, /WarningsAsErrors:\s*'?\*'?/, '.clang-tidy must promote findings to errors');
+    for (const check of ['clang-analyzer-*', 'bugprone-*']) {
+      assert.ok(tidy.includes(check), `.clang-tidy no longer enables ${check}`);
+    }
+
+    const cmakeFmt = fs.readFileSync(path.join(PROJECT_ROOT, '.cmake-format.py'), 'utf8');
+    // The templates' style is declared rather than suppressed: no lint code may
+    // be disabled, or the C0301/C0307 checks stop meaning anything.
+    assert.doesNotMatch(cmakeFmt, /disabled_codes\s*=\s*\[[^\]]*C0/,
+      '.cmake-format.py must state the house style (tab_size/line_width), not disable C0301/C0307');
+    assert.match(cmakeFmt, /tab_size\s*=\s*4/, '.cmake-format.py must declare the 4-space indent');
   });
 });
 

@@ -53,6 +53,21 @@ target_include_directories({{PLUGIN_NAME}} PRIVATE Source)
 # matching the layout audio_plugin_validate scans:
 #   - macOS: a CFBundle directory (<name>.clap/Contents/MacOS/<name>)
 #   - Linux & Windows: a single shared object renamed <name>.clap
+# ── Warning flags ────────────────────────────────────────────────────
+# These compile clean today under -Wall -Wextra -Wpedantic (CI builds this
+# template with the real headers on every push), and -Werror is what keeps that
+# true: a scaffold that emits warnings on day one teaches its owner to ignore
+# warnings on day two. Third-party headers are included as SYSTEM above, so a
+# warning inside CLAP/LV2 itself is reported but never promoted to an error.
+#
+# If you find yourself wanting to switch -Werror off, prefer silencing the one
+# diagnostic you have actually read: target_compile_options(... -Wno-<name>).
+if(MSVC)
+    target_compile_options({{PLUGIN_NAME}} PRIVATE /W4 /WX)
+else()
+    target_compile_options({{PLUGIN_NAME}} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 set(CLAP_ARTEFACTS_DIR
     "${CMAKE_BINARY_DIR}/{{PLUGINS_DIR}}/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/CLAP")
 

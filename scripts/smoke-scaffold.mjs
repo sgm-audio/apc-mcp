@@ -17,6 +17,16 @@
 //   node scripts/smoke-scaffold.mjs                  # structural checks only
 //   node scripts/smoke-scaffold.mjs --configure      # + cmake configure
 //   node scripts/smoke-scaffold.mjs --build          # + cmake configure + compile/link + artefact check
+//   node scripts/smoke-scaffold.mjs --build --install   # + `cmake --install --prefix` (S-4)
+//   node scripts/smoke-scaffold.mjs --build --lv2lint   # + lv2lint on the built bundles (S-13)
+//   node scripts/smoke-scaffold.mjs --build --clang-tidy  # + clang-tidy over the C/C++ sources
+//   node scripts/smoke-scaffold.mjs --build --family=lv2  # only the LV2 cases
+//
+// The extra flags each need a tool on PATH and every one of them FAILS when the
+// tool is missing — a validation step that silently does nothing is worse than
+// no step, because the job stays green. For the same reason a --build run fails
+// when a family it was asked for has no SDK: use --family=<clap|juce|lv2> (once
+// per family, or not at all for all three) when the machine has only some SDKs.
 //
 // Exit code is non-zero if any check fails.
 
@@ -26,7 +36,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { call } from '../tests/helpers/mcp-client.mjs';
 
-const BUILD_TARGETS = process.argv.includes('--build');
+const INSTALL = process.argv.includes('--install');
+const FAMILIES = process.argv.filter(a => a.startsWith('--family='))
+  .map(a => a.slice('--family='.length));
+const LV2_LINT = process.argv.includes('--lv2lint');
+const CLANG_TIDY = process.argv.includes('--clang-tidy');
+const BUILD_TARGETS = process.argv.includes('--build') || INSTALL || LV2_LINT || CLANG_TIDY;
 const CONFIGURE = BUILD_TARGETS || process.argv.includes('--configure');
 const JUCE_DIR = process.env.APC_JUCE_DIR || '';
 const CLAP_DIR = process.env.APC_CLAP_DIR || '';
@@ -182,6 +197,125 @@ function verifyBuiltArtefacts(c, buildDir) {
   }
 }
 
+// ── Optional verifiers ─────────────────────────────────────────────
+// Each of these is a check a CI job opts into. They are written to FAIL when
+// their tool is absent: a green job that validated nothing is the failure mode
+// this repository keeps finding in other people's code.
+
+function needTool(name, hint) {
+  // Only ENOENT means "not installed": tools differ on whether `--version` exits
+  // 0 (most), 1 (clang-tidy prints usage), so the exit status is not the signal.
+  const probe = spawnSync(name, ['--version'], { encoding: 'utf-8' });
+  const errno = /** @type {NodeJS.ErrnoException | undefined} */ (probe.error);
+  if (errno?.code === 'ENOENT') {
+    fail(`--${name}`, `${name} is not on PATH. Install it: ${hint}`);
+    return false;
+  }
+  return true;
+}
+
+function lv2BundleDir(c, buildDir) {
+  return path.join(buildDir, 'plugins', c.name, `${c.name}_artefacts`, 'Debug', 'LV2', `${c.name}.lv2`);
+}
+
+// S-4: an install rule with an ABSOLUTE destination bakes the configure-time
+// prefix into cmake_install.cmake, so `cmake --install --prefix X` writes
+// somewhere else entirely and X stays empty. Only running the install catches it.
+function verifyLv2Install(members, buildDir) {
+  const prefix = path.join(ROOT, 'installed');
+  const defaultBundle = c => path.join('/usr/local/lib/lv2', `${c.name}.lv2`);
+  const existedBefore = new Map(members.map(c => [c.name, fs.existsSync(defaultBundle(c))]));
+
+  fs.rmSync(prefix, { recursive: true, force: true });
+  const res = spawnSync('cmake', ['--install', buildDir, '--prefix', prefix],
+    { encoding: 'utf-8', timeout: 300000 });
+  if (res.status !== 0) {
+    fail('--install', `cmake --install exited ${res.status}\n${(res.stdout ?? '') + (res.stderr ?? '')}`.slice(0, 2000));
+    return;
+  }
+
+  for (const c of members) {
+    // The destination must be RELATIVE (lib/lv2 or lib64/lv2 depending on the
+    // distro), so search under the prefix instead of assuming one spelling.
+    const found = [];
+    (function walk(d, depth = 0) {
+      if (depth > 6 || !fs.existsSync(d)) return;
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const abs = path.join(d, e.name);
+        if (e.isDirectory()) {
+          if (e.name === `${c.name}.lv2`) found.push(abs);
+          else walk(abs, depth + 1);
+        }
+      }
+    })(prefix);
+    if (found.length !== 1) {
+      fail(`${c.name} --install`, `expected exactly one ${c.name}.lv2 under ${prefix}, found ${found.length}`);
+      continue;
+    }
+    const bundle = found[0];
+    const missing = [`${c.name}.so`, 'manifest.ttl', 'plugin.ttl']
+      .filter(f => !fs.existsSync(path.join(bundle, f)));
+    if (missing.length) {
+      fail(`${c.name} --install`, `bundle ${bundle} is missing ${missing.join(', ')}`);
+      continue;
+    }
+    if (!existedBefore.get(c.name) && fs.existsSync(defaultBundle(c))) {
+      fail(`${c.name} --install`,
+        `install wrote ${defaultBundle(c)} despite --prefix ${prefix} — the DESTINATION is absolute`);
+      continue;
+    }
+    ok(`${c.name}: cmake --install --prefix honoured (${path.relative(prefix, bundle)})`);
+  }
+}
+
+// S-13: the Turtle is copied into the bundle and never parsed by anything in
+// this repo otherwise. lv2lint is the reference validator: it loads the bundle
+// through lilv, checks the description against lv2core, and exits non-zero on a
+// violation.
+function verifyLv2Metadata(members) {
+  if (!needTool('lv2lint', 'Debian/Ubuntu: apt install lv2lint; macOS: brew install lv2lint')) return;
+  for (const c of members) {
+    const bundle = lv2BundleDir(c, BUILD);
+    const res = spawnSync('lv2lint', ['-o', bundle], { encoding: 'utf-8', timeout: 120000 });
+    const out = `${res.stdout ?? ''}${res.stderr ?? ''}`.trim();
+    if (res.status !== 0) {
+      fail(`${c.name} lv2lint`, `lv2lint rejected the bundle (exit ${res.status}):\n${out.slice(0, 4000)}`);
+    } else {
+      ok(`${c.name}: lv2lint accepts the bundle${out ? ` (${out.split('\n').length} lines)` : ''}`);
+    }
+  }
+}
+
+// The S-14/S-15/S-16 class: static analysis of the code we generate, using the
+// compile database CMake emits so clang-tidy sees the same flags the build does.
+function verifyClangTidy(members) {
+  if (!needTool('clang-tidy', 'apt install clang-tidy, or the LLVM release for your platform')) return;
+  const db = path.join(BUILD, 'compile_commands.json');
+  if (!fs.existsSync(db)) {
+    fail('--clang-tidy', `no compile database at ${db} — configure with -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`);
+    return;
+  }
+  for (const c of members) {
+    const srcDir = path.join(PLUGINS, c.name, 'Source');
+    if (!fs.existsSync(srcDir)) continue;
+    for (const f of fs.readdirSync(srcDir).filter(n => /\.(c|cc|cpp)$/.test(n)).sort()) {
+      const res = spawnSync('clang-tidy', ['-p', BUILD, '--quiet', path.join(srcDir, f)],
+        { encoding: 'utf-8', timeout: 300000 });
+      const out = `${res.stdout ?? ''}${res.stderr ?? ''}`.trim();
+      if (res.status !== 0) {
+        fail(`${c.name} clang-tidy ${f}`, `clang-tidy reported problems (exit ${res.status}):\n${out.slice(0, 4000)}`);
+      } else if (/warning:|error:/.test(out)) {
+        // .clang-tidy sets WarningsAsErrors, so a warning here means the config was
+        // not picked up — which would make this check vacuous.
+        fail(`${c.name} clang-tidy ${f}`,
+          `.clang-tidy is not being applied (warnings were not promoted to errors):\n${out.slice(0, 2000)}`);
+      } else {
+        ok(`${c.name}: clang-tidy clean (${f})`);
+      }
+    }
+  }
+}
+
 // ── Run ───────────────────────────────────────────────────────────
 const created = [];
 try {
@@ -189,8 +323,10 @@ try {
   vendorTools();
   writeRootCMake([]); // create needs an existing root before it will scaffold
 
+  const extras = [INSTALL && 'install', LV2_LINT && 'lv2lint', CLANG_TIDY && 'clang-tidy']
+    .filter(Boolean).map(x => ` + ${x}`).join('');
   const modeLabel = BUILD_TARGETS
-    ? ' (with cmake configure + build)'
+    ? ` (with cmake configure + build${extras})`
     : (CONFIGURE ? ' (with cmake configure)' : ' (structural only)');
   console.log(`\nsmoke-scaffold${modeLabel}`);
   console.log(`project: ${PROJ}\n`);
@@ -251,18 +387,38 @@ try {
       const extraArgsFor = family =>
         family === 'lv2' ? [`-DLV2_INCLUDE_DIR=${LV2_DIR}`] : [];
 
-      for (const [family, ready, depName] of [['clap', clapReady, 'APC_CLAP_DIR'],
-                                               ['juce', juceReady, 'APC_JUCE_DIR'],
-                                               ['lv2', lv2Ready, 'APC_LV2_DIR']]) {
+      for (const family of FAMILIES) {
+        if (!['clap', 'juce', 'lv2'].includes(family)) {
+          fail('--family', `unknown family "${family}" (expected clap, juce or lv2)`);
+        }
+      }
+
+      /** @type {Array<[string, boolean, string]>} */
+      const FAMILY_DEPS = [['clap', clapReady, 'APC_CLAP_DIR'],
+                           ['juce', juceReady, 'APC_JUCE_DIR'],
+                           ['lv2', lv2Ready, 'APC_LV2_DIR']];
+      for (const [family, ready, depName] of FAMILY_DEPS) {
+        if (FAMILIES.length && !FAMILIES.includes(family)) continue;
         const members = created.filter(c => c.family === family);
         const names = members.map(c => c.name);
         if (names.length === 0) continue;
-        if (!ready) { console.log(`  skip ${family}: ${depName} not set`); continue; }
+        if (!ready) {
+          // A --build run that silently skips a family reports PASS for work it
+          // never did. In CI each job sets its own SDK and names its family with
+          // --family=, so a missing one is always a misconfiguration.
+          if (BUILD_TARGETS) {
+            fail(`${family}: ${depName} not set`, `cannot build the ${family} family without it — set ${depName}`);
+          } else {
+            console.log(`  skip ${family}: ${depName} not set (configure-only run)`);
+          }
+          continue;
+        }
 
         writeRootCMake(names);
         fs.rmSync(BUILD, { recursive: true, force: true });
+        const dbArgs = CLANG_TIDY ? ['-DCMAKE_EXPORT_COMPILE_COMMANDS=ON'] : [];
         const res = spawnSync('cmake',
-          ['-S', PROJ, '-B', BUILD, ...genArgs, '-DCMAKE_BUILD_TYPE=Debug', ...extraArgsFor(family)],
+          ['-S', PROJ, '-B', BUILD, ...genArgs, '-DCMAKE_BUILD_TYPE=Debug', ...extraArgsFor(family), ...dbArgs],
           { encoding: 'utf-8', timeout: 600000 });
         if (res.status !== 0) {
           fail(`${family}: cmake configure exited ${res.status}`,
@@ -282,6 +438,9 @@ try {
           }
           ok(`${family}: cmake --build succeeded (${names.join(', ')})`);
           for (const c of members) verifyBuiltArtefacts(c, BUILD);
+          if (CLANG_TIDY) verifyClangTidy(members);
+          if (family === 'lv2' && LV2_LINT) verifyLv2Metadata(members);
+          if (family === 'lv2' && INSTALL) verifyLv2Install(members, BUILD);
         }
       }
     }

@@ -11,11 +11,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { spawnSync } from 'child_process';
-import path from 'path';
-import fs from 'fs';
-import os from 'os';
-import { fileURLToPath } from 'url';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 // ─── Paths ──────────────────────────────────────────────────────────
 const PKG_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -261,8 +261,13 @@ function trySpawn(cmd, args, opts = {}) {
   const output = result.stdout || '';
   const partialStderr = result.stderr ? `\n${result.stderr.trim()}` : '';
 
-  if (result.error) {
-    const code = result.error.code;
+  // `spawnSync` types its `error` as a plain Error, but at runtime it is an
+  // ErrnoException: `code` is how ENOENT/ENOBUFS/ETIMEDOUT arrive. Saying so once
+  // here is what lets `tsc --checkJs` see that the branches below are reachable.
+  /** @type {NodeJS.ErrnoException | undefined} */
+  const spawnError = result.error;
+  if (spawnError) {
+    const code = spawnError.code;
     if (code === 'ENOENT') {
       return { ok: false, output: '', stderr: installHint(cmd) };
     }
@@ -1419,6 +1424,14 @@ registerTool(
     //   not-checkable     no validator exists for this format in this server at
     //                     all (LV2/AudioUnit/Standalone) → nothing to install,
     //                     so it is reported and NOT treated as an error
+    /**
+     * `reason` only exists on a missing-validator row and `output` only on a fail
+     * row; typing the array stops a future edit from reading either one without
+     * checking the status first (which is what `tsc --checkJs` flagged here).
+     * @type {Array<{ plugin: string, format: string, path: string,
+     *   status: 'pass' | 'fail' | 'missing-validator' | 'not-checkable',
+     *   reason?: string, output?: string }>}
+     */
     const results = [];
     for (const b of binaries) {
       const bin = validatorFor[b.format];

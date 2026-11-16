@@ -46,7 +46,32 @@ add_library({{PLUGIN_NAME}} MODULE
     Source/plugin.c
 )
 
-target_include_directories({{PLUGIN_NAME}} PRIVATE ${LV2_INCLUDE_DIR} Source)
+# SYSTEM for the LV2 headers only: they are third-party code, and with
+# -Werror below a warning inside them would stop the build. Our own Source/
+# stays non-system so its warnings are ours to fix.
+target_include_directories({{PLUGIN_NAME}} SYSTEM PRIVATE ${LV2_INCLUDE_DIR})
+target_include_directories({{PLUGIN_NAME}} PRIVATE Source)
+
+# ── Warning flags ────────────────────────────────────────────────────
+# These compile clean today under -Wall -Wextra -Wpedantic (CI builds this
+# template with the real headers on every push), and -Werror is what keeps that
+# true: a scaffold that emits warnings on day one teaches its owner to ignore
+# warnings on day two. Third-party headers are included as SYSTEM above, so a
+# warning inside CLAP/LV2 itself is reported but never promoted to an error.
+#
+# If you find yourself wanting to switch -Werror off, prefer silencing the one
+# diagnostic you have actually read: target_compile_options(... -Wno-<name>).
+if(MSVC)
+    target_compile_options({{PLUGIN_NAME}} PRIVATE /W4 /WX)
+else()
+    target_compile_options({{PLUGIN_NAME}} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+# The artefact directory, split over two lines so the paths stay readable (and
+# under cmake-lint's line limit). Mirrors CLAP_ARTEFACTS_DIR in templates/clap.
+set(LV2_ARTEFACTS_DIR
+    "${CMAKE_BINARY_DIR}/{{PLUGINS_DIR}}/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/LV2")
+set(LV2_BUNDLE_DIR "${LV2_ARTEFACTS_DIR}/{{PLUGIN_NAME}}.lv2")
 
 set_target_properties({{PLUGIN_NAME}} PROPERTIES
     OUTPUT_NAME "{{PLUGIN_NAME}}"
@@ -64,10 +89,8 @@ set_target_properties({{PLUGIN_NAME}} PROPERTIES
     # layout that audio_plugin_validate scans, so a scaffolded plugin can be
     # validated without the layout being hand-edited. LIBRARY_OUTPUT_DIRECTORY
     # is what applies to a MODULE library.
-    LIBRARY_OUTPUT_DIRECTORY
-        "${CMAKE_BINARY_DIR}/{{PLUGINS_DIR}}/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/LV2/{{PLUGIN_NAME}}.lv2"
-    RUNTIME_OUTPUT_DIRECTORY
-        "${CMAKE_BINARY_DIR}/{{PLUGINS_DIR}}/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/LV2/{{PLUGIN_NAME}}.lv2"
+    LIBRARY_OUTPUT_DIRECTORY "${LV2_BUNDLE_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${LV2_BUNDLE_DIR}"
 )
 
 # An LV2 bundle is a *directory*: the binary plus its Turtle metadata, all at
