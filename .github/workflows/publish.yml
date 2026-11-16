@@ -115,14 +115,14 @@ jobs:
           dir="${RUNNER_TEMP}/lv2lint"
           git clone --quiet https://github.com/amsynth/lv2lint.git "$dir"
           git -C "$dir" checkout --quiet ec29cfed3193a89a8091a4c18e22bb36e6b43b24
-          meson setup "$dir/build" "$dir" --buildtype=release
+          # Install rather than copy the build-dir binary: upstream installs a
+          # small wrapper script that execs <prefix>/lib/<triplet>/lv2lint/lv2lint.bin,
+          # so copying the wrapper alone yields "not found".
+          meson setup "$dir/build" "$dir" --prefix "${RUNNER_TEMP}/lv2lint-prefix" --buildtype=release
           meson compile -C "$dir/build"
-          bin=$(find "$dir/build" -maxdepth 2 -type f -name lv2lint -perm -u+x | head -1)
-          test -n "$bin"
-          mkdir -p "${RUNNER_TEMP}/bin"
-          cp "$bin" "${RUNNER_TEMP}/bin/lv2lint"
-          "${RUNNER_TEMP}/bin/lv2lint" -v || true
-          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+          meson install -C "$dir/build"
+          "${RUNNER_TEMP}/lv2lint-prefix/bin/lv2lint" -v || true
+          echo "${RUNNER_TEMP}/lv2lint-prefix/bin" >> "$GITHUB_PATH"
       - name: Build, install and validate every scaffolded LV2 plugin
         # --install  proves `cmake --install --prefix X` honours X (an absolute
         #            DESTINATION silently ignores --prefix).

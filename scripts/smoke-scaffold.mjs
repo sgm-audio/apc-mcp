@@ -32,6 +32,7 @@
 
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import os from 'node:os';
 import { call } from '../tests/helpers/mcp-client.mjs';
@@ -46,6 +47,12 @@ const CONFIGURE = BUILD_TARGETS || process.argv.includes('--configure');
 const JUCE_DIR = process.env.APC_JUCE_DIR || '';
 const CLAP_DIR = process.env.APC_CLAP_DIR || '';
 const LV2_DIR = process.env.APC_LV2_DIR || '';
+
+// The scaffolded project lives in a temp directory, so clang-tidy's own upward
+// search never reaches this repo's .clang-tidy. Pass it explicitly, or the run
+// silently uses clang-tidy's default (tiny) check set.
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const CLANG_TIDY_CONFIG = path.join(REPO_ROOT, '.clang-tidy');
 
 const CASES = [
   { name: 'SmokeClap',      type: 'clap', ui: 'generic', family: 'clap' },
@@ -315,11 +322,16 @@ function verifyClangTidy(members) {
     fail('--clang-tidy', `no compile database at ${db} — configure with -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`);
     return;
   }
+  if (!fs.existsSync(CLANG_TIDY_CONFIG)) {
+    fail('--clang-tidy', `no clang-tidy configuration at ${CLANG_TIDY_CONFIG}`);
+    return;
+  }
   for (const c of members) {
     const srcDir = path.join(PLUGINS, c.name, 'Source');
     if (!fs.existsSync(srcDir)) continue;
     for (const f of fs.readdirSync(srcDir).filter(n => /\.(c|cc|cpp)$/.test(n)).sort()) {
-      const res = spawnSync('clang-tidy', ['-p', BUILD, '--quiet', path.join(srcDir, f)],
+      const res = spawnSync('clang-tidy',
+        ['-p', BUILD, `--config-file=${CLANG_TIDY_CONFIG}`, '--quiet', path.join(srcDir, f)],
         { encoding: 'utf-8', timeout: 300000 });
       const out = `${res.stdout ?? ''}${res.stderr ?? ''}`.trim();
       if (res.status !== 0) {
