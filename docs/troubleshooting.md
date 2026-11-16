@@ -12,8 +12,11 @@ That is deliberate, and it is the 2.0.0 breaking change. Previously `build`, `li
 **Why is an empty folder rejected?**
 A project root must contain `apc-mcp.json` or `CMakeLists.txt` before anything is written, so a typo'd or injected `projectPath` cannot create a tree outside a real project. `echo '{}' > apc-mcp.json` is enough. See [Project root detection](configuration.md#project-root-detection).
 
-**`audio_plugin_validate` says "Validation is incomplete".**
-A validator binary was missing, or an artefact with no configured validator (LV2, AudioUnit, Standalone) was found. Skips are reported with the reason and make the result `isError: true` — install `pluginval` / `clap-validator` for the formats you care about, or narrow `validateFormats` in `apc-mcp.json`. See [validator coverage](tools.md#audio_plugin_validate).
+**`audio_plugin_validate` says a validator is missing.**
+A validator *is* configured for the format (VST3 → `pluginval`, CLAP → `clap-validator`) but the binary is not on `PATH`. That is reported as `MISSING-VALIDATOR` with `isError: true`, because installing it would change the outcome. Install it, point `validateCommand` / `clapValidatorCommand` at it, or narrow `validateFormats` in `apc-mcp.json`.
+
+**`audio_plugin_validate` says "NOT CHECKABLE".**
+No validator exists for that format (LV2, AudioUnit, Standalone). Nothing was attempted, so this is reported explicitly but does *not* set `isError` — there is no installation that would fix it. See [validator coverage](tools.md#audio_plugin_validate).
 
 **No plugin binaries found, or the SDK cannot be found under `_tools/`.**
 The `_tools/` fallback assumes the default `pluginsDir`. If you moved it (e.g. `src/audio/plugins`), pass `-DJUCE_DIR=…` / `-DLV2_INCLUDE_DIR=…` via `audio_plugin_configure`, or call `add_subdirectory()` from the root `CMakeLists.txt`. Also check that `config` matches the build you ran. See [Good-to-know quirks](toolchain.md#good-to-know-quirks).

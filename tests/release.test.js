@@ -97,9 +97,38 @@ describe('OPS-02 · a failed publish must fail the workflow', () => {
     const text = workflowText('publish.yml');
     const needs = /^\s*needs:\s*\[([^\]]+)\]/m.exec(text)?.[1]
       ?.split(',').map(s => s.trim()).filter(Boolean) ?? [];
-    for (const job of ['test', 'license', 'compile-scaffold', 'scaffold-clap', 'scaffold-lv2', 'scaffold-juce']) {
+    for (const job of ['test', 'license', 'compile-scaffold', 'scaffold-clap', 'scaffold-lv2', 'scaffold-juce',
+      'scaffold-clap-validate', 'scaffold-juce-validate']) {
       assert.ok(needs.includes(job), `publish must need ${job}: ${needs.join(', ')}`);
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+describe('QA-07 · the validators are exercised for real, not only through shims', () => {
+  // Every audio_plugin_validate test in tool-output.test.js installs a PATH
+  // shim. Shims prove the argv shape and the reporting logic; they cannot prove
+  // that upstream's binary accepts the invocation, or that a scaffolded plugin
+  // passes. Until CI ran a real one, "pluginval / clap-validator support" was
+  // an untested claim.
+  const text = () => workflowText('publish.yml');
+
+  it('CI installs clap-validator and pluginval from their releases', () => {
+    const t = text();
+    assert.match(t, /gh release download[^\n]*free-audio\/clap-validator/, 'clap-validator is never installed');
+    assert.match(t, /gh release download[^\n]*Tracktion\/pluginval/, 'pluginval is never installed');
+  });
+
+  it('CI runs a real validation and fails on a PASS-less report', () => {
+    const t = text();
+    assert.match(t, /node scripts\/smoke-validate\.mjs --type=clap/, 'clap validation is not run for real');
+    assert.match(t, /node scripts\/smoke-validate\.mjs --type=juce/, 'pluginval validation is not run for real');
+    const script = fs.readFileSync(path.join(PROJECT_ROOT, 'scripts/smoke-validate.mjs'), 'utf8');
+    assert.match(script, /process\.exit\(failures === 0 \? 0 : 1\)/, 'smoke-validate must exit non-zero on failure');
+    assert.match(script, /cannot run — required dependency missing/,
+      'a missing validator must fail, not skip: an unrun validator must never look like a pass');
+    assert.match(script, /SKIPPED\|NOT CHECKABLE/,
+      'smoke-validate must reject a report that skipped validation');
   });
 });
 

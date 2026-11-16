@@ -2,7 +2,7 @@
 
 apc-mcp registers **seven** MCP tools. All of them accept an optional `projectPath`; when omitted, the server walks up from its working directory (max 20 levels) looking for `apc-mcp.json` or `CMakeLists.txt`. A project root must exist and carry one of those markers — see [Configuration](configuration.md#project-root-detection).
 
-Tools fail **honestly**: if the underlying command failed, emitted compiler errors, had failing tests, or a step had to be skipped, the result carries `isError: true` and says why. A skipped validation is never reported as a clean one.
+Tools fail **honestly**: if the underlying command failed, emitted compiler errors, had failing tests, or a build/test step had to be skipped, the result carries `isError: true` and says why. A skipped validation is never reported as a clean one, and a check that was never attempted is reported as `NOT CHECKABLE` rather than passed off as success (see [`audio_plugin_validate`](#audio_plugin_validate)).
 
 | Tool | What it runs | Key arguments |
 |---|---|---|
@@ -110,9 +110,19 @@ Scans `<buildDir>/plugins/<Name>/<Name>_artefacts/<Config>/` and runs:
 |---|---|---|
 | VST3 | `validateCommand` (default `pluginval`) | Validated with `--strictness-level 10` |
 | CLAP | `clapValidatorCommand` (default `clap-validator`) | Validated with the `validate` subcommand |
-| LV2, AudioUnit, Standalone | none configured | **SKIPPED** — reported, not silently passed |
+| LV2, AudioUnit, Standalone | no validator exists | **NOT CHECKABLE** — reported as such |
 
-Skipped artefacts (including a missing validator binary) make the whole run `isError: true` with "Validation is **incomplete**". For LV2 Turtle/spec checks use external tools such as [sord_validate](https://gitlab.com/drobilla/sord) or [lv2lint](https://gitlab.com/OpenMusicKontrollers/lv2lint). `validateFormats` in `apc-mcp.json` may name LV2, AudioUnit or Standalone for artefact discovery, but no validator is run for them.
+Three outcomes are distinguished, because they mean different things:
+
+| Status | Meaning | `isError` |
+|---|---|---|
+| `PASS` / `FAIL` | A validator ran and returned a verdict | `FAIL` ⇒ `true` |
+| `MISSING-VALIDATOR` | A validator *is* configured for this format but is not installed | `true` — the run is incomplete, and installing it would fix it |
+| `NOT CHECKABLE` | No validator exists for this format (LV2, AudioUnit, Standalone) | `false` — nothing was attempted, and no installation would change that |
+
+The third row is the important one: telling a user to "install the missing validator" for an LV2 build is unactionable advice, so it is not treated as a failure. For LV2 Turtle/spec checks use external tools such as [sord_validate](https://gitlab.com/drobilla/sord) or [lv2lint](https://gitlab.com/OpenMusicKontrollers/lv2lint). `validateFormats` in `apc-mcp.json` may name LV2, AudioUnit or Standalone for artefact discovery, but no validator is run for them.
+
+`format` accepts every member of the artefact enum — `VST3`, `CLAP`, `LV2`, `AudioUnit`, `Standalone`, `all` — even where no validator exists, so asking about a format is never itself an error.
 
 ### audio_plugin_create
 
@@ -130,8 +140,10 @@ audio_plugin_create(name="ToneGen", type="standalone", vendor="MyCompany")
 | `name` | **required**, `[A-Za-z][A-Za-z0-9_-]*` | Also the CMake target name; reserved names (`all`, `test`, `install`, …) are rejected |
 | `type` | `clap` (default), `vst3`, `juce`, `lv2`, `standalone` | See the table below |
 | `ui` | `generic` (default), `webview` | JUCE plugin types only; ignored elsewhere |
-| `vendor` | `apc-mcp` | Embedded in plugin metadata |
-| `description` | `An audio plugin` | Escaped separately for C++, CMake and LV2 Turtle |
+| `vendor` | `apc-mcp` | Embedded in plugin metadata. Any single line of text, non-ASCII included ("ACME, Inc." and "Café Audio" both work); quotes, backslashes and `&` are escaped per output grammar. Used in sanitized form for bundle IDs, four-character codes and the LV2 URN |
+| `description` | `An audio plugin` | Any single line of text, non-ASCII included. Escaped separately for C++, CMake and LV2 Turtle |
+
+Control characters (newlines included) are rejected in `vendor` and `description` with an explanatory message: they would terminate the C++, CMake or Turtle construct the value is pasted into, and no amount of escaping makes a newline safe in all three.
 | `formats` | JUCE default `VST3;LV2;Standalone` | Semicolon-separated override for `juce` / `vst3`; rejected for `clap`, `lv2`, `standalone` |
 
 **`type` — which template**

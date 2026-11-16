@@ -9,13 +9,15 @@
 // juce::AudioAppComponent combines a juce::Component with a juce::AudioSource
 // and owns a default juce::AudioDeviceManager.
 //
-// ⚠️ JUCE 9 API CHANGE — there is no start() and no stop() any more.
 // setAudioChannels() both initialises the device and starts the callback, and
 // its counterpart shutdownAudio() MUST be called from the destructor: the base
 // class jassert()s if an audio source is still attached when it is destroyed
 // ("If you hit this then your derived class must call shutdown audio in
-// destructor!"). Older tutorials, books and example code that call
-// start()/stop() will not compile against JUCE 9.
+// destructor!").
+//
+// AudioAppComponent has never had start()/stop() in any JUCE release — the two
+// calls above are its whole API — so tutorial code that suggests a start()/stop()
+// pair simply does not apply to this class.
 //
 // Three methods are pure virtual and must be overridden: prepareToPlay(),
 // getNextAudioBlock() and releaseResources().

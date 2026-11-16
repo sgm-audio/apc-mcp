@@ -16,7 +16,14 @@ jobs:
     strategy:
       matrix:
         node-version: [22, 24]
-    runs-on: ubuntu-latest
+        # macOS is in the gate because the server branches on process.platform
+        # (generator default, win32 PATH extension handling, bundle-vs-binary
+        # artefact discovery) and none of that was ever executed anywhere but
+        # Linux. Windows is deliberately NOT here: the security tests drive POSIX
+        # shebang shims, so a Windows failure would say nothing about the server.
+        # Windows support therefore remains unverified — see docs/project-status.md.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
@@ -34,7 +41,10 @@ jobs:
       - name: Scaffold smoke (every type x ui)
         run: npm run smoke
       - name: Security advisories
-        run: npm audit --audit-level=high
+        # `npm run audit` is plain `npm audit`, i.e. exactly the gate documented
+        # in docs/project-status.md. Using --audit-level=high here instead made
+        # CI green while the documented local baseline failed.
+        run: npm run audit
       - name: Smoke test — all 7 tools register
         run: |
           printf '%s\n%s\n%s\n' \
@@ -155,6 +165,89 @@ jobs:
           APC_JUCE_DIR: ${{ runner.temp }}/JUCE
         run: xvfb-run -a node scripts/smoke-scaffold.mjs --build
 
+  # The rest of the suite drives PATH shims: it proves the argv shape and the
+  # reporting logic, but not that the upstream binary accepts the invocation or
+  # that a freshly scaffolded plugin passes it. These two jobs scaffold, build
+  # and validate for real, and require a PASS — a skip fails the job.
+  scaffold-clap-validate:
+    name: audio_plugin_validate against real clap-validator
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Vendor free-audio/clap at _tools/clap
+        run: git clone --depth 1 https://github.com/free-audio/clap.git "${RUNNER_TEMP}/clap"
+      - name: Install clap-validator
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/cv"
+          gh release download 0.4.1 --repo free-audio/clap-validator \
+            --pattern '*ubuntu-22.04.zip' --dir "${RUNNER_TEMP}/cv"
+          unzip -q "${RUNNER_TEMP}/cv"/*.zip -d "${RUNNER_TEMP}/cv"
+          # Upstream's archive layout is not ours to assume: find the binary.
+          BIN="$(find "${RUNNER_TEMP}/cv" -type f -name clap-validator | head -1)"
+          test -n "${BIN}"
+          chmod +x "${BIN}"
+          echo "$(dirname "${BIN}")" >> "${GITHUB_PATH}"
+      - name: Scaffold, build, and validate with the real validator
+        env:
+          APC_CLAP_DIR: ${{ runner.temp }}/clap
+        run: node scripts/smoke-validate.mjs --type=clap
+
+  scaffold-juce-validate:
+    name: audio_plugin_validate against real pluginval
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Install JUCE + pluginval runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config xvfb unzip \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev \
+            libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev \
+            libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libxi-dev \
+            libgtk-3-dev libglu1-mesa-dev mesa-common-dev libegl-dev
+      - name: Clone JUCE 9
+        run: git clone --depth 1 --branch 9.0.3 https://github.com/juce-framework/JUCE.git "${RUNNER_TEMP}/JUCE"
+      - name: Install pluginval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/pv"
+          gh release download v1.0.4 --repo Tracktion/pluginval \
+            --pattern 'pluginval_Linux.zip' --dir "${RUNNER_TEMP}/pv"
+          unzip -q "${RUNNER_TEMP}/pv"/*.zip -d "${RUNNER_TEMP}/pv"
+          BIN="$(find "${RUNNER_TEMP}/pv" -type f -name pluginval | head -1)"
+          test -n "${BIN}"
+          chmod +x "${BIN}"
+          echo "$(dirname "${BIN}")" >> "${GITHUB_PATH}"
+      - name: Scaffold, build, and validate with the real validator
+        env:
+          APC_JUCE_DIR: ${{ runner.temp }}/JUCE
+        # pluginval is a JUCE GUI application: it needs a display even in CI.
+        run: xvfb-run -a node scripts/smoke-validate.mjs --type=juce
+
   license:
     name: License check
     timeout-minutes: 10
@@ -169,7 +262,8 @@ jobs:
         run: node scripts/check-licenses.mjs
 
   publish:
-    needs: [test, license, compile-scaffold, scaffold-clap, scaffold-lv2, scaffold-juce]
+    needs: [test, license, compile-scaffold, scaffold-clap, scaffold-lv2, scaffold-juce,
+            scaffold-clap-validate, scaffold-juce-validate]
     if: startsWith(github.ref, 'refs/tags/v')
     timeout-minutes: 15
     runs-on: ubuntu-latest

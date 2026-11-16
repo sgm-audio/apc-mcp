@@ -62,9 +62,12 @@
   (`PLUGIN_DESCRIPTION_TTL`), and `replaceTemplateVars()` substitutes placeholders
   in a single pass so `{{KEY}}` substrings inside user values are never
   cross-expanded.
-- **Dev-dependency `minimatch` advisory resolved.** Overrode `minimatch` to
-  `^11.0.5` so `npm audit` reports **0** vulnerabilities across both runtime and
-  dev trees.
+- **Dev-dependency `minimatch` advisory resolved.** `eslint` is now `^10.15.0`,
+  whose own range is `minimatch@^11.0.5`, so `npm audit` reports **0**
+  vulnerabilities across the runtime and dev trees with no `overrides` block. (The
+  original fix pinned `minimatch@^11.0.5` through an override while `eslint`
+  declared `^10.2.6`; that worked for the audit but left `npm ls` reporting an
+  invalid tree across a declared major, and the override is gone.)
 
 ### Fixed
 
@@ -603,6 +606,81 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
 since been resolved: `compile-scaffold`, `scaffold-clap`, `scaffold-lv2`,
 `scaffold-juce`, `license`, and `CodeQL` all run on GitHub-hosted runners, and
 `scaffold-juce` is now in `publish.needs`.)*
+
+### Post-audit remediation — 2026-11-16
+
+A second release audit (`AUDIT-2.0.0-RELEASE.md`, kept out of the published
+package) re-checked every 2.0.0 claim against the code, with reproduction. It
+found two High and eight Medium defects; the changes below close them. No
+behaviour here is new — it is the difference between a claim and a check.
+
+- **The audit gate now actually passes (High).** `npm audit` reported two
+  moderate `hono` / `@hono/node-server` advisories reached through the SDK's HTTP
+  transport (never loaded by this stdio server) and exited 1, so both
+  `npm run check` and `npm run ship` were blocked. `npm audit fix` resolved them —
+  **0 vulnerabilities, no `overrides`, no `--audit-level` flag**. CI had been
+  running `npm audit --audit-level=high`, which is why the workflow stayed green
+  while the documented local gate failed; it now runs `npm run audit`.
+- **Validators are exercised for real (High).** Every `audio_plugin_validate`
+  test installs a `PATH` shim, so nothing anywhere proved that upstream's
+  `pluginval` / `clap-validator` accepts the invocation, or that a scaffolded
+  plugin passes it. Two new CI jobs install both tools from their releases,
+  scaffold and build a real plugin, and require a `PASS` — via the new
+  `scripts/smoke-validate.mjs`, which **exits non-zero when a dependency is
+  missing instead of skipping**. `npm run check` is unchanged (it stays free of
+  multi-GB SDK downloads).
+- **`audio_plugin_validate` no longer reports an unactionable failure.** Asking
+  for `LV2`, `AudioUnit` or `Standalone` produced `1 passed, 1 skipped` with
+  `isError: true` and "install the missing validator(s)" — advice that can never
+  be followed, because no validator exists for those formats. Those artefacts are
+  now reported `NOT CHECKABLE` and do not affect `isError`; a *configured* but
+  missing validator still fails the run. `format` also accepts all five artefact
+  values now, instead of rejecting `LV2` as a schema error.
+- **`projectPath` no longer rejects legitimate paths.** It was filtered through
+  `SAFE_PATH`, whose rejection message said the path "contains shell
+  metacharacters" — but this server never uses a shell. `my project (v2)`,
+  `ACME's plugins` and `Path+Name&Co` were refused for no reason. Only
+  non-strings, empty strings and NUL bytes are rejected now; the project boundary
+  is still enforced by `assertWithinProject()`, which is what actually contained
+  the paths. `SAFE_PATH` survives only for the two config values interpolated
+  into CMake source.
+- **`vendor` and `description` accept non-ASCII and are escaped per grammar.**
+  Both were ASCII-only, so `Café Audio` was rejected, and the rejection leaked a
+  raw regular expression (`must match /^[\x20-\x7E]+$/`) through JSON-RPC at the
+  model. Both now accept any single line of text; control characters are rejected
+  with an explanation. `vendor` joins `description` in being escaped per output
+  grammar (C++ literal, CMake quoted argument, Turtle literal, HTML text node) via
+  `VENDOR_CXX` / `VENDOR_CMAKE` / `VENDOR_TTL` / `VENDOR_HTML`. The bare
+  `{{VENDOR}}` placeholder is gone, so a template that used it would leave a
+  literal placeholder behind — which the scaffold smoke test fails on.
+- **`configure` no longer fights the cache.** `-G <generator>` was passed on
+  every configure, so a cached `CMakeCache.txt` from a different generator was
+  either ignored or failed the configure with a confusing CMake error. The flag is
+  now only sent when there is no cache yet. A failure with empty stderr no longer
+  produces a blank failure message.
+- **A test run that found no tests is a failure.** `ctest` exits 8 with
+  `No tests were found!!!`, which the parser read as `0 failed` — a green result
+  for a suite that never ran. It now returns `isError: true` with that
+  diagnosis instead of a clean summary.
+- **Tools advertise `title` and annotations.** All seven were registered via the
+  deprecated `server.tool()` with only a name and schema, so a client showed bare
+  snake_case names and no safety hints; `audio_plugin_lint(fix=true)` rewrites
+  files with nothing saying so. Registration now goes through
+  `server.registerTool()` with a title and `readOnlyHint` / `destructiveHint` /
+  `idempotentHint` / `openWorldHint`, and a tool with no metadata throws at
+  startup rather than shipping undefined hints.
+- **Fabricated JUCE history removed from template comments.** Three templates
+  claimed JUCE 9 "removed `start()`/`stop()`" and "removed
+  `XmlDocument::storeXmlAsString`". Neither symbol exists in JUCE 6.1.6, 7.0.12,
+  8.0.15 or 9.0.5 — the comments invented a breaking change to justify code that
+  was simply written without them. The code was correct; the reasoning was not,
+  and a reader would have learned something false about JUCE.
+- **The suite runs on macOS too.** `test` is now a matrix over
+  `ubuntu-latest` / `macos-latest`, because the server branches on
+  `process.platform` and only the Linux branch had ever executed. Windows is
+  documented as unverified rather than added speculatively: the security tests
+  drive POSIX shebang shims, so a Windows job would test the fixtures, not the
+  server.
 
 ## [1.5.0] — 2026-06-17
 

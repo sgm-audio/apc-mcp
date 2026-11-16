@@ -57,6 +57,38 @@ describe('apc-mcp MCP server', () => {
       assert.deepEqual(tools.map(t => t?.name).sort(), TOOL_NAMES);
     });
 
+    it('every tool advertises a title and honest safety annotations', async () => {
+      const tools = await listTools();
+      const byName = Object.fromEntries((tools ?? []).map(t => [t.name, t]));
+      for (const { name } of tools ?? []) {
+        assert.ok(byName[name].title, `${name} has no title; clients show a bare snake_case name`);
+        const a = byName[name].annotations;
+        assert.ok(a, `${name} has no annotations`);
+        for (const key of ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint']) {
+          assert.equal(typeof a[key], 'boolean', `${name}.annotations.${key} must be a boolean`);
+        }
+      }
+      // Only audio_plugin_plugins is pure inspection: it lists a directory and
+      // nothing else. The rest either execute a toolchain or write files.
+      assert.equal(byName.audio_plugin_plugins.annotations.readOnlyHint, true,
+        'audio_plugin_plugins only reads the plugin tree and must declare readOnlyHint');
+      assert.equal(byName.audio_plugin_plugins.annotations.destructiveHint, false,
+        'audio_plugin_plugins must not claim to be destructive');
+
+      // Anything that writes into the project must say so. `test` runs ctest, and
+      // `validate` runs third-party binaries, so neither may claim read-only
+      // either — a client that trusts readOnlyHint may auto-approve them.
+      for (const n of ['audio_plugin_create', 'audio_plugin_configure', 'audio_plugin_build', 'audio_plugin_lint']) {
+        assert.equal(byName[n].annotations.destructiveHint, true,
+          `${n} writes into the project and must declare destructiveHint`);
+      }
+      for (const n of ['audio_plugin_create', 'audio_plugin_configure', 'audio_plugin_build',
+        'audio_plugin_lint', 'audio_plugin_test', 'audio_plugin_validate']) {
+        assert.equal(byName[n].annotations.readOnlyHint, false,
+          `${n} executes a command or writes files and must not claim readOnlyHint`);
+      }
+    });
+
     it('each tool has a name and a populated inputSchema', async () => {
       const tools = await listTools();
       for (const tool of tools ?? []) {
