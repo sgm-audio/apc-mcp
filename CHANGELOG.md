@@ -628,7 +628,12 @@ behaviour here is new — it is the difference between a claim and a check.
   scaffold and build a real plugin, and require a `PASS` — via the new
   `scripts/smoke-validate.mjs`, which **exits non-zero when a dependency is
   missing instead of skipping**. `npm run check` is unchanged (it stays free of
-  multi-GB SDK downloads).
+  multi-GB SDK downloads). The first execution found three genuine defects that no
+  shim could have caught: a CI step that relied on GNU `timeout` (absent on
+  macOS), a guessed archive layout for `clap-validator` (the identical pluginval
+  install worked), and a build tree placed outside `projectPath`, which
+  `audio_plugin_validate` correctly refused to scan. All three are fixed and the
+  jobs now pass against the real binaries.
 - **`audio_plugin_validate` no longer reports an unactionable failure.** Asking
   for `LV2`, `AudioUnit` or `Standalone` produced `1 passed, 1 skipped` with
   `isError: true` and "install the missing validator(s)" — advice that can never
