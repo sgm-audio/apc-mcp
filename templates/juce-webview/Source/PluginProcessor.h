@@ -34,6 +34,9 @@ public:
 
 private:
     juce::AudioParameterFloat *m_gain = nullptr;
+    // Linear 20 ms ramp. Applying m_gain->get() directly makes every parameter
+    // move a per-block step, which is audible as zipper noise on a gain control.
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> m_gainSmoothed;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR({{PLUGIN_CLASS_NAME}})
 };
