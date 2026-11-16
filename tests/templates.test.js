@@ -344,11 +344,29 @@ describe('FUNC-02/08/11/12 · JUCE templates use the real JUCE 9 CMake API', () 
         `${s.name}: missing using AudioProcessor::processBlock; triggers -Woverloaded-virtual`);
       assert.match(h, /isBusesLayoutSupported\s*\(\s*const\s+BusesLayout\s*&[^)]*\)\s*const\s+override/,
         `${s.name}: missing isBusesLayoutSupported() override`);
-      assert.ok(cpp.includes('std::min(totalNumInputChannels, totalNumOutputChannels)'),
-        `${s.name}: processBlock must clamp channel loop against asymmetric layouts`);
+      // processBlock gets the input in place, so a "pass-through" has nothing to
+      // copy: the copy this assertion used to demand wrote getReadPointer(i) into
+      // getWritePointer(i), i.e. one buffer onto itself. What every plugin does
+      // need is the clear loop for output channels an asymmetric layout left
+      // empty — skip it and those channels replay whatever the host had there.
+      assert.ok(cpp.includes('for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)'),
+        `${s.name}: processBlock must silence output channels that have no input`);
+      assert.ok(cpp.includes('buffer.clear(i, 0, buffer.getNumSamples())'),
+        `${s.name}: the clear loop must actually clear the channel it names`);
+      assert.ok(!cpp.includes('getReadPointer('),
+        `${s.name}: processBlock must not read a channel it is about to write — that is a self-copy`);
       if (s.ui === 'webview') {
         assert.match(cpp, /juce::ParameterID\s*\{\s*"gain"\s*,\s*1\s*\}/,
           `${s.name}: AudioParameterFloat needs ParameterID version hint >= 1 to avoid JUCE 9 AU Debug jassert`);
+        // A gain applied as a bare multiply steps once per block; that is zipper
+        // noise. The smoother has to be driven from prepareToPlay's sample rate
+        // and read once per sample in processBlock.
+        assert.ok(cpp.includes('m_gainSmoothed.reset(sampleRate, 0.02)'),
+          `${s.name}: the gain smoother must be configured from the host sample rate in prepareToPlay`);
+        assert.ok(cpp.includes('m_gainSmoothed.getNextValue()'),
+          `${s.name}: processBlock must advance the gain smoother per sample, not read the raw parameter`);
+        assert.ok(!cpp.includes('channelData[sample] * gain'),
+          `${s.name}: the unsmoothed per-block multiply must be gone`);
       }
     }
   });
@@ -889,6 +907,83 @@ describe('native LV2 template', () => {
       // minor/microVersion are xsd:nonNegativeInteger, not strings.
       assert.match(ttl, /lv2:minorVersion\s+\d+\s*;/, `${s.name}: lv2:minorVersion must be an integer`);
       assert.match(ttl, /lv2:microVersion\s+\d+\s*;/, `${s.name}: lv2:microVersion must be an integer`);
+    }
+  });
+
+  it('classifies the gain plugin as an AmplifierPlugin and claims no licence', () => {
+    // lv2core: AmplifierPlugin is "primarily designed to change the volume of its
+    // input"; UtilityPlugin is its superclass and says nothing about what the
+    // plugin does, which is what hosts sort menus by.
+    for (const s of lv2Only()) {
+      const ttl = s.files.get('Source/plugin.ttl');
+      assert.ok(ttl.includes('lv2:AmplifierPlugin'),
+        `${s.name}: a gain plugin must declare lv2:AmplifierPlugin, not only lv2:UtilityPlugin`);
+      // Choosing a licence on the user's behalf is a claim, not a default: the
+      // scaffold ships no LICENSE file, so doap:license would assert something
+      // untrue in a file hosts display.
+      assert.ok(!/^\s*doap:license\s/m.test(ttl),
+        `${s.name}: plugin.ttl must not assert a licence the user has not chosen`);
+    }
+  });
+
+  it('gives the stereo ports an lv2:designation', () => {
+    // Without a designation a host cannot pair in_l with out_l, or route a mono
+    // host into both sides; it is left guessing from the symbol name.
+    for (const s of lv2Only()) {
+      const ports = ttlPorts(s.files.get('Source/plugin.ttl'));
+      const audio = ports.filter(p => /AudioPort/.test(p.body ?? ''));
+      for (const p of audio) {
+        const want = /_l$/.test(p.symbol) ? 'lv2:left' : /_r$/.test(p.symbol) ? 'lv2:right' : null;
+        assert.ok(want, `${s.name}: unexpected audio port symbol ${p.symbol}`);
+        assert.ok((p.body ?? '').includes(`lv2:designation ${want}`),
+          `${s.name}: port ${p.symbol} needs \`lv2:designation ${want}\``);
+      }
+    }
+  });
+
+  it('passes LV2URI explicitly instead of deriving it from a company website', () => {
+    // JUCE's own comment in juce_audio_plugin_client_LV2.cpp: "it may be because
+    // you haven't explicitly set an LV2 URI". With FORMATS including LV2 and no
+    // LV2URI, JUCEUtils.cmake falls back to
+    //   LV2URI = "<COMPANY_WEBSITE>/plugins/<Name>"
+    // so dropping the invented COMPANY_WEBSITE silently produced
+    // "/plugins/<Name>" and the LV2 target failed to compile. The URI is also the
+    // plugin's permanent identity in saved host sessions, which is not something
+    // to inherit from a guessed domain.
+    for (const s of jucePluginOnly()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      const formats = /FORMATS\s+([^\n)]+)/.exec(cm)?.[1] ?? '';
+      const uri = /LV2URI\s+"([^"]+)"/.exec(cm)?.[1];
+      // One CMakeLists serves every format combination, so a VST3-only scaffold
+      // still carries the keyword; JUCE just never reads it. Only the LV2 case
+      // can fail to build.
+      if (/\bLV2\b/.test(formats)) {
+        assert.ok(uri, `${s.name}: FORMATS includes LV2 but no LV2URI is passed — JUCE then `
+          + `derives it from COMPANY_WEBSITE, which this template does not set`);
+      }
+      if (!uri) continue;
+      assert.match(uri, /^(urn:[a-z0-9]{2,}:|https?:\/\/)/,
+        `${s.name}: LV2URI "${uri}" needs a urn: or http(s) scheme — JUCE static_asserts on it`);
+      // PLUGIN_ID keeps the name's case (JuceGen, mydelay), so compare folded.
+      const id = s.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      assert.ok(uri.toLowerCase().endsWith(`:${id}`),
+        `${s.name}: LV2URI "${uri}" does not identify this plugin (expected it to end in ":${id}")`);
+    }
+  });
+
+  it('keeps the LV2 install destination relative so --prefix still applies', () => {
+    // An absolute DESTINATION is expanded at configure time and frozen into
+    // cmake_install.cmake, so `cmake --install build --prefix X` installs into
+    // the configure-time path and leaves X empty. GNUInstallDirs + a relative
+    // path is what makes both --prefix and CMAKE_INSTALL_PREFIX work.
+    for (const s of lv2Only()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      const dest = /DESTINATION\s+"([^"]+)"/.exec(cm)?.[1];
+      assert.ok(dest, `${s.name}: no install(... DESTINATION ...) found`);
+      assert.ok(!dest.startsWith('/') && !dest.includes('CMAKE_INSTALL_PREFIX'),
+        `${s.name}: DESTINATION "${dest}" is absolute, so --prefix is silently ignored`);
+      assert.ok(cm.includes('include(GNUInstallDirs)'),
+        `${s.name}: must include(GNUInstallDirs) to derive lib/lv2 instead of hard-coding "lib"`);
     }
   });
 
