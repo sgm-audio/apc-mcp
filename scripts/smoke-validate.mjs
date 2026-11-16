@@ -117,7 +117,11 @@ if (problems.length) {
 const ownsDir = !EXPLICIT_DIR;
 const root = EXPLICIT_DIR ? path.resolve(EXPLICIT_DIR) : fs.mkdtempSync(path.join(os.tmpdir(), `apc-validate-${TYPE}-`));
 const proj = path.join(root, 'proj');
-const build = path.join(root, 'build');
+// The build tree must live *inside* the project root: audio_plugin_validate
+// resolves `buildDir` relative to it (default "build"), and a sibling directory
+// is invisible to the tool — which then honestly reports "build directory not
+// found — run audio_plugin_build first".
+const build = path.join(proj, 'build');
 const name = TYPE === 'clap' ? 'ValidateClap' : 'ValidateJuce';
 
 function sh(cmd, args, opts = {}) {
