@@ -33,7 +33,7 @@ prose in the diff.
 
 | # | Finding | Status | Evidence |
 |---|---|---|---|
-| H-1 | Declared gate does not pass | **FIXED** | `npm audit fix` → **0 vulnerabilities** (2 moderate `hono` advisories gone; no `overrides`, no threshold flag). `npm run check` → **exit 0**: 219 tests, 211 pass, 0 fail, 8 skipped; lint, smoke, licenses, docs all PASS. CI's `npm audit --audit-level=high` replaced with `npm run audit`, so CI and the documented gate are now the same command. |
+| H-1 | Declared gate does not pass | **FIXED** | `npm audit fix` → **0 vulnerabilities** (2 moderate `hono` advisories gone; no `overrides`, no threshold flag). `npm run check` → **exit 0**: 221 tests, 213 pass, 0 fail, 8 skipped; lint, smoke, licenses, docs all PASS. CI's `npm audit --audit-level=high` replaced with `npm run audit`, so CI and the documented gate are now the same command. |
 | H-2 | Validate never run against real validators | **FIXED — but proven by CI, not by me** | New `scripts/smoke-validate.mjs` (scaffold → real cmake build → real validate → require `PASS`, fail if the report says `SKIPPED`/`NOT CHECKABLE`), wired into two new jobs `scaffold-clap-validate` / `scaffold-juce-validate` that install `clap-validator` 0.4.1 and `pluginval` v1.0.4 from their releases. Both are in `publish.needs`. **I could not execute them here** (no network to the release hosts, no JUCE/CMake in this sandbox), so the honest statement is: the claim is now machine-checked on every push, and the first green run is the evidence. The script's dependency checks and its refusal to skip were executed and verified. |
 | M-1 | `NOT CHECKABLE` formats fail the run with impossible advice | **FIXED** | `validate` reports `pass \| fail \| missing-validator \| not-checkable`; only the first two of the failure classes touch `isError`; `format` accepts all five artefact values. Old behaviour reproduced before the fix (`1 passed, 0 failed, 1 skipped` + `isError: true` for `LV2`), gone after. QA-06's contract is preserved: a *missing* `clap-validator` still yields `isError: true`. |
 | M-2 | Legitimate paths rejected with a false "shell metacharacters" diagnosis | **FIXED** | `validatePath()` and lint `target` reject only non-string/empty/NUL; `SAFE_PATH` is retained solely for the two config values interpolated into CMake source, and its comment now says so. Containment is unchanged (`assertWithinProject()`). |
@@ -517,7 +517,7 @@ green on the machine that wrote the audit:
 ```text
 npm run check  → exit 0
   lint        PASS
-  test        219 tests · 211 pass · 0 fail · 8 skipped
+  test        221 tests · 213 pass · 0 fail · 8 skipped
   smoke       PASS (10/10)
   audit       0 vulnerabilities   (no --audit-level, no overrides)
   licenses    163 packages, all allowed

@@ -45,27 +45,12 @@ jobs:
         # in docs/project-status.md. Using --audit-level=high here instead made
         # CI green while the documented local baseline failed.
         run: npm run audit
-      - name: Smoke test — all 7 tools register
-        run: |
-          printf '%s\n%s\n%s\n' \
-            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"1.0"}}}' \
-            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-            | timeout 5 node index.js | python3 -c "
-          import sys, json
-          msgs = [json.loads(l) for l in sys.stdin.read().splitlines() if l.strip()]
-          tools_msg = next((m for m in msgs if m.get('id') == 2), None)
-          if not tools_msg:
-            print(f'FAIL: no tools/list response in {msgs}')
-            sys.exit(1)
-          names = [t['name'] for t in tools_msg['result']['tools']]
-          expected = ['audio_plugin_build','audio_plugin_configure','audio_plugin_create','audio_plugin_lint','audio_plugin_plugins','audio_plugin_test','audio_plugin_validate']
-          missing = [n for n in expected if n not in names]
-          if missing:
-            print(f'FAIL: missing tools: {missing}')
-            sys.exit(1)
-          print(f'OK: {len(names)} tools registered')
-          "
+      - name: Smoke test — the real server registers all 7 tools over stdio
+        # This was an inline printf pipeline wrapped in `timeout` and piped into
+        # python3. It failed on macOS for the only reason it could: that utility is
+        # GNU coreutils and does not exist there. Doing it in Node also removes the
+        # python3 dependency and the hang risk.
+        run: node scripts/smoke-stdio.mjs
 
   # Compiles the scaffolded C/C++ with real gcc/g++ front ends. JUCE sources go
   # against tests/fixtures/juce-api-stub (a transcription of the JUCE 9 API);
@@ -169,9 +154,14 @@ jobs:
   # reporting logic, but not that the upstream binary accepts the invocation or
   # that a freshly scaffolded plugin passes it. These two jobs scaffold, build
   # and validate for real, and require a PASS — a skip fails the job.
+  #
+  # Build and validate are separate steps sharing a directory, so a red job says
+  # which half broke. Each step also re-publishes the tail of its log as an error
+  # *annotation* on the check run, which is readable over the API even when the
+  # job log is not.
   scaffold-clap-validate:
     name: audio_plugin_validate against real clap-validator
-    timeout-minutes: 20
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -189,19 +179,49 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/cv"
-          gh release download 0.4.1 --repo free-audio/clap-validator \
-            --pattern '*ubuntu-22.04.zip' --dir "${RUNNER_TEMP}/cv"
-          unzip -q "${RUNNER_TEMP}/cv"/*.zip -d "${RUNNER_TEMP}/cv"
-          # Upstream's archive layout is not ours to assume: find the binary.
-          BIN="$(find "${RUNNER_TEMP}/cv" -type f -name clap-validator | head -1)"
-          test -n "${BIN}"
-          chmod +x "${BIN}"
-          echo "$(dirname "${BIN}")" >> "${GITHUB_PATH}"
-      - name: Scaffold, build, and validate with the real validator
+          dir="${RUNNER_TEMP}/cv"
+          mkdir -p "$dir"
+          # Download by asset id and inspect what actually arrived rather than
+          # assuming the archive's internal layout.
+          id=$(gh api repos/free-audio/clap-validator/releases/tags/0.4.1 \
+                 --jq '[.assets[] | select(.name | test("ubuntu"))][0].id')
+          test -n "$id" -a "$id" != "null"
+          gh api -H 'Accept: application/octet-stream' \
+            "repos/free-audio/clap-validator/releases/assets/$id" > "$dir/asset"
+          echo "asset: $(file -b "$dir/asset")"
+          mkdir -p "$dir/x"
+          case "$(file -b "$dir/asset")" in
+            *Zip*)   unzip -o -q "$dir/asset" -d "$dir/x" ;;
+            *gzip*)  tar -xzf "$dir/asset" -C "$dir/x" ;;
+            *) echo "::error title=clap-validator asset::unexpected archive type: $(file -b "$dir/asset")"; exit 1 ;;
+          esac
+          # Belt and braces: unpack any tarball the zip may nest.
+          while IFS= read -r t; do tar -xzf "$t" -C "$(dirname "$t")"; done \
+            < <(find "$dir/x" -name '*.tar.gz')
+          echo "extracted:"; find "$dir/x" -type f -printf '  %m %10s %p\n' | sort -k3
+          BIN=$(find "$dir/x" -type f -name 'clap-validator*' \
+                  ! -name '*.tar.gz' ! -name '*.zip' | head -1)
+          if [ -z "$BIN" ]; then
+            echo "::error title=clap-validator asset::no clap-validator binary in the archive"
+            exit 1
+          fi
+          chmod +x "$BIN"
+          "$BIN" --version || true
+          echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
+      - name: Build a real CLAP plugin
         env:
           APC_CLAP_DIR: ${{ runner.temp }}/clap
-        run: node scripts/smoke-validate.mjs --type=clap
+        run: |
+          set -o pipefail
+          node scripts/smoke-validate.mjs --type=clap --phase=build --dir="${RUNNER_TEMP}/sv-clap" 2>&1 \
+            | tee "${RUNNER_TEMP}/build.log" \
+            || { echo "::error title=smoke-validate build::$(sed 's/%/%25/g' "${RUNNER_TEMP}/build.log" | tail -c 3000 | awk 'BEGIN{ORS=""}{printf "%s%%0A",$0}')"; exit 1; }
+      - name: Validate it with the real clap-validator
+        run: |
+          set -o pipefail
+          node scripts/smoke-validate.mjs --type=clap --phase=validate --dir="${RUNNER_TEMP}/sv-clap" 2>&1 \
+            | tee "${RUNNER_TEMP}/validate.log" \
+            || { echo "::error title=smoke-validate validate::$(sed 's/%/%25/g' "${RUNNER_TEMP}/validate.log" | tail -c 3000 | awk 'BEGIN{ORS=""}{printf "%s%%0A",$0}')"; exit 1; }
 
   scaffold-juce-validate:
     name: audio_plugin_validate against real pluginval
@@ -220,7 +240,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ninja-build pkg-config xvfb unzip \
+            ninja-build pkg-config xvfb unzip file \
             libasound2-dev libjack-jackd2-dev ladspa-sdk \
             libcurl4-openssl-dev \
             libfreetype-dev libfontconfig1-dev \
@@ -234,19 +254,34 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/pv"
+          dir="${RUNNER_TEMP}/pv"
+          mkdir -p "$dir/x"
           gh release download v1.0.4 --repo Tracktion/pluginval \
-            --pattern 'pluginval_Linux.zip' --dir "${RUNNER_TEMP}/pv"
-          unzip -q "${RUNNER_TEMP}/pv"/*.zip -d "${RUNNER_TEMP}/pv"
-          BIN="$(find "${RUNNER_TEMP}/pv" -type f -name pluginval | head -1)"
-          test -n "${BIN}"
-          chmod +x "${BIN}"
-          echo "$(dirname "${BIN}")" >> "${GITHUB_PATH}"
-      - name: Scaffold, build, and validate with the real validator
+            --pattern 'pluginval_Linux.zip' --dir "$dir"
+          unzip -o -q "$dir/pluginval_Linux.zip" -d "$dir/x"
+          find "$dir/x" -type f -printf '  %m %10s %p\n' | sort -k3
+          BIN=$(find "$dir/x" -type f -name 'pluginval' | head -1)
+          if [ -z "$BIN" ]; then
+            echo "::error title=pluginval asset::no pluginval binary in the archive"
+            exit 1
+          fi
+          chmod +x "$BIN"
+          echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
+      - name: Build a real VST3 plugin
         env:
           APC_JUCE_DIR: ${{ runner.temp }}/JUCE
+        run: |
+          set -o pipefail
+          node scripts/smoke-validate.mjs --type=juce --phase=build --dir="${RUNNER_TEMP}/sv-juce" 2>&1 \
+            | tee "${RUNNER_TEMP}/build.log" \
+            || { echo "::error title=smoke-validate build::$(sed 's/%/%25/g' "${RUNNER_TEMP}/build.log" | tail -c 3000 | awk 'BEGIN{ORS=""}{printf "%s%%0A",$0}')"; exit 1; }
+      - name: Validate it with the real pluginval
         # pluginval is a JUCE GUI application: it needs a display even in CI.
-        run: xvfb-run -a node scripts/smoke-validate.mjs --type=juce
+        run: |
+          set -o pipefail
+          xvfb-run -a node scripts/smoke-validate.mjs --type=juce --phase=validate --dir="${RUNNER_TEMP}/sv-juce" 2>&1 \
+            | tee "${RUNNER_TEMP}/validate.log" \
+            || { echo "::error title=smoke-validate validate::$(sed 's/%/%25/g' "${RUNNER_TEMP}/validate.log" | tail -c 3000 | awk 'BEGIN{ORS=""}{printf "%s%%0A",$0}')"; exit 1; }
 
   license:
     name: License check

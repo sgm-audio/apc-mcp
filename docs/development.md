@@ -35,7 +35,7 @@ CI runs that same chain on Linux (Node 22 and 24) and macOS, plus jobs that need
 |---|---|
 | `compile-scaffold` | Generated C11/C++ syntax-checks against the checked-in JUCE stub |
 | `scaffold-clap`, `scaffold-lv2`, `scaffold-juce` | Generated projects configure, compile and link against real upstream SDKs |
-| `scaffold-clap-validate` | `audio_plugin_validate` runs a real `clap-validator` on a built CLAP plugin and reports PASS |
+| `scaffold-clap-validate` | `audio_plugin_validate` runs a real `clap-validator` on a built CLAP plugin and reports PASS (build and validate are separate steps, so a red job says which half broke) |
 | `scaffold-juce-validate` | Same with a real `pluginval` on a built VST3 (`xvfb-run`: pluginval is a GUI app) |
 
 The last two exist because every other `audio_plugin_validate` test installs a PATH shim: shims prove the argv shape and the reporting logic, but not that upstream's binary accepts the invocation, or that a scaffolded plugin passes it. Both jobs fail if the report skips validation instead of running it — an unrun validator must never look like a pass. Neither is part of `npm run check`, since both need a multi-GB SDK download.

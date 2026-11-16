@@ -22,7 +22,7 @@ Verified on **2026-11-16** in this checkout (Node v22.22.3 / npm 10.9.8, Linux):
 | Gate | Result |
 |---|---|
 | `npm run lint` | PASS — ESLint + `node --check index.js` |
-| `npm test` | **219 tests**, 211 pass, 0 fail, **8 skipped** — the C/C++ compile+link checks skip when `APC_CLAP_INCLUDE` / `APC_LV2_INCLUDE` are unset; CI sets them and runs them against real upstream headers |
+| `npm test` | **221 tests**, 213 pass, 0 fail, **8 skipped** — the C/C++ compile+link checks skip when `APC_CLAP_INCLUDE` / `APC_LV2_INCLUDE` are unset; CI sets them and runs them against real upstream headers |
 | `npm run smoke` | PASS — 10/10 scaffold cases (structure only; `--configure` / `--build` need CMake + SDKs) |
 | `npm audit` | PASS — 0 vulnerabilities, with **no** `--audit-level` flag: the gate is plain `npm audit`, and CI runs that same command (`npm run audit`) rather than a laxer threshold |
 | `npm run licenses` | PASS — 163 lockfile packages checked against `license_decisions.yml` |

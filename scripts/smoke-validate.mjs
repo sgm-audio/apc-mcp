@@ -7,21 +7,25 @@
 // script closes that gap: it scaffolds one plugin, builds it with real cmake,
 // then calls the real audio_plugin_validate and requires a PASS.
 //
-// That is the only way the sentence "pluginval / clap-validator support works"
-// can be substantiated, so this script FAILS (exit 1) when a dependency is
-// missing rather than skipping — a silent skip reading as a pass is the exact
-// anti-pattern the 2.0.0 audit was written about. It is deliberately not part of
-// `npm run check`; CI runs it in the `scaffold-clap-validate` and
-// `scaffold-juce-validate` jobs.
+// It FAILS (exit 1) when a dependency is missing rather than skipping — a silent
+// skip reading as a pass is the exact anti-pattern the 2.0.0 audit was written
+// about. It is deliberately not part of `npm run check`; CI runs it in the
+// `scaffold-clap-validate` and `scaffold-juce-validate` jobs.
+//
+// The phases are separable so a CI failure names its own cause instead of
+// producing one opaque red step:
+//
+//   node scripts/smoke-validate.mjs --type=juce --phase=build    --dir=/tmp/x
+//   node scripts/smoke-validate.mjs --type=juce --phase=validate --dir=/tmp/x
 //
 // Usage:
 //   APC_CLAP_DIR=/path/to/clap node scripts/smoke-validate.mjs --type=clap
 //   APC_JUCE_DIR=/path/to/JUCE node scripts/smoke-validate.mjs --type=juce
 //
-// Requirements per type:
-//   clap: cmake + ninja (or make), a free-audio/clap checkout, `clap-validator` on PATH
-//   juce: cmake + ninja (or make), a JUCE 9 checkout, `pluginval` on PATH,
-//         and a display on Linux (xvfb-run -a ...)
+// Requirements:
+//   build phase:    cmake (+ ninja optional), the SDK checkout named by the env var
+//   validate phase: `clap-validator` / `pluginval` on PATH
+//   juce + Linux:   a display (`xvfb-run -a …`: pluginval is a GUI application)
 
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -30,7 +34,14 @@ import os from 'node:os';
 import { call } from '../tests/helpers/mcp-client.mjs';
 
 const argv = process.argv.slice(2);
-const TYPE = argv.find(a => a.startsWith('--type='))?.slice('--type='.length) ?? 'clap';
+const arg = (name, fallback) => {
+  const hit = argv.find(a => a.startsWith(`--${name}=`));
+  return hit ? hit.slice(name.length + 3) : fallback;
+};
+
+const TYPE = arg('type', 'clap');
+const PHASE = arg('phase', 'all');
+const EXPLICIT_DIR = arg('dir', '');
 
 const CONFIG = {
   clap: {
@@ -39,7 +50,7 @@ const CONFIG = {
     sdkDirName: 'clap',
     pluginType: 'clap',
     format: 'CLAP',
-    artefact: { dir: 'CLAP', suffix: '.clap' },
+    suffix: '.clap',
   },
   juce: {
     validator: 'pluginval',
@@ -47,12 +58,16 @@ const CONFIG = {
     sdkDirName: 'JUCE',
     pluginType: 'juce',
     format: 'VST3',
-    artefact: { dir: 'VST3', suffix: '.vst3' },
+    suffix: '.vst3',
   },
 }[TYPE];
 
 if (!CONFIG) {
   console.error(`smoke-validate: unknown --type=${TYPE} (expected "clap" or "juce")`);
+  process.exit(2);
+}
+if (!['all', 'build', 'validate'].includes(PHASE)) {
+  console.error(`smoke-validate: unknown --phase=${PHASE} (expected "all", "build" or "validate")`);
   process.exit(2);
 }
 
@@ -63,7 +78,6 @@ const fail = (label, detail = '') => {
   console.error(`  FAIL ${label}${detail ? `\n       ${String(detail).split('\n').join('\n       ')}` : ''}`);
 };
 
-// ── Dependency checks: every one of these is mandatory ─────────────
 // A PATH scan, not `which` and not spawning the binary: pluginval is a GUI app,
 // so executing it just to see whether it exists is both slow and wrong.
 function binaryOnPath(bin) {
@@ -72,31 +86,36 @@ function binaryOnPath(bin) {
     : [''];
   for (const dir of (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
     for (const ext of exts) {
+      const candidate = path.join(dir, bin + ext);
       try {
-        fs.accessSync(path.join(dir, bin + ext), fs.constants.X_OK);
-        return true;
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return candidate;
       } catch { /* keep looking */ }
     }
   }
-  return false;
+  return null;
 }
-const whichStatus = bin => (binaryOnPath(bin) ? 'present' : 'missing');
 
+const needBuild = PHASE !== 'validate';
+const needValidate = PHASE !== 'build';
 const sdkDir = process.env[CONFIG.sdkEnv] ?? '';
+const validatorPath = needValidate ? binaryOnPath(CONFIG.validator) : null;
+
 const problems = [];
-if (!sdkDir || !fs.existsSync(sdkDir)) {
+if (needBuild && (!sdkDir || !fs.existsSync(sdkDir))) {
   problems.push(`${CONFIG.sdkEnv} must point at a ${CONFIG.sdkDirName} checkout`);
 }
-if (whichStatus('cmake') === 'missing') problems.push('cmake is not on PATH');
-if (whichStatus(CONFIG.validator) === 'missing') problems.push(`'${CONFIG.validator}' is not on PATH`);
+if (needBuild && !binaryOnPath('cmake')) problems.push('cmake is not on PATH');
+if (needValidate && !validatorPath) problems.push(`'${CONFIG.validator}' is not on PATH`);
 if (problems.length) {
-  console.error(`smoke-validate (${TYPE}): cannot run — required dependency missing:`);
+  console.error(`smoke-validate (${TYPE}/${PHASE}): cannot run — required dependency missing:`);
   for (const p of problems) console.error(`  - ${p}`);
   console.error('\nThis script does not skip: an unrun validator must not look like a pass.');
   process.exit(1);
 }
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), `apc-validate-${TYPE}-`));
+const ownsDir = !EXPLICIT_DIR;
+const root = EXPLICIT_DIR ? path.resolve(EXPLICIT_DIR) : fs.mkdtempSync(path.join(os.tmpdir(), `apc-validate-${TYPE}-`));
 const proj = path.join(root, 'proj');
 const build = path.join(root, 'build');
 const name = TYPE === 'clap' ? 'ValidateClap' : 'ValidateJuce';
@@ -109,7 +128,9 @@ function sh(cmd, args, opts = {}) {
   return r;
 }
 
-try {
+// ─────────────────────────────────────────────────── build ────
+async function doBuild() {
+  fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(proj, { recursive: true });
   fs.writeFileSync(path.join(proj, 'apc-mcp.json'), '{}\n');
   fs.writeFileSync(path.join(proj, 'CMakeLists.txt'),
@@ -117,9 +138,8 @@ try {
   fs.mkdirSync(path.join(proj, '_tools'), { recursive: true });
   fs.symlinkSync(path.resolve(sdkDir), path.join(proj, '_tools', CONFIG.sdkDirName), 'dir');
 
-  console.log(`smoke-validate: ${TYPE} with a real ${CONFIG.validator}\nproject: ${proj}`);
+  console.log(`smoke-validate: ${TYPE} build\nproject: ${proj}`);
 
-  // 1. Scaffold through the real MCP server.
   const create = await call('audio_plugin_create', {
     projectPath: proj, name, type: CONFIG.pluginType, ui: 'generic',
     vendor: 'validator-smoke', description: 'validator smoke test',
@@ -127,7 +147,6 @@ try {
   if (create.isError) throw new Error(`audio_plugin_create failed:\n${create.text}`);
   ok(`scaffolded ${name} (${CONFIG.pluginType})`);
 
-  // 2. Wire the plugin into the root project and build it for real.
   fs.writeFileSync(path.join(proj, 'CMakeLists.txt'),
     'cmake_minimum_required(VERSION 3.22)\nproject(apc_validate_host)\n\n'
     + `add_subdirectory(plugins/${name})\n`);
@@ -135,30 +154,44 @@ try {
   const hasNinja = spawnSync('ninja', ['--version'], { encoding: 'utf-8' }).status === 0;
   const configure = sh('cmake', ['-S', proj, '-B', build, ...(hasNinja ? ['-G', 'Ninja'] : []),
     '-DCMAKE_BUILD_TYPE=Debug']);
-  if (configure.status !== 0) throw new Error('cmake configure failed');
+  if (configure.status !== 0) throw new Error('cmake configure failed (see output above)');
   ok('cmake configure succeeded');
 
   const jobs = String(Math.max(1, os.availableParallelism?.() ?? os.cpus().length ?? 2));
   const built = sh('cmake', ['--build', build, '--config', 'Debug', '--parallel', jobs],
     { timeout: 1800000 });
-  if (built.status !== 0) throw new Error('cmake --build failed');
+  if (built.status !== 0) throw new Error('cmake --build failed (see output above)');
   ok('cmake --build succeeded');
 
-  // 3. The artefact the validator will be pointed at must exist.
-  const artDir = path.join(build, 'plugins', name, `${name}_artefacts`, 'Debug', CONFIG.artefact.dir);
-  const artefacts = fs.existsSync(artDir)
-    ? fs.readdirSync(artDir).filter(n => n.toLowerCase().endsWith(CONFIG.artefact.suffix))
-    : [];
-  if (artefacts.length === 0) {
-    throw new Error(`no ${CONFIG.artefact.suffix} artefact in ${artDir}`);
-  }
-  ok(`built artefact: ${artefacts.join(', ')}`);
+  // Scan by suffix instead of constructing a path: the tool does the same, and
+  // PRODUCT_NAME can legitimately differ from the directory name.
+  const found = [];
+  (function walk(dir) {
+    if (!fs.existsSync(dir)) return;
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name.toLowerCase().endsWith(CONFIG.suffix)) found.push(abs); // macOS-style bundle
+        else walk(abs);
+      } else if (e.name.toLowerCase().endsWith(CONFIG.suffix)) found.push(abs);
+    }
+  })(build);
 
-  // 4. The actual subject of this script: the tool, the real validator, a PASS.
-  // Best effort only — pluginval is a GUI app and may ignore --version.
-  const version = spawnSync(CONFIG.validator, ['--version'], { encoding: 'utf-8', timeout: 30000 });
-  const versionLine = (version.stdout || version.stderr || '').trim().split('\n')[0];
-  console.log(`\n${CONFIG.validator} --version → ${versionLine || '(no version output)'}`);
+  if (found.length === 0) throw new Error(`no ${CONFIG.suffix} artefact anywhere under ${build}`);
+  ok(`built artefact(s): ${found.map(f => path.relative(build, f)).join(', ')}`);
+}
+
+// ──────────────────────────────────────────────── validate ────
+async function doValidate() {
+  if (!fs.existsSync(path.join(proj, 'apc-mcp.json'))) {
+    throw new Error(`no scaffolded project at ${proj} (run --phase=build first)`);
+  }
+  console.log(`smoke-validate: ${TYPE} validate\nproject: ${proj}\nvalidator: ${validatorPath}`);
+
+  if (TYPE === 'clap') {
+    const v = spawnSync(validatorPath, ['--version'], { encoding: 'utf-8', timeout: 30000 });
+    console.log(`clap-validator --version → ${(v.stdout || v.stderr || '').trim().split('\n')[0] || '(none)'}`);
+  }
 
   const res = await call('audio_plugin_validate',
     { projectPath: proj, config: 'Debug', format: CONFIG.format },
@@ -166,29 +199,33 @@ try {
 
   console.log(`\n----- audio_plugin_validate (${CONFIG.format}) -----\n${res.text}\n-----`);
 
-  if (res.isError) {
-    fail('audio_plugin_validate reported isError', res.text.slice(0, 4000));
-  } else {
-    ok('audio_plugin_validate reported isError=false');
-  }
-  if (/—\s*PASS/m.test(res.text)) {
-    ok('a real validator run is reported as PASS');
-  } else {
-    fail('no PASS in the validation report', res.text.slice(0, 2000));
-  }
-  if (/SKIPPED|NOT CHECKABLE/.test(res.text)) {
-    fail('validation was skipped, not executed',
-      'a skip must never satisfy this smoke test — check PATH and the validator binary name');
+  if (res.isError) fail('audio_plugin_validate reported isError', res.text);
+  else ok('audio_plugin_validate reported isError=false');
+
+  if (/—\s*PASS/m.test(res.text)) ok('a real validator run is reported as PASS');
+  else fail('no PASS in the validation report', res.text);
+
+  if (/SKIPPED|NOT CHECKABLE|MISSING-VALIDATOR/.test(res.text)) {
+    fail('validation was not actually executed',
+      'a skip must never satisfy this smoke test — check PATH, the validator binary name, '
+      + 'and `validateCommand`/`clapValidatorCommand` in apc-mcp.json');
   } else {
     ok(`${CONFIG.validator} actually ran (nothing skipped)`);
   }
+}
+
+try {
+  if (needBuild) await doBuild();
+  if (needValidate) await doValidate();
 } catch (e) {
   fail(e instanceof Error ? e.message : String(e));
 } finally {
-  fs.rmSync(root, { recursive: true, force: true });
+  if (ownsDir) fs.rmSync(root, { recursive: true, force: true });
 }
 
-console.log(failures === 0
-  ? `\nsmoke-validate (${TYPE}): PASS\n`
-  : `\nsmoke-validate (${TYPE}): FAIL (${failures} failure(s))\n`);
-process.exit(failures === 0 ? 0 : 1);
+if (failures === 0) {
+  console.log(`\nsmoke-validate (${TYPE}/${PHASE}): PASS\n`);
+  process.exit(0);
+}
+console.error(`\nsmoke-validate (${TYPE}/${PHASE}): FAIL (${failures} failure(s))\n`);
+process.exit(1);
