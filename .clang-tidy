@@ -11,11 +11,19 @@
 # are deliberately absent: they rewrite working code to taste, and a scaffold
 # that ships a stranger's taste is not thereby more correct.
 #
-# One check is disabled, and it is the only one:
-# `clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling`
-# recommends the C11 Annex K functions (memset_s, ...). Neither glibc nor macOS
-# libc implements Annex K, so the advice cannot be followed on any platform
-# these templates target, and the memset it flags is the correct call there.
+# Three checks are disabled, and no others:
+#   clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+#       recommends the C11 Annex K functions (memset_s, ...). Neither glibc nor
+#       macOS libc implements Annex K, so the advice cannot be followed on any
+#       platform these templates target, and the memset it flags is correct.
+#   bugprone-easily-swappable-parameters
+#       fires on every two-argument function taking the same type, which is
+#       every LV2/C callback signature; renaming the parameters would not make
+#       the generated plugin safer.
+#   portability-avoid-pragma-once
+#       the templates use `#pragma once`, which GCC, Clang and MSVC all support
+#       and which cannot desynchronise the way a copied include guard can. The
+#       check exists for compilers these templates are not built with.
 Checks: >
   -*,
   clang-analyzer-*,
@@ -23,7 +31,8 @@ Checks: >
   bugprone-*,
   -bugprone-easily-swappable-parameters,
   performance-*,
-  portability-*
+  portability-*,
+  -portability-avoid-pragma-once
 
 # A finding is a failure. A warning that nobody fails on is a warning nobody
 # reads; smoke-scaffold treats "warning not promoted to error" as proof that this

@@ -299,7 +299,10 @@ function verifyLv2Metadata(members) {
       fail(`${c.name} lv2lint`, 'manifest.ttl has no <plugin-uri> subject');
       continue;
     }
-    const res = spawnSync('lv2lint', ['-I', path.dirname(bundle), uri],
+    // -I is handed straight to lilv_world_load_bundle(), which treats its
+    // argument as the bundle directory (the one holding manifest.ttl), not as a
+    // directory of bundles.
+    const res = spawnSync('lv2lint', ['-I', bundle, uri],
       { encoding: 'utf-8', timeout: 120000 });
     const out = `${res.stdout ?? ''}${res.stderr ?? ''}`.trim();
     if (res.status !== 0) {
