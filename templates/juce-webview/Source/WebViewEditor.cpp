@@ -124,7 +124,7 @@ void WebViewEditor::sendStateToJS()
     state->setProperty ("type", "state");
     state->setProperty ("gain", static_cast<double> (m_sentGain));
     state->setProperty ("pluginName", juce::String ("{{PLUGIN_DISPLAY_NAME}}"));
-    state->setProperty ("vendor", juce::String ("{{VENDOR}}"));
+    state->setProperty ("vendor", juce::String ("{{VENDOR_CXX}}"));
 
     juce::Array<juce::var> payload;
     payload.add (juce::var (state));

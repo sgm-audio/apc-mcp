@@ -57,8 +57,9 @@ void {{PLUGIN_CLASS_NAME}}::getStateInformation(juce::MemoryBlock &destData) {
     auto state = juce::ValueTree("state");
     state.setProperty("gain", static_cast<double>(m_gain->get()), nullptr);
 
-    // XmlDocument::storeXmlAsString does not exist in JUCE 9; copyXmlToBinary is
-    // the supported helper for serialising state into a MemoryBlock.
+    // copyXmlToBinary is the supported helper for serialising an XmlElement into
+    // a MemoryBlock. XmlDocument has no serialising helper of its own — it is a
+    // parser — so do not go looking for one.
     if (auto xml = state.createXml())
         copyXmlToBinary(*xml, destData);
 }

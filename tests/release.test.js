@@ -97,9 +97,59 @@ describe('OPS-02 · a failed publish must fail the workflow', () => {
     const text = workflowText('publish.yml');
     const needs = /^\s*needs:\s*\[([^\]]+)\]/m.exec(text)?.[1]
       ?.split(',').map(s => s.trim()).filter(Boolean) ?? [];
-    for (const job of ['test', 'license', 'compile-scaffold', 'scaffold-clap', 'scaffold-lv2', 'scaffold-juce']) {
+    for (const job of ['test', 'license', 'compile-scaffold', 'scaffold-clap', 'scaffold-lv2', 'scaffold-juce',
+      'scaffold-clap-validate', 'scaffold-juce-validate']) {
       assert.ok(needs.includes(job), `publish must need ${job}: ${needs.join(', ')}`);
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+describe('QA-07 · the validators are exercised for real, not only through shims', () => {
+  // Every audio_plugin_validate test in tool-output.test.js installs a PATH
+  // shim. Shims prove the argv shape and the reporting logic; they cannot prove
+  // that upstream's binary accepts the invocation, or that a scaffolded plugin
+  // passes. Until CI ran a real one, "pluginval / clap-validator support" was
+  // an untested claim.
+  const text = () => workflowText('publish.yml');
+
+  it('CI installs clap-validator and pluginval from their releases', () => {
+    const t = text();
+    assert.match(t, /repos\/free-audio\/clap-validator\/(releases|contents)/,
+      'clap-validator is never installed');
+    assert.match(t, /gh release download[^\n]*Tracktion\/pluginval/, 'pluginval is never installed');
+  });
+
+  it('CI does not rely on GNU-only tools in a cross-platform job', () => {
+    // The inline `printf … | timeout 5 node index.js | python3 -c …` step failed
+    // on macOS because `timeout` is GNU coreutils, not POSIX. Anything the matrix
+    // runs has to be either portable shell or a Node script.
+    const t = text();
+    assert.doesNotMatch(t, /\btimeout\s+\d+\s+node\b/,
+      '`timeout` does not exist on macOS runners; drive the server from a Node script instead');
+    assert.match(t, /run: node scripts\/smoke-stdio\.mjs/,
+      'the stdio registration smoke should run scripts/smoke-stdio.mjs, which works on every OS');
+  });
+
+  it('a failing validator job publishes its log tail as an annotation', () => {
+    // Job logs are not always retrievable; annotations are. Without this, a red
+    // job is an opaque red job.
+    const t = text();
+    assert.equal((t.match(/::error title=smoke-validate/g) ?? []).length >= 2, true,
+      'both validate steps should re-publish their log tail as an error annotation');
+  });
+
+  it('CI runs a real validation and fails on a PASS-less report', () => {
+    const t = text();
+    assert.match(t, /node scripts\/smoke-validate\.mjs --type=clap/, 'clap validation is not run for real');
+    assert.match(t, /node scripts\/smoke-validate\.mjs --type=juce/, 'pluginval validation is not run for real');
+    const script = fs.readFileSync(path.join(PROJECT_ROOT, 'scripts/smoke-validate.mjs'), 'utf8');
+    assert.match(script, /smoke-validate \(\$\{TYPE\}\/\$\{PHASE\}\): FAIL/, 'smoke-validate must report failure');
+    assert.match(script, /process\.exit\(1\)/, 'smoke-validate must exit non-zero on failure');
+    assert.match(script, /cannot run — required dependency missing/,
+      'a missing validator must fail, not skip: an unrun validator must never look like a pass');
+    assert.match(script, /SKIPPED\|NOT CHECKABLE\|MISSING-VALIDATOR/,
+      'smoke-validate must reject a report that skipped validation');
   });
 });
 

@@ -49,21 +49,34 @@ const SAFE_PLUGIN_NAME = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 const RESERVED_CMAKE_TARGETS = new Set([
   'all', 'clean', 'install', 'test', 'package', 'help', 'edit_cache', 'rebuild_cache',
 ]);
-// Vendor names: alphanumeric, underscores, hyphens, dots
-const SAFE_VENDOR = /^[a-zA-Z0-9_.-]+$/;
+// Free-form metadata (vendor, description): any single line of printable text,
+// including non-ASCII, because "ACME, Inc." and "Café Audio" are real vendor
+// names. Control characters stay rejected — these values are pasted into C++,
+// CMake, Turtle and HTML strings, where a newline would end the construct — and
+// every other character is escaped per output grammar at substitution time
+// (CXX / CMAKE / TTL / HTML placeholders), never assumed absent.
+// Excluding the control characters is the entire point of this pattern, exactly
+// as in stripAnsi() below.
+// eslint-disable-next-line no-control-regex
+const SAFE_TEXT = /^[^\u0000-\u001F\u007F-\u009F]+$/;
+const FREE_TEXT_MESSAGE = 'must be a single line without control characters';
 // Test name regex: printable ASCII only
 const SAFE_REGEX = /^[\x20-\x7E]+$/;
-// Description: printable ASCII
-const SAFE_DESCRIPTION = /^[\x20-\x7E]+$/;
 // JUCE format list: semicolon-separated format names
 const SAFE_FORMATS = /^[a-zA-Z0-9_;-]+$/;
-// Project path: block shell metacharacters. Backslash is required for native
-// Windows paths; paths reach filesystem APIs or discrete argv entries, not a shell.
+// Charset for values pasted into *CMake source* (the project's pluginsDir /
+// buildDir are interpolated into add_subdirectory() lines). This is a genuine
+// code-injection surface and stays restricted.
 const SAFE_PATH = /^[a-zA-Z0-9_ /\\.\-:@~]+$/;
 
+// User-supplied filesystem paths (projectPath, lint target) are deliberately NOT
+// charset-restricted. They reach path.resolve(), fs and spawnSync argv — never a
+// shell — and real projects live in directories like "My Plugins (2026)",
+// "o'brien/src", "ACME, Inc". Containment is assertWithinProject()'s job, not a
+// regex's. The only character Node cannot round-trip is NUL.
 function validatePath(p) {
-  if (!SAFE_PATH.test(p)) {
-    throw new Error(`Invalid path: contains shell metacharacters`);
+  if (typeof p !== 'string' || p.length === 0 || p.includes('\0')) {
+    throw new Error(`Invalid path: must be a non-empty string without NUL bytes`);
   }
   return path.resolve(p);
 }
@@ -215,9 +228,10 @@ function trySpawn(cmd, args, opts = {}) {
   const output = result.stdout || '';
   const stderr = result.stderr || '';
   // Compilers commonly write warnings to stderr even on a successful build.
-  if (result.status === 0) return { ok: true, output, stderr };
+  if (result.status === 0) return { ok: true, status: 0, output, stderr };
   return {
     ok: false,
+    status: result.status,
     output,
     stderr: stderr || `'${cmd}' exited with code ${result.status}` +
       (result.signal ? ` after signal ${result.signal}` : ''),
@@ -239,6 +253,14 @@ const defaultConfig = {
 
 // Formats findPluginBinaries() actually knows how to locate.
 const KNOWN_FORMATS = ['VST3', 'CLAP', 'LV2', 'AudioUnit', 'Standalone'];
+
+// format -> the apc-mcp.json key that names its validator binary. A format
+// absent from this table has NO validator anywhere in this server: it can be
+// discovered but never validated. Those formats are reported as "not checkable"
+// and must not set isError — telling a model to "install the missing validator"
+// for a tool that does not exist turned every correctly configured JUCE project
+// (default FORMATS "VST3;LV2;Standalone") into a permanent, unfixable failure.
+const VALIDATOR_CONFIG_KEY = { VST3: 'validateCommand', CLAP: 'clapValidatorCommand' };
 
 // Per-key validators for apc-mcp.json. Config files are untrusted input in the
 // same sense tool arguments are: they reach path.join() and spawnSync() argv.
@@ -663,15 +685,24 @@ function bundleVendor(vendor) {
 }
 
 // Turtle string literals are delimited by `"` and honour backslash escapes, so a
-// description containing either character would terminate the literal early and
-// produce invalid metadata. SAFE_DESCRIPTION permits both (it is "printable
-// ASCII"), so they must be escaped rather than assumed absent.
+// value containing either character would terminate the literal early and
+// produce invalid metadata. SAFE_TEXT permits both, so they must be escaped
+// rather than assumed absent.
 function turtleEscape(text) {
   return String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 function cxxStringEscape(text) {
   return String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+// HTML *text* context (the scaffolded WebView UI). Quotes are harmless in a text
+// node; &, < and > are not.
+function htmlEscape(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 // JUCE's JUCEUtils.cmake passes DESCRIPTION into target_compile_definitions as
@@ -729,12 +760,58 @@ const server = new McpServer({
   version: PKG_VERSION,
 });
 
+// Title + MCP behaviour hints for every tool. These are what a client uses to
+// decide whether to confirm a call with the user, so a tool that writes files
+// must not present itself as harmless: `create` appends to the project's
+// CMakeLists.txt, `lint` rewrites sources in place when fix=true, and `build`
+// writes a whole build tree. Centralised so a new tool cannot be registered
+// without declaring them — registerTool() throws if one is missing.
+//
+// openWorldHint is false for all seven: nothing here talks to the network.
+const TOOL_META = {
+  audio_plugin_configure: {
+    title: 'Configure a CMake audio plugin project',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  audio_plugin_build: {
+    title: 'Build a CMake audio plugin project',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  },
+  audio_plugin_test: {
+    title: 'Run a project\'s ctest suite',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  audio_plugin_lint: {
+    title: 'Check or apply clang-format (fix=true rewrites files in place)',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  audio_plugin_plugins: {
+    title: 'List scaffolded plugins in a project',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  audio_plugin_validate: {
+    title: 'Validate built plugins with pluginval / clap-validator',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  audio_plugin_create: {
+    title: 'Scaffold a new plugin or app into a project',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  },
+};
+
 // Every handler runs inside this wrapper so that a thrown Error becomes a
 // readable isError tool result rather than a bare JSON-RPC protocol error.
 // MCP clients surface tool results to the model; protocol errors are often
 // shown opaquely, which defeats the actionable install/path messages below.
 function registerTool(name, schema, handler) {
-  server.tool(name, schema, async (params) => {
+  const meta = TOOL_META[name];
+  if (!meta) throw new Error(`registerTool: no TOOL_META entry for "${name}"`);
+
+  server.registerTool(name, {
+    title: meta.title,
+    inputSchema: schema,
+    annotations: meta.annotations,
+  }, async (params) => {
     try {
       return await handler(params);
     } catch (err) {
@@ -857,9 +934,14 @@ registerTool(
     const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
     fs.mkdirSync(buildDir, { recursive: true });
 
+    // Same rule as audio_plugin_build: `-G` only when creating a fresh cache.
+    // Handing a default generator to an existing CMakeCache.txt built with a
+    // different one makes CMake abort with a generator-mismatch error, which
+    // looked like a project problem rather than a tool one.
+    const cacheExists = fs.existsSync(path.join(buildDir, 'CMakeCache.txt'));
     const args = [
       '-B', buildDir,
-      ...(generator ? ['-G', generator] : []),
+      ...(!cacheExists && generator ? ['-G', generator] : []),
       `-DCMAKE_BUILD_TYPE=${config}`,
     ];
     if (params.options) {
@@ -869,8 +951,9 @@ registerTool(
       }
     }
     const r = trySpawn('cmake', args, { cwd: proj, timeout: 120 });
-    const errMsg = (r.stderr || r.output || 'Configure failed.').trim();
-    return { content: [{ type: 'text', text: r.ok ? 'Configure succeeded.' : errMsg }], isError: !r.ok };
+    const errMsg = (r.stderr || r.output || 'cmake exited non-zero with no output.').trim();
+    const text = r.ok ? 'Configure succeeded.' : `## Configure failed\n${errMsg}`;
+    return { content: [{ type: 'text', text }], isError: !r.ok };
   }
 );
 
@@ -899,6 +982,25 @@ registerTool(
     const combined = [r.output, r.stderr].filter(Boolean).join('\n');
     const parsed = parseTestOutput(combined);
     const failedRun = !r.ok || parsed.failed > 0;
+
+    // ctest exits 8 and prints "No tests were found!!!" when the build tree
+    // registers none. That is a configure/registration problem (usually a wrong
+    // build directory or no add_test()), not a failing test — reporting it as
+    // "Tests failed / counts unknown" sent the model after the wrong thing.
+    if (parsed.failed === 0 && (r.status === 8 || /No tests were found/i.test(combined))) {
+      const text = [
+        '## No tests were found',
+        `ctest found no tests registered in \`${buildDir}\`${params.testName ? ` matching "${params.testName}"` : ''}.`,
+        'Nothing failed — there was nothing to run. Check that the project calls',
+        'add_test()/juce_add_console_app + add_test, that the build directory is the',
+        'one you configured, and that the test target was built.',
+        '',
+        '### Details',
+        combined.trim().slice(-2000),
+      ].join('\n');
+      return { content: [{ type: 'text', text }], isError: true };
+    }
+
     const text = [
       `## Tests ${failedRun ? 'failed' : 'passed'}`,
       // Reporting invented counts was the original bug (QA-02). When neither
@@ -925,15 +1027,17 @@ registerTool(
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
     fix: z.boolean().default(false)
       .describe('Auto-fix formatting in place. Without this flag, runs as dry-run and reports files that would change.'),
-    target: z.string().regex(SAFE_PATH).optional()
+    target: z.string().min(1)
+      .refine(t => !t.includes('\0'), 'must not contain a NUL byte')
+      .optional()
       .describe('Specific file or subdirectory to lint, relative to project root. Example: "plugins/Foo/Source". Must stay inside the project. Lints the whole project if omitted.'),
   },
   async (params) => {
     const proj = requireProjectPath(params.projectPath);
 
     // SECURITY (AUDIT SEC-01): `target` is joined onto the project root and then
-    // handed to clang-format — with fix=true that is an in-place WRITE. SAFE_PATH
-    // allows ".", so "../x" used to pass straight through and let a single tool
+    // handed to clang-format — with fix=true that is an in-place WRITE. A plain
+    // "." passed the old allowlist, so "../x" used to pass straight through and let a single tool
     // argument rewrite .cpp/.h files anywhere the user could write.
     // Two independent guards: reject ".." segments outright, then re-check the
     // fully resolved path against the project boundary (which also catches an
@@ -1124,8 +1228,8 @@ registerTool(
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
     config: z.enum(['Debug', 'Release']).optional()
       .describe('Build configuration (matches the build you ran). Falls back to "config" in apc-mcp.json, else Debug.'),
-    format: z.enum(['VST3', 'CLAP', 'all']).default('all')
-      .describe('Which format to validate. "all" validates every format the project built for.'),
+    format: z.enum([...KNOWN_FORMATS, 'all']).default('all')
+      .describe('Which format to validate. "all" validates every format in apc-mcp.json\'s validateFormats (default VST3, CLAP). Only VST3 and CLAP have validators; LV2, AudioUnit and Standalone are reported as "not checkable" rather than as failures.'),
   },
   async (params) => {
     const proj = requireProjectPath(params.projectPath);
@@ -1142,7 +1246,9 @@ registerTool(
     // and then called requireTool() from *inside* the results loop, so one
     // missing optional validator threw away every result already computed and
     // surfaced as an opaque tool error.
-    const validatorFor = { VST3: cfg.validateCommand, CLAP: cfg.clapValidatorCommand };
+    const validatorFor = Object.fromEntries(
+      Object.entries(VALIDATOR_CONFIG_KEY).map(([fmt, key]) => [fmt, cfg[key]])
+    );
     const validatorPresent = {};
     for (const fmt of formats) {
       const bin = validatorFor[fmt];
@@ -1160,21 +1266,26 @@ registerTool(
       };
     }
 
+    // Four distinct outcomes, and only two of them are errors:
+    //
+    //   pass              validated and the validator exited 0
+    //   fail              validated and the validator exited non-zero
+    //   missing-validator a validator IS supposed to exist for this format but
+    //                     its binary is not on PATH → actionable, isError
+    //   not-checkable     no validator exists for this format in this server at
+    //                     all (LV2/AudioUnit/Standalone) → nothing to install,
+    //                     so it is reported and NOT treated as an error
     const results = [];
     for (const b of binaries) {
       const bin = validatorFor[b.format];
 
-      // No validator configured for this format at all (LV2, AudioUnit,
-      // Standalone). Report it as skipped rather than as a failure — the binary
-      // is not bad, we simply cannot check it.
       if (!bin) {
-        results.push({ ...b, passed: null, skipped: true,
-          reason: `No validator is configured for ${b.format}.` });
+        results.push({ ...b, status: 'not-checkable' });
         continue;
       }
 
       if (!validatorPresent[bin]) {
-        results.push({ ...b, passed: null, skipped: true, reason: installHint(bin) });
+        results.push({ ...b, status: 'missing-validator', reason: installHint(bin) });
         continue;
       }
 
@@ -1186,34 +1297,50 @@ registerTool(
       const r = trySpawn(bin, args, { timeout: 120 });
       results.push({
         ...b,
-        passed: r.ok,
+        status: r.ok ? 'pass' : 'fail',
         output: r.ok ? '' : (r.stderr || r.output.slice(0, 1000)),
       });
     }
 
-    const passed = results.filter(r => r.passed === true).length;
-    const failed = results.filter(r => r.passed === false).length;
-    const skipped = results.filter(r => r.skipped).length;
+    const count = s => results.filter(r => r.status === s).length;
+    const passed = count('pass');
+    const failed = count('fail');
+    const missing = count('missing-validator');
+    const notCheckable = count('not-checkable');
 
     const lines = [
       `## Validation results — ${passed} passed, ${failed} failed` +
-        (skipped ? `, ${skipped} skipped` : ''),
+        (missing ? `, ${missing} skipped` : '') +
+        (notCheckable ? `, ${notCheckable} not checkable` : ''),
     ];
     for (const r of results) {
-      const status = r.skipped ? 'SKIPPED' : (r.passed ? 'PASS' : 'FAIL');
+      const status = {
+        pass: 'PASS',
+        fail: 'FAIL',
+        'missing-validator': 'SKIPPED',
+        'not-checkable': 'NOT CHECKABLE',
+      }[r.status];
       lines.push(`\n### ${r.plugin} [${r.format}] — ${status}`);
       lines.push(`\`${r.path}\``);
-      if (r.skipped) lines.push(`_${r.reason}_`);
-      else if (!r.passed) lines.push(`\`\`\`\n${r.output}\n\`\`\``);
+      if (r.status === 'not-checkable') {
+        lines.push(`_apc-mcp has no ${r.format} validator. The binary was found and is fine — ` +
+          `it simply cannot be checked here. Informational only, not a failure._`);
+      } else if (r.status === 'missing-validator') {
+        lines.push(`_${r.reason}_`);
+      } else if (r.status === 'fail') {
+        lines.push(`\`\`\`\n${r.output}\n\`\`\``);
+      }
     }
-    if (skipped > 0) {
+    if (missing > 0) {
       lines.push('', 'Validation is **incomplete** — install the missing validator(s) above and re-run.');
     }
 
-    // An incomplete validation must never read as a clean one.
+    // An incomplete validation must never read as a clean one. A format with no
+    // validator in this server is not "incomplete": there is nothing the user
+    // could install, so it must not fail the tool.
     return {
       content: [{ type: 'text', text: lines.join('\n') }],
-      isError: failed > 0 || skipped > 0,
+      isError: failed > 0 || missing > 0,
     };
   }
 );
@@ -1230,10 +1357,10 @@ registerTool(
       .describe('What to scaffold. "clap" generates a CLAP plugin against the free-audio/clap headers. "vst3" generates a JUCE plugin targeting VST3 only. "juce" generates a JUCE AudioProcessor for VST3;LV2;Standalone. "standalone" generates a standalone audio APPLICATION (juce_add_gui_app) — one executable that owns its audio device, not a plugin a host loads. "lv2" generates a native LV2 plugin in C with Turtle metadata, unrelated to the LV2 that type="juce" can emit from C++. (ARA is not offered yet — it needs a dedicated template.)'),
     ui: z.enum(['generic', 'webview']).default('generic')
       .describe('UI style for the JUCE plugin types. "generic" (default) uses JUCE\'s GenericAudioProcessorEditor. "webview" uses an HTML/CSS/JS WebView with parameter controls embedded via BinaryData. Ignored for "clap", "standalone" and "lv2", which ship their own UI or none.'),
-    vendor: z.string().regex(SAFE_VENDOR).default('apc-mcp')
-      .describe('Vendor/company name embedded in plugin metadata.'),
-    description: z.string().regex(SAFE_DESCRIPTION).default('An audio plugin')
-      .describe('Short description for plugin metadata.'),
+    vendor: z.string().min(1).max(128).regex(SAFE_TEXT, FREE_TEXT_MESSAGE).default('apc-mcp')
+      .describe('Vendor/company name embedded in plugin metadata. Any single line of text, including non-ASCII.'),
+    description: z.string().min(1).max(512).regex(SAFE_TEXT, FREE_TEXT_MESSAGE).default('An audio plugin')
+      .describe('Short description for plugin metadata. Any single line of text, including non-ASCII.'),
     formats: z.string().regex(SAFE_FORMATS).optional()
       .describe('JUCE plugin formats override, semicolon-separated. Only for the juce/vst3 types. Default: "VST3;LV2;Standalone". Rejected for "standalone" and "lv2", neither of which has a JUCE FORMATS list.'),
   },
@@ -1305,7 +1432,13 @@ registerTool(
       PLUGIN_DESCRIPTION_CXX: cxxStringEscape(params.description),
       PLUGIN_DESCRIPTION_CMAKE: juceDescriptionEscape(params.description),
       PLUGIN_FORMATS: formats,
-      VENDOR: params.vendor,
+      // One placeholder per output grammar. There is deliberately no bare
+      // {{VENDOR}}: a template that referenced it would leave a literal
+      // placeholder behind, which the scaffold smoke test treats as a failure.
+      VENDOR_CXX: cxxStringEscape(params.vendor),
+      VENDOR_CMAKE: juceDescriptionEscape(params.vendor),
+      VENDOR_TTL: turtleEscape(params.vendor),
+      VENDOR_HTML: htmlEscape(params.vendor),
       BUNDLE_VENDOR: bundleVendor(params.vendor),
       MANUFACTURER_CODE: fourCharCode(params.vendor),
       PLUGIN_CODE: fourCharCode(params.name, { exactlyOneUpper: true }),
