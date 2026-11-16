@@ -2,6 +2,7 @@
 #include "WebViewEditor.h"
 
 #include <algorithm>
+#include <cmath>
 
 {{PLUGIN_CLASS_NAME}}::{{PLUGIN_CLASS_NAME}}()
     : AudioProcessor(BusesProperties()
@@ -81,8 +82,10 @@ void {{PLUGIN_CLASS_NAME}}::setStateInformation(const void *data, int sizeInByte
     if (auto xml = getXmlFromBinary(data, sizeInBytes)) {
         auto state = juce::ValueTree::fromXml(*xml);
 
-        if (state.isValid())
-            *m_gain = static_cast<float>(state.getProperty("gain", 0.75));
+        if (state.isValid()) {
+            const auto raw = static_cast<float>(state.getProperty("gain", 0.75));
+            *m_gain = std::isfinite(raw) ? juce::jlimit(0.0f, 1.0f, raw) : 0.75f;
+        }
     }
 }
 

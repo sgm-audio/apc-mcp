@@ -23,7 +23,9 @@ find_path(LV2_INCLUDE_DIR
 
 if(NOT LV2_INCLUDE_DIR)
     # Fall back to a vendored copy, mirroring how templates/clap handles clap.
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/lv2/include/lv2/core/lv2.h")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/_tools/lv2/include/lv2/core/lv2.h")
+        set(LV2_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/_tools/lv2/include")
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/lv2/include/lv2/core/lv2.h")
         set(LV2_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/lv2/include")
     else()
         message(FATAL_ERROR
@@ -58,14 +60,14 @@ set_target_properties({{PLUGIN_NAME}} PROPERTIES
     # macOS, and the bundle would silently fail to load.
     PREFIX ""
     SUFFIX ".so"
-    # Emit into the same <build>/plugins/<name>/<name>_artefacts/<config>/LV2
+    # Emit into the same <build>/<pluginsDir>/<name>/<name>_artefacts/<config>/LV2
     # layout that audio_plugin_validate scans, so a scaffolded plugin can be
     # validated without the layout being hand-edited. LIBRARY_OUTPUT_DIRECTORY
     # is what applies to a MODULE library.
     LIBRARY_OUTPUT_DIRECTORY
-        "${CMAKE_BINARY_DIR}/plugins/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/LV2/{{PLUGIN_NAME}}.lv2"
+        "${CMAKE_BINARY_DIR}/{{PLUGINS_DIR}}/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/LV2/{{PLUGIN_NAME}}.lv2"
     RUNTIME_OUTPUT_DIRECTORY
-        "${CMAKE_BINARY_DIR}/plugins/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/LV2/{{PLUGIN_NAME}}.lv2"
+        "${CMAKE_BINARY_DIR}/{{PLUGINS_DIR}}/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/LV2/{{PLUGIN_NAME}}.lv2"
 )
 
 # An LV2 bundle is a *directory*: the binary plus its Turtle metadata, all at

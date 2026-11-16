@@ -15,7 +15,12 @@ find_package(clap CONFIG QUIET)
 
 if(NOT TARGET clap)
     # Fall back to a vendored copy, the usual arrangement for plugin repos.
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/clap/CMakeLists.txt")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/_tools/clap/CMakeLists.txt")
+        add_subdirectory(
+            "${CMAKE_SOURCE_DIR}/_tools/clap"
+            "${CMAKE_BINARY_DIR}/_tools/clap"
+            EXCLUDE_FROM_ALL)
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/clap/CMakeLists.txt")
         add_subdirectory(
             "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/clap"
             "${CMAKE_BINARY_DIR}/_tools/clap"
@@ -44,12 +49,12 @@ add_library({{PLUGIN_NAME}} MODULE
 target_link_libraries({{PLUGIN_NAME}} PRIVATE clap)
 target_include_directories({{PLUGIN_NAME}} PRIVATE Source)
 
-# Emit into <build>/plugins/<name>/<name>_artefacts/<config>/CLAP/<name>.clap,
+# Emit into <build>/<pluginsDir>/<name>/<name>_artefacts/<config>/CLAP/<name>.clap,
 # matching the layout audio_plugin_validate scans:
 #   - macOS: a CFBundle directory (<name>.clap/Contents/MacOS/<name>)
 #   - Linux & Windows: a single shared object renamed <name>.clap
 set(CLAP_ARTEFACTS_DIR
-    "${CMAKE_BINARY_DIR}/plugins/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/CLAP")
+    "${CMAKE_BINARY_DIR}/{{PLUGINS_DIR}}/{{PLUGIN_NAME}}/{{PLUGIN_NAME}}_artefacts/$<CONFIG>/CLAP")
 
 if(APPLE)
     set_target_properties({{PLUGIN_NAME}} PROPERTIES

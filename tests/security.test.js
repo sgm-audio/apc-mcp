@@ -169,7 +169,7 @@ describe('Layer 1 · zod schema rejects shell metacharacters', () => {
     ['audio_plugin_test',      { testName: 'x\x00y' }],
     ['audio_plugin_create',    { name: '../evil', projectPath: PROJ }],
     ['audio_plugin_create',    { name: 'a;b', projectPath: PROJ }],
-    ['audio_plugin_create',    { vendor: 'v`id`', projectPath: PROJ }],
+    ['audio_plugin_create',    { name: 'BadVendor', vendor: 'v\x00id', projectPath: PROJ }],
   ];
   for (const [tool, extra] of cases) {
     it(`${tool} rejects ${JSON.stringify(extra)}`, async () => {
@@ -394,6 +394,101 @@ describe('symlink containment on status.json and root CMakeLists.txt + Windows p
     const rTrav = await call('audio_plugin_lint',
       { projectPath: PROJ, target: 'plugins\\..\\..\\outside' }, { env: { PATH: FAKE_PATH } });
     assert.equal(rTrav.isError, true, 'backslash .. traversal must still be rejected');
+  });
+
+  it('SEC-NEW-01: rejects dangling symlinks pointing outside projectPath in assertWithinProject and root CMakeLists.txt', async () => {
+    const danglingProj = path.join(ROOT, 'dangling-proj');
+    fs.mkdirSync(danglingProj, { recursive: true });
+    fs.writeFileSync(path.join(danglingProj, 'apc-mcp.json'), '{}');
+    const outsideNonExistentDir = path.join(OUTSIDE, 'nonexistent-escaped-plugins');
+    fs.symlinkSync(outsideNonExistentDir, path.join(danglingProj, 'plugins'));
+
+    const rDir = await call('audio_plugin_create',
+      { projectPath: danglingProj, name: 'EscapePlug', type: 'clap' }, { env: { PATH: FAKE_PATH } });
+    assert.equal(rDir.isError, true, `dangling plugins symlink should be rejected: ${rDir.text}`);
+    assert.equal(fs.existsSync(outsideNonExistentDir), false,
+      'dangling plugins symlink created files outside projectPath');
+
+    const danglingCmakeProj = path.join(ROOT, 'dangling-cmake-proj');
+    fs.mkdirSync(danglingCmakeProj, { recursive: true });
+    fs.writeFileSync(path.join(danglingCmakeProj, 'apc-mcp.json'), '{}');
+    const outsideNonExistentCmake = path.join(OUTSIDE, 'CreatedViaDanglingSymlink.cmake');
+    fs.symlinkSync(outsideNonExistentCmake, path.join(danglingCmakeProj, 'CMakeLists.txt'));
+
+    const rCmake = await call('audio_plugin_create',
+      { projectPath: danglingCmakeProj, name: 'DanglingCmakePlug', type: 'clap' }, { env: { PATH: FAKE_PATH } });
+    assert.equal(rCmake.isError, true, `dangling CMakeLists.txt symlink should be rejected: ${rCmake.text}`);
+    assert.equal(fs.existsSync(outsideNonExistentCmake), false,
+      'dangling CMakeLists.txt symlink created external file');
+    assert.equal(fs.existsSync(path.join(danglingCmakeProj, 'plugins', 'DanglingCmakePlug')), false,
+      'SEC-NEW-03: failed audio_plugin_create must clean up partially created pluginDir');
+  });
+
+  it('SEC-NEW-02: blocks non-cache/arbitrary CMake flags and .. in audio_plugin_configure options', async () => {
+    const cmakeLogPath = path.join(ROOT, 'cmake.log');
+    const dangerousOptions = [
+      '-B ../outside-build',
+      '-B /tmp/outside-build',
+      '--trace-redirect=/tmp/pwned.txt',
+      '--graphviz=/tmp/graph.dot',
+      '-C /tmp/init.cmake',
+      '-P /tmp/script.cmake',
+      '-DJUCE_DIR=../../outside',
+    ];
+    for (const options of dangerousOptions) {
+      fs.writeFileSync(cmakeLogPath, '');
+      const r = await call('audio_plugin_configure',
+        { projectPath: PROJ, options }, { env: { PATH: FAKE_PATH } });
+      assert.equal(r.isError, true, `dangerous option "${options}" should be rejected: ${r.text}`);
+      assert.equal(fs.readFileSync(cmakeLogPath, 'utf8'), '', `cmake was spawned for dangerous option "${options}"`);
+    }
+
+    const validOptions = '-DENABLE_LTO:BOOL=ON -DJUCE_COPY_PLUGIN_AFTER_BUILD=OFF -UOLD_VAR -Wno-dev';
+    const rValid = await call('audio_plugin_configure',
+      { projectPath: PROJ, options: validOptions }, { env: { PATH: FAKE_PATH } });
+    assert.equal(rValid.isError, false, `valid options should be accepted: ${rValid.text}`);
+  });
+
+  it('SEC-NEW-04: rejects leading-hyphen/dot-only targets, whitespace-only generators, and empty projectPath', async () => {
+    const cmakeLogPath = path.join(ROOT, 'cmake.log');
+    for (const badTarget of ['-j', '--help', '..', '...']) {
+      fs.writeFileSync(cmakeLogPath, '');
+      const r = await call('audio_plugin_build',
+        { projectPath: PROJ, target: badTarget }, { env: { PATH: FAKE_PATH } });
+      assert.equal(r.isError, true, `target "${badTarget}" should be rejected`);
+      assert.equal(fs.readFileSync(cmakeLogPath, 'utf8'), '', `spawned for bad target "${badTarget}"`);
+    }
+
+    for (const badGen of ['   ', '-G', '.Ninja']) {
+      fs.writeFileSync(cmakeLogPath, '');
+      const r = await call('audio_plugin_configure',
+        { projectPath: PROJ, generator: badGen }, { env: { PATH: FAKE_PATH } });
+      assert.equal(r.isError, true, `generator "${badGen}" should be rejected`);
+      assert.equal(fs.readFileSync(cmakeLogPath, 'utf8'), '', `spawned for bad generator "${badGen}"`);
+    }
+
+    // Vendor metadata is not a command-line option: leading punctuation is
+    // permitted and escaped in generated sources, but controls are forbidden.
+    for (const badVendor of ['bad\nname', 'bad\x00name']) {
+      const r = await call('audio_plugin_create',
+        { projectPath: PROJ, name: 'ValidPlug', type: 'clap', vendor: badVendor }, { env: { PATH: FAKE_PATH } });
+      assert.equal(r.isError, true, `vendor ${JSON.stringify(badVendor)} should be rejected`);
+    }
+    const rVendor = await call('audio_plugin_create',
+      { projectPath: PROJ, name: 'PunctuationVendor', type: 'clap', vendor: '-vendor' }, { env: { PATH: FAKE_PATH } });
+    assert.equal(rVendor.isError, false, `printable vendor metadata should be accepted: ${rVendor.text}`);
+
+    const rEmptyPath = await call('audio_plugin_plugins',
+      { projectPath: '' }, { env: { PATH: FAKE_PATH } });
+    assert.equal(rEmptyPath.isError, true, 'empty string projectPath must not silently fall back to cwd');
+  });
+
+  it('NODE-04: rejects C/C++ reserved keyword plugin names (including after sanitization)', async () => {
+    for (const kw of ['int', 'class', 'default', 'in-t', 're_turn', 'namespace']) {
+      const r = await call('audio_plugin_create',
+        { projectPath: PROJ, name: kw, type: 'lv2' }, { env: { PATH: FAKE_PATH } });
+      assert.equal(r.isError, true, `C/C++ keyword name "${kw}" must be rejected`);
+    }
   });
 });
 

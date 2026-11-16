@@ -49,10 +49,8 @@ function git(args, timeoutMs = 30000) {
     console.error(`\nship: git ${args[0]} timed out after ${timeoutMs / 1000}s — a credential prompt or a hung network?`);
     process.exit(1);
   }
-  // status === null without ETIMEDOUT means the signal killed it; the guard
-  // checks below treat that as a failure, so say so here rather than after.
-  if (r.status === null) {
-    console.error(`\nship: git ${args[0]} produced no exit status (${r.signal ?? r.error?.code ?? 'unknown'}).`);
+  if (r.error) {
+    console.error(`\nship: failed to execute git (${r.error.message}).`);
     process.exit(1);
   }
   return r;
@@ -62,6 +60,10 @@ function run(cmd, args, label, timeoutMs = 900000) {
   console.log(`\n$ ${path.basename(cmd)} ${args.join(' ')}`);
   if (DRY_RUN) { console.log('  (dry run — not executed)'); return { status: 0 }; }
   const r = spawnSync(cmd, args, { cwd: PKG_DIR, stdio: 'inherit', timeout: timeoutMs, env: GIT_ENV });
+  if (r.error && r.error.code !== 'ETIMEDOUT') {
+    console.error(`\nship: ${label} failed to start (${r.error.message}).`);
+    process.exit(1);
+  }
   if (r.status !== 0) {
     const why = r.error?.code === 'ETIMEDOUT'
       ? `timed out after ${timeoutMs / 1000}s`
@@ -86,22 +88,15 @@ if (!/^\d+\.\d+\.\d+([-+].+)?$/.test(version)) {
   stop(`"${version}" is not a valid semver version.`);
 }
 
-// Node refuses to spawn a .cmd shim without `shell: true` (it throws EINVAL),
-// and turning on a shell would reintroduce exactly the argument-quoting hazard
-// this repo bans in index.js. npm is JS that ships next to node, so run it with
-// the same node binary instead of asking Windows to interpret a batch file.
-function npmArgs() {
-  if (process.platform !== 'win32') return [];
-  const cli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
-  if (!fs.existsSync(cli)) {
-    console.error(`ship: cannot find npm's CLI at ${cli}.`);
-    console.error('ship: run `npm run check` yourself, then re-run with --no-check.');
-    process.exit(1);
-  }
-  return [cli];
-}
-
-const npmCmd = process.platform === 'win32' ? process.execPath : 'npm';
+// npm must never be spawned as `npm.cmd`: on Windows (Node >= 20.12.2, the fix
+// for CVE-2024-27980) a batch file cannot be spawned without shell:true, and a
+// shell is exactly what this repo bans in index.js. `npm_execpath` is the JS
+// entrypoint npm sets for its own scripts, so running it through process.execPath
+// stays shell-free on every OS.
+const npmExecPath = process.env.npm_execpath;
+const [NPM_BIN, NPM_PREFIX_ARGS] = (npmExecPath && fs.existsSync(npmExecPath))
+  ? [process.execPath, [npmExecPath]]
+  : [process.platform === 'win32' ? 'npm.exe' : 'npm', []];
 
 // ── Guard 1: quality gates ────────────────────────────────────────
 // Run here rather than only via `npm run ship &&`, so invoking this file
@@ -111,11 +106,12 @@ if (NO_CHECK) {
 } else if (DRY_RUN) {
   console.log('\nship: dry run — skipping `npm run check` (it would run for real).');
 } else {
-  run(npmCmd, [...npmArgs(), 'run', 'check'], 'npm run check');
+  run(NPM_BIN, [...NPM_PREFIX_ARGS, 'run', 'check'], 'npm run check');
 }
 
 // ── Guard 2: git state ────────────────────────────────────────────
-const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout?.trim();
+const branchRes = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+const branch = branchRes.status === 0 ? branchRes.stdout?.trim() : '';
 if (!branch || branch === 'HEAD') {
   stop(`HEAD is detached, not "${REQUIRED_BRANCH}". Check out ${REQUIRED_BRANCH} first.`);
 }
@@ -126,7 +122,11 @@ if (branch !== REQUIRED_BRANCH) {
        `  or pass --branch=${branch} if you really mean to tag this branch.`);
 }
 
-const dirty = git(['status', '--porcelain']).stdout?.trim();
+const statusRes = git(['status', '--porcelain']);
+if (statusRes.status !== 0) {
+  stop(`git status failed: ${(statusRes.stderr || '').trim()}`);
+}
+const dirty = statusRes.stdout?.trim();
 if (dirty) {
   const n = dirty.split('\n').length;
   stop(`the working tree has ${n} uncommitted change(s):\n` +

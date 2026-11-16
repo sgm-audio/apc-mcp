@@ -687,10 +687,14 @@ behaviour here is new — it is the difference between a claim and a check.
   drive POSIX shebang shims, so a Windows job would test the fixtures, not the
   server.
 
-### Static-quality review (S-1 … S-21)
+### Static-quality review (S-1 … S-22)
 
 Root-cause fixes for the findings in [REVIEW-STATIC-QUALITY.md](REVIEW-STATIC-QUALITY.md).
 Each one is now guarded by a probe, a test, or a real toolchain run.
+
+A subset (S-1, S-2, S-3, S-8 and the `npm.cmd` half of S-19) was fixed in a parallel
+change that landed first; the entries below describe the code as it ships now, and
+the review's §8 records which change carries which fix.
 
 - **The no-shell lint rule now bans the option, not the variable name (S-1).** It
   matched an object literally named `child_process` and an import named `exec`, so a
@@ -712,7 +716,9 @@ Each one is now guarded by a probe, a test, or a real toolchain run.
   default — and the validator runs with the project as its working directory so its
   logs land inside the project.
 - **`options` accepts values containing spaces (S-10)** by splitting on `;` first;
-  plain whitespace separation still works.
+  plain whitespace separation still works. `;` was added to the schema charset and a
+  space to the value class of `SAFE_CMAKE_OPTION_TOKEN` — each token is still one
+  argv entry and is still validated, so `-DA=ON; rm -rf /` is still rejected.
 - **Templates no longer assert things that are not true.** `JUCE_DISPLAY_SCALE_ENABLED`
   is gone (0 references in JUCE 9.0.5), `COMPANY_WEBSITE`/`COMPANY_EMAIL` are gone
   (they shipped a guessed domain in DLL properties and VST3 metadata), the LV2 gain
@@ -743,10 +749,10 @@ Each one is now guarded by a probe, a test, or a real toolchain run.
   blocking it forever.
 - **`assertWithinProject()` fails closed (S-21)**: a `realpath` error now rejects
   instead of silently skipping the symlink check.
-- Schema fields gained `.max()` caps (S-6), spawning was funnelled through one
-  `captureSync` that diagnoses `ENOBUFS` as output overflow rather than a start
-  failure (S-8), the template map throws on an unknown type instead of falling
-  through a `default:` arm (S-17), and the docs now say that **no tool** writes
+- Schema fields gained `.max()` caps (S-6), the single `spawn()` wrapper diagnoses
+  `ENOBUFS` as a 16 MB output overflow rather than a failed start (S-8), the template
+  map throws on an unknown type instead of falling through a `default:` arm (S-17),
+  and the docs now say that **no tool** writes
   `status.json` (S-18).
 
 `outputSchema` / `structuredContent` (S-20) is deferred: it is an additive feature,

@@ -71,14 +71,6 @@ export default [
       // The project's whole security model is "never build a shell string", so
       // the shell-invoking APIs are banned outright. spawn/spawnSync are fine —
       // they take an argv array and involve no interpreter.
-      //
-      // These rules used to be name-based (an object literally called
-      // `child_process`, a named import called `exec`), which left three ways
-      // through: a default import (`import cp from 'node:child_process'`), a
-      // namespace import, and — worst — `{ shell: true }` on the *sanctioned*
-      // API, which re-enables a shell for an argv array. All three are closed
-      // below; `shell` is banned as a property name outright, because there is
-      // no legitimate use for it in this codebase.
       'no-restricted-properties': ['error',
         {
           object: 'child_process', property: 'exec',
@@ -96,34 +88,20 @@ export default [
                  + 'injection vector SECURITY.md exists to close. Use spawnSync.',
         },
         {
-          // Default/namespace imports make the callee name unpredictable, which
-          // is what defeated `no-restricted-properties`. Only named imports are
-          // allowed from child_process.
-          selector: "ImportDeclaration[source.value=/^(node:)?child_process$/] > ImportDefaultSpecifier",
-          message: 'Import { spawnSync } by name from child_process — a default import '
-                 + 'hides exec/execSync behind an alias the other rules cannot see.',
+          selector: "ImportDeclaration[source.value=/^(node:)?child_process$/] > :matches(ImportDefaultSpecifier, ImportNamespaceSpecifier)",
+          message: 'Import named bindings (spawn, spawnSync) from node:child_process so exec/execSync cannot be called via namespace.',
         },
         {
-          selector: "ImportDeclaration[source.value=/^(node:)?child_process$/] > ImportNamespaceSpecifier",
-          message: 'Import { spawnSync } by name from child_process — a namespace import '
-                 + 'hides exec/execSync behind an alias the other rules cannot see.',
+          selector: "CallExpression[callee.property.name='execSync']",
+          message: 'execSync() invokes a shell. Use spawnSync() with an argument array.',
         },
         {
-          // The one option that turns an argv array back into a shell string.
-          selector: "Property[key.name='shell']",
-          message: 'Never pass `shell` to a child_process call: it re-enables a shell and '
-                 + 'voids the argument-array guarantee. Pass discrete argv entries instead.',
+          selector: "CallExpression[callee.name=/^(spawn|spawnSync|execFile|execFileSync)$/] Property[key.name='shell']:not([value.value=false])",
+          message: 'Never enable { shell: true } on process spawn calls; pass an explicit argv array without a shell.',
         },
         {
-          // The other way to get a shell: name it as the executable.
-          // Only bare names are matched: esquery cannot carry an escaped "/"
-          // inside a regex (it terminates the literal), so "/bin/sh" would need a
-          // second rule for a case that does not exist here. This is a tripwire,
-          // not a sandbox — the argv guarantee does the actual work.
-          selector: "CallExpression[callee.name=/^(spawn|spawnSync|captureSync)$/] > Literal:first-child"
-                 + "[value=/^(sh|bash|zsh|dash|ksh|fish|cmd|cmd\\.exe|powershell|pwsh)(\\.exe)?$/]",
-          message: 'Spawning a shell by name is a shell invocation. Run the program directly '
-                 + 'with an argument array.',
+          selector: "CallExpression[callee.name=/^(spawn|spawnSync|execFile|execFileSync)$/][arguments.0.value=/^(sh|bash|zsh|dash|cmd(\\.exe)?|powershell(\\.exe)?|pwsh(\\.exe)?)$/i]",
+          message: 'Do not spawn a shell binary directly; spawn the target executable with an argument array.',
         },
       ],
       eqeqeq: ['error', 'always', { null: 'ignore' }],
@@ -140,6 +118,13 @@ export default [
       ecmaVersion: 2022,
       sourceType: 'script',
       globals: BROWSER_GLOBALS,
+    },
+    rules: {
+      'no-empty': ['error', { allowEmptyCatch: false }],
+      'no-unused-vars': ['error', { args: 'after-used', argsIgnorePattern: '^_' }],
+      eqeqeq: ['error', 'always', { null: 'ignore' }],
+      'no-var': 'error',
+      'prefer-const': ['error', { destructuring: 'all' }],
     },
   },
 ];

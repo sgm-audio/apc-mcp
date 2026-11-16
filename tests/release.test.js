@@ -304,8 +304,9 @@ describe('OPS-05 · ship cannot tag a branch it is not on', () => {
     // ships as JS, so the Windows path runs npm-cli.js with node itself.
     assert.ok(!/'npm\.cmd'|"npm\.cmd"/.test(src),
       'ship must not spawn npm.cmd — Node cannot spawn batch files without a shell');
-    assert.match(src, /npm-cli\.js/,
-      'the Windows path must run npm\'s CLI JS with process.execPath');
+    assert.match(src, /npm_execpath/,
+      'ship must run npm through its own JS entrypoint (npm_execpath) via process.execPath, '
+      + 'not through a platform shim');
 
     // A missing key or a 2FA prompt must fail the release, not hang it.
     const callSites = src.split('spawnSync(').slice(1);

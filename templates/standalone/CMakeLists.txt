@@ -12,7 +12,9 @@ endif()
 # (and a colliding binary directory).
 if(NOT TARGET juce::juce_audio_utils)
     if(NOT JUCE_DIR)
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/JUCE/CMakeLists.txt")
+        if(EXISTS "${CMAKE_SOURCE_DIR}/_tools/JUCE/CMakeLists.txt")
+            set(JUCE_DIR "${CMAKE_SOURCE_DIR}/_tools/JUCE")
+        elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/JUCE/CMakeLists.txt")
             set(JUCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/JUCE")
         else()
             message(FATAL_ERROR
@@ -20,7 +22,7 @@ if(NOT TARGET juce::juce_audio_utils)
                 "adding this app, or configure with -DJUCE_DIR=/path/to/JUCE.")
         endif()
     endif()
-    add_subdirectory(${JUCE_DIR} ${CMAKE_BINARY_DIR}/_tools/JUCE EXCLUDE_FROM_ALL)
+    add_subdirectory("${JUCE_DIR}" "${CMAKE_BINARY_DIR}/_tools/JUCE" EXCLUDE_FROM_ALL)
 endif()
 
 # ── App target ───────────────────────────────────────────────────────

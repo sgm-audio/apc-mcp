@@ -74,9 +74,12 @@ void WebViewEditor::resized()
 
 std::optional<juce::WebBrowserComponent::Resource> WebViewEditor::getResource (const juce::String &url)
 {
-    // "/" is the initial document request; anything else is a sub-resource path.
-    const auto wanted = url == "/" ? juce::String ("index.html")
-                                   : url.fromFirstOccurrenceOf ("/", false, false);
+    // Strip any query string or fragment before matching "/" or sub-resources.
+    const auto cleanUrl = url.upToFirstOccurrenceOf ("?", false, false)
+                             .upToFirstOccurrenceOf ("#", false, false);
+    const auto wanted = (cleanUrl.isEmpty() || cleanUrl == "/")
+        ? juce::String ("index.html")
+        : cleanUrl.fromFirstOccurrenceOf ("/", false, false);
 
     struct Entry { const char *name; const char *data; int size; const char *mime; };
 
@@ -144,19 +147,31 @@ bool WebViewEditor::handleJSAction (const juce::String &url)
     const auto params = parseQuery (url);
     const auto action = params["action"];
 
+    if (action == "ready")
+    {
+        if (auto *gainParam = m_processor.getGainParam())
+            m_sentGain = gainParam->get();
+        sendStateToJS();
+        return true;
+    }
+
     if (action == "setGain")
     {
         auto *gainParam = m_processor.getGainParam();
 
-        // The page is untrusted input. An out-of-range number would be silently
-        // clamped somewhere inside the parameter (hiding the page's bug), and a
-        // NaN would sail through every clamp because all comparisons against NaN
-        // are false — so reject it explicitly and bound the rest here.
-        const auto requested = params.getValue ("data", "1.0").getDoubleValue();
-        const auto safe = std::isfinite (requested) ? juce::jlimit (0.0, 1.0, requested) : 0.75;
-
         if (gainParam != nullptr)
-            *gainParam = static_cast<float> (safe);
+        {
+            // The page is untrusted input. A NaN would sail through jlimit —
+            // every comparison against NaN is false — and an out-of-range number
+            // would be silently clamped inside the parameter, hiding the page's
+            // bug; so bound it here and report the change as a gesture, which is
+            // what a host records and what an automation lane expects.
+            const auto raw = static_cast<float> (params.getValue ("data", "1.0").getDoubleValue());
+            const auto clamped = std::isfinite (raw) ? juce::jlimit (0.0f, 1.0f, raw) : 0.75f;
+            gainParam->beginChangeGesture();
+            gainParam->setValueNotifyingHost (gainParam->convertTo0to1 (clamped));
+            gainParam->endChangeGesture();
+        }
     }
 
     return true; // consumed — block the navigation

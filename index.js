@@ -37,17 +37,43 @@ const TEMPLATES_DIR = path.join(PKG_DIR, 'templates');
 const CONFIG_FILE = 'apc-mcp.json';
 
 // ─── Input validation patterns ─────────────────────────────────────
-// CMake target names: alphanumeric, underscores, hyphens, dots
-const SAFE_TARGET = /^[a-zA-Z0-9_.-]+$/;
-// CMake generators: alphanumeric, spaces, underscores, hyphens
-const SAFE_GENERATOR = /^[a-zA-Z0-9_ -]+$/;
+// CMake target names: start with alphanumeric or underscore, then alphanumeric, underscores, hyphens, dots
+const SAFE_TARGET = /^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/;
+// CMake generators: start with a letter, then alphanumeric, spaces, underscores, hyphens
+const SAFE_GENERATOR = /^[a-zA-Z][a-zA-Z0-9_ -]*$/;
 // CMake options flags: -DNAME=VALUE, space-separated (allows Windows `\` paths)
-const SAFE_OPTIONS = /^[a-zA-Z0-9_= /.\-\\+:@,]+$/;
+// `;` is allowed because it is the documented option separator (see the split
+// in audio_plugin_configure); it can never reach cmake — every token is checked
+// against SAFE_CMAKE_OPTION_TOKEN, which has no `;` in any of its branches.
+const SAFE_OPTIONS = /^[a-zA-Z0-9_= /.\-\\+:@,;]+$/;
+// Allowed individual CMake configure option token (-DVAR[:TYPE]=VAL, -UVAR, -W[no-]dev/deprecated)
+// A space is legal inside a -D value (`-DCMAKE_PREFIX_PATH=/Users/me/My Plugins`):
+// each token is one argv entry, so a space cannot split an argument and no shell
+// ever sees it. Quotes and `$`/backticks remain banned — a quote implies a parser
+// that would interpret it, and there is none.
+const SAFE_CMAKE_OPTION_TOKEN = /^(?:-D[A-Za-z_][A-Za-z0-9_]*(?::[A-Z]+)?=[a-zA-Z0-9_=/.\-\\+:@, ]*|-U[A-Za-z_][A-Za-z0-9_]*|-W(?:no-)?(?:dev|error(?:=dev)?|deprecated|error=deprecated))$/;
 // Plugin names for creation: start with a letter, then alphanumeric, underscores, hyphens
 const SAFE_PLUGIN_NAME = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 // Built-in CMake targets that a plugin target name must never shadow.
 const RESERVED_CMAKE_TARGETS = new Set([
   'all', 'clean', 'install', 'test', 'package', 'help', 'edit_cache', 'rebuild_cache',
+]);
+// C11 and C++20 reserved keywords/alternative tokens that cannot be used as
+// C typedefs (`typedef struct { ... } {{PLUGIN_ID}};`) or C++ identifiers.
+const RESERVED_CXX_KEYWORDS = new Set([
+  'alignas', 'alignof', 'and', 'and_eq', 'asm', 'auto', 'bitand', 'bitor',
+  'bool', 'break', 'case', 'catch', 'char', 'char8_t', 'char16_t', 'char32_t',
+  'class', 'compl', 'concept', 'const', 'consteval', 'constexpr', 'constinit',
+  'const_cast', 'continue', 'co_await', 'co_return', 'co_yield', 'decltype',
+  'default', 'delete', 'do', 'double', 'dynamic_cast', 'else', 'enum',
+  'explicit', 'export', 'extern', 'false', 'float', 'for', 'friend', 'goto',
+  'if', 'inline', 'int', 'long', 'mutable', 'namespace', 'new', 'noexcept',
+  'not', 'not_eq', 'nullptr', 'operator', 'or', 'or_eq', 'private',
+  'protected', 'public', 'register', 'reinterpret_cast', 'requires', 'restrict',
+  'return', 'short', 'signed', 'sizeof', 'static', 'static_assert',
+  'static_cast', 'struct', 'switch', 'template', 'this', 'thread_local',
+  'throw', 'true', 'try', 'typedef', 'typeid', 'typename', 'union', 'unsigned',
+  'using', 'virtual', 'void', 'volatile', 'wchar_t', 'while', 'xor', 'xor_eq',
 ]);
 // Free-form metadata (vendor, description): any single line of printable text,
 // including non-ASCII, because "ACME, Inc." and "Café Audio" are real vendor
@@ -86,6 +112,17 @@ function hasDotDot(p) {
   return String(p).split(/[\\/]/).includes('..');
 }
 
+// True when a path entry exists on disk — including a dangling symlink (which
+// fs.existsSync reports as false because stat() follows the broken target).
+function lstatExists(p) {
+  try {
+    fs.lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Authoritative path-boundary guard. Operates on fully resolved absolute paths,
 // AND resolves existing path ancestors with fs.realpathSync() so symlinks inside
 // the project pointing outside the project root cannot escape containment.
@@ -110,15 +147,20 @@ function assertWithinProject(projectRoot, candidate, label = 'path') {
       { cause: e });
   }
 
-  // Walk up to the deepest existing ancestor so non-existent leaf targets (e.g.
-  // a new plugin directory under a symlinked `plugins/`) are still checked.
+  // Walk up to the deepest existing ancestor (via lstat so dangling symlinks
+  // are not skipped) so non-existent leaf targets under a symlink are checked.
   let existing = resolved;
-  while (!fs.existsSync(existing)) {
+  while (!lstatExists(existing)) {
     const parent = path.dirname(existing);
     if (parent === existing) break;
     existing = parent;
   }
-  const realExisting = fs.realpathSync(existing);
+  let realExisting;
+  try {
+    realExisting = fs.realpathSync(existing);
+  } catch {
+    throw new Error(`${label} points through a broken or unreadable symlink — rejected: ${candidate}`);
+  }
   const relTail = path.relative(existing, resolved);
   const realCandidate = relTail ? path.join(realExisting, relTail) : realExisting;
   if (realCandidate !== realRoot && !realCandidate.startsWith(realRoot + path.sep)) {
@@ -148,7 +190,7 @@ const _prereqCache = new Map();
 function binaryOnPath(bin) {
   const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
   const exts = process.platform === 'win32'
-    ? [...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').map(e => e.toLowerCase()), '']
+    ? ['.exe', '.com']
     : [''];
   for (const dir of dirs) {
     for (const ext of exts) {
@@ -197,14 +239,14 @@ function checkOptionalTool(binName) {
 // Uses spawnSync with argument arrays — NO shell, NO injection.
 // User-controlled values are passed as separate argv entries.
 
-// Synchronous by construction (spawnSync). Named `captureSync` rather than
-// `spawn` so that grepping for asynchronous process launches — and for the
-// "never spawn a shell" invariant — does not drown in false positives.
-function captureSync(cmd, args, opts = {}) {
+// Synchronous by construction (spawnSync) despite the name; `spawn` is kept
+// because every call site reads like the async API it replaces, and the ESLint
+// rules in eslint.config.js are written against that name.
+function spawn(cmd, args, opts = {}) {
   return spawnSync(cmd, args, {
     timeout: (opts.timeout ?? 180) * 1000,
     encoding: 'utf-8',
-    maxBuffer: 2 * 1024 * 1024,
+    maxBuffer: 16 * 1024 * 1024,
     cwd: opts.cwd,
     stdio: 'pipe',
   });
@@ -215,7 +257,9 @@ function captureSync(cmd, args, opts = {}) {
 // timeout surfaced as the meaningless "exit code null" (AUDIT FUNC-05).
 function trySpawn(cmd, args, opts = {}) {
   const timeoutSec = opts.timeout ?? 180;
-  const result = captureSync(cmd, args, opts);
+  const result = spawn(cmd, args, opts);
+  const output = result.stdout || '';
+  const partialStderr = result.stderr ? `\n${result.stderr.trim()}` : '';
 
   if (result.error) {
     const code = result.error.code;
@@ -223,37 +267,38 @@ function trySpawn(cmd, args, opts = {}) {
       return { ok: false, output: '', stderr: installHint(cmd) };
     }
     if (code === 'ENOBUFS') {
-      // maxBuffer (2 MB) was exceeded. spawnSync reports this on `error`, but the
-      // process ran fine — reporting "could not be started" misdiagnoses the one
-      // case (a verbose build) where the output is the whole point.
+      // maxBuffer (16 MB) was exceeded. spawnSync reports this on `error`, but
+      // the process ran fine — reporting "could not be started" misdiagnoses the
+      // one case (a verbose build) where the output is the whole point.
       return {
         ok: false,
-        output: result.stdout || '',
-        stderr: `'${cmd}' produced more than ${opts.maxBufferMb ?? 2} MB of output and was stopped.` +
-                ` Narrow the target (e.g. build one target instead of all) and retry.`,
+        output,
+        stderr: `'${cmd}' exceeded the 16 MB output limit and was stopped.` +
+                ` Narrow the target (e.g. build one target instead of all) and retry.${partialStderr}`,
       };
     }
     if (code === 'ETIMEDOUT' || result.signal === 'SIGTERM' || result.signal === 'SIGKILL') {
       return {
         ok: false,
-        output: result.stdout || '',
+        output,
         stderr: `'${cmd}' timed out after ${timeoutSec}s and was killed.` +
-                ` Partial output may be above; consider raising the timeout or narrowing the target.`,
+                ` Partial output may be above; consider raising the timeout or narrowing the target.${partialStderr}`,
       };
     }
-    return { ok: false, output: '', stderr: `'${cmd}' could not be started: ${result.error.message}` };
+    return { ok: false, output, stderr: `'${cmd}' could not be started: ${result.error.message}${partialStderr}` };
   }
 
-  const output = result.stdout || '';
   const stderr = result.stderr || '';
   // Compilers commonly write warnings to stderr even on a successful build.
   if (result.status === 0) return { ok: true, status: 0, output, stderr };
+  const exitDesc = result.status !== null
+    ? `'${cmd}' exited with code ${result.status}` + (result.signal ? ` after signal ${result.signal}` : '')
+    : `'${cmd}' was terminated by signal ${result.signal ?? 'unknown'}`;
   return {
     ok: false,
     status: result.status,
     output,
-    stderr: stderr || `'${cmd}' exited with code ${result.status}` +
-      (result.signal ? ` after signal ${result.signal}` : ''),
+    stderr: stderr || exitDesc,
   };
 }
 
@@ -355,7 +400,7 @@ function findProjectRoot(startDir) {
 }
 
 function resolveProjectPath(provided) {
-  if (provided) return validatePath(provided);
+  if (provided !== undefined) return validatePath(provided);
   const detected = findProjectRoot(process.cwd());
   if (detected) return detected;
   return null;
@@ -754,11 +799,10 @@ function juceDescriptionEscape(text) {
     .replace(/;/g, '\\;');
 }
 
-// Falls back to 'Plugin' when the name has no alphanumerics at all, so a name
-// like "_" cannot produce an empty PLUGIN_ID and a class called just "Processor".
+// Strips hyphens and underscores from SAFE_PLUGIN_NAME to form a valid C/C++
+// identifier (`PLUGIN_ID` and `{{PLUGIN_ID}}Processor`).
 function slugName(name) {
-  const alnum = String(name).replace(/[^a-zA-Z0-9]/g, '');
-  return alnum.replace(/^(\d)/, '_$1') || 'Plugin';
+  return String(name).replace(/[^a-zA-Z0-9]/g, '') || 'Plugin';
 }
 function displayName(name) {
   return name.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).trim() || name;
@@ -771,12 +815,30 @@ function displayName(name) {
 //   plugin code:  4 chars, exactly one upper-case (the first), the rest lower —
 //                 GarageBand requires that exact shape.
 function fourCharCode(str, { exactlyOneUpper = false } = {}) {
-  const alnum = String(str).replace(/[^a-zA-Z0-9]/g, '');
-  let code = (alnum || 'apcm').slice(0, 4);
-  if (code.length < 4) code = code.padEnd(4, exactlyOneUpper ? 'x' : 'X');
-  return exactlyOneUpper
-    ? code[0].toUpperCase() + code.slice(1).toLowerCase()
-    : (/[A-Z]/.test(code) ? code : code[0].toUpperCase() + code.slice(1));
+  const alnum = String(str).replace(/[^a-zA-Z0-9]/g, '') || 'apcm';
+  const alpha = 'abcdefghijklmnopqrstuvwxyz';
+  let code;
+  if (alnum.length <= 4) {
+    code = alnum.padEnd(4, exactlyOneUpper ? 'x' : 'X');
+  } else {
+    let hash = 2166136261;
+    for (let i = 0; i < alnum.length; i++) {
+      hash = Math.imul(hash ^ alnum.charCodeAt(i), 16777619) >>> 0;
+    }
+    const c2 = alpha[hash % 26];
+    const c3 = alpha[Math.floor(hash / 26) % 26];
+    code = alnum.slice(0, 2) + c2 + c3;
+  }
+  if (exactlyOneUpper) {
+    const first = /[a-zA-Z]/.test(code[0]) ? code[0].toUpperCase() : 'P';
+    return first + code.slice(1).toLowerCase();
+  }
+  if (/[A-Z]/.test(code)) return code;
+  const letterIdx = code.search(/[a-z]/);
+  if (letterIdx >= 0) {
+    return code.slice(0, letterIdx) + code[letterIdx].toUpperCase() + code.slice(letterIdx + 1);
+  }
+  return 'M' + code.slice(1);
 }
 
 // Formats juce_add_plugin() actually accepts (verified against JUCE's
@@ -967,32 +1029,37 @@ registerTool(
     requireTool('cmake');
     const cfg = loadProjectConfig(proj);
     const config = params.config ?? cfg.config ?? 'Debug';
-    const generator = params.generator || cfg.generator;
     const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
+    const cacheExists = fs.existsSync(path.join(buildDir, 'CMakeCache.txt'));
+    const generator = params.generator || (!cacheExists ? cfg.generator : null);
     fs.mkdirSync(buildDir, { recursive: true });
 
-    // Same rule as audio_plugin_build: `-G` only when creating a fresh cache.
-    // Handing a default generator to an existing CMakeCache.txt built with a
-    // different one makes CMake abort with a generator-mismatch error, which
-    // looked like a project problem rather than a tool one.
-    const cacheExists = fs.existsSync(path.join(buildDir, 'CMakeCache.txt'));
     const args = [
       '-B', buildDir,
-      ...(!cacheExists && generator ? ['-G', generator] : []),
+      ...(generator ? ['-G', generator] : []),
       `-DCMAKE_BUILD_TYPE=${config}`,
     ];
     if (params.options) {
       // Each token becomes its own argv entry — there is no shell. `;` is the
       // documented separator because a CMake value may legitimately contain a
-      // space (`-DCMAKE_PREFIX_PATH=/Users/me/My Plugins`) and SAFE_OPTIONS has
-      // no quote character to protect it. Whitespace splitting remains for
-      // backwards compatibility with existing callers and docs.
+      // space (`-DCMAKE_PREFIX_PATH=/Users/me/My Plugins`) and there is no quote
+      // character in the allowed charset to protect it. Whitespace splitting
+      // remains for backwards compatibility with existing callers and docs.
+      // Every token is still validated: `;` is a separator, never a payload.
       const tokens = params.options.includes(';')
         ? params.options.split(';')
         : params.options.split(/\s+/);
-      for (const flag of tokens) {
-        const trimmed = flag.trim();
-        if (trimmed) args.push(trimmed);
+      for (const raw of tokens) {
+        const flag = raw.trim();
+        if (!flag) continue;
+        if (hasDotDot(flag) || !SAFE_CMAKE_OPTION_TOKEN.test(flag)) {
+          return {
+            content: [{ type: 'text', text:
+              `Invalid CMake option "${flag}": only -D<VAR>[:<TYPE>]=<VALUE>, -U<GLOB>, or -W[no-]dev/deprecated flags without ".." are allowed.` }],
+            isError: true,
+          };
+        }
+        args.push(flag);
       }
     }
     const r = trySpawn('cmake', args, { cwd: proj, timeout: 120 });
@@ -1469,6 +1536,13 @@ registerTool(
     }
 
     const id = slugName(params.name);
+    if (RESERVED_CXX_KEYWORDS.has(params.name) || RESERVED_CXX_KEYWORDS.has(id)) {
+      return {
+        content: [{ type: 'text', text:
+          `## audio_plugin_create failed\n"${params.name}" collides with a C/C++ reserved keyword (${id}). Choose a distinct plugin name.` }],
+        isError: true,
+      };
+    }
 
     // Validate the JUCE format list before writing anything to disk. `formats`
     // reaches juce_add_plugin(FORMATS ...) verbatim, and an unknown value is a
@@ -1511,6 +1585,7 @@ registerTool(
       PLUGIN_DESCRIPTION_CXX: escapeBackslashQuote(params.description),
       PLUGIN_DESCRIPTION_CMAKE: juceDescriptionEscape(params.description),
       PLUGIN_FORMATS: formats,
+      PLUGINS_DIR: cfg.pluginsDir.split(path.sep).join('/'),
       // One placeholder per output grammar. There is deliberately no bare
       // {{VENDOR}}: a template that referenced it would leave a literal
       // placeholder behind, which the scaffold smoke test treats as a failure.
@@ -1541,19 +1616,21 @@ registerTool(
     }
 
     let cmakeRegistration;
+    let createdPluginDir = false;
     try {
       const rootCmakePath = assertWithinProject(proj, 'CMakeLists.txt', 'Root CMakeLists.txt');
-      if (fs.existsSync(rootCmakePath) && fs.lstatSync(rootCmakePath).isSymbolicLink()) {
+      if (lstatExists(rootCmakePath) && fs.lstatSync(rootCmakePath).isSymbolicLink()) {
         throw new Error('Root CMakeLists.txt is a symlink — refusing to modify it');
       }
 
+      createdPluginDir = true;
       copyDir(templateDir, pluginDir);
 
       const relPluginDir = path.relative(proj, pluginDir).split(path.sep).join('/');
       const subArg = relPluginDir.includes(' ') ? `"${relPluginDir}"` : relPluginDir;
       const subLine = `add_subdirectory(${subArg})`;
 
-      if (!fs.existsSync(rootCmakePath)) {
+      if (!lstatExists(rootCmakePath)) {
         fs.writeFileSync(
           rootCmakePath,
           `cmake_minimum_required(VERSION 3.22)\nproject(AudioPlugins LANGUAGES C CXX)\n\n${subLine}\n`,
@@ -1577,6 +1654,9 @@ registerTool(
         }
       }
     } catch (e) {
+      if (createdPluginDir) {
+        try { fs.rmSync(pluginDir, { recursive: true, force: true }); } catch { /* ignore cleanup error */ }
+      }
       return { content: [{ type: 'text', text: `Failed to create plugin: ${e.message}` }], isError: true };
     }
 
