@@ -890,6 +890,36 @@ describe('native LV2 template', () => {
     }
   });
 
+  it('passes LV2URI explicitly instead of deriving it from a company website', () => {
+    // JUCE's own comment in juce_audio_plugin_client_LV2.cpp: "it may be because
+    // you haven't explicitly set an LV2 URI". With FORMATS including LV2 and no
+    // LV2URI, JUCEUtils.cmake falls back to
+    //   LV2URI = "<COMPANY_WEBSITE>/plugins/<Name>"
+    // so dropping the invented COMPANY_WEBSITE silently produced
+    // "/plugins/<Name>" and the LV2 target failed to compile. The URI is also the
+    // plugin's permanent identity in saved host sessions, which is not something
+    // to inherit from a guessed domain.
+    for (const s of jucePluginOnly()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      const formats = /FORMATS\s+([^\n)]+)/.exec(cm)?.[1] ?? '';
+      const uri = /LV2URI\s+"([^"]+)"/.exec(cm)?.[1];
+      // One CMakeLists serves every format combination, so a VST3-only scaffold
+      // still carries the keyword; JUCE just never reads it. Only the LV2 case
+      // can fail to build.
+      if (/\bLV2\b/.test(formats)) {
+        assert.ok(uri, `${s.name}: FORMATS includes LV2 but no LV2URI is passed — JUCE then `
+          + `derives it from COMPANY_WEBSITE, which this template does not set`);
+      }
+      if (!uri) continue;
+      assert.match(uri, /^(urn:[a-z0-9]{2,}:|https?:\/\/)/,
+        `${s.name}: LV2URI "${uri}" needs a urn: or http(s) scheme — JUCE static_asserts on it`);
+      // PLUGIN_ID keeps the name's case (JuceGen, mydelay), so compare folded.
+      const id = s.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      assert.ok(uri.toLowerCase().endsWith(`:${id}`),
+        `${s.name}: LV2URI "${uri}" does not identify this plugin (expected it to end in ":${id}")`);
+    }
+  });
+
   it('keeps the LV2 install destination relative so --prefix still applies', () => {
     // An absolute DESTINATION is expanded at configure time and frozen into
     // cmake_install.cmake, so `cmake --install build --prefix X` installs into

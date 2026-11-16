@@ -721,6 +721,14 @@ Each one is now guarded by a probe, a test, or a real toolchain run.
   replaced by a comment telling the user to state their own. `JUCE_MODAL_LOOPS_PERMITTED`
   is no longer defined for plugin targets, so a nested event loop cannot be compiled
   into a host callback (the standalone app keeps it deliberately).
+- **The JUCE templates now pass an explicit `LV2URI`.** JUCE derives it as
+  `<COMPANY_WEBSITE>/plugins/<Name>` when it is not given, which meant the LV2 identity
+  of every scaffolded JUCE plugin was `https://<vendor>.com/plugins/<Name>` built from
+  an invented domain — and the plugin's LV2 URI is permanent once a host saves a
+  session. It is now `urn:<vendor>:<name>`, derived once in `index.js` and shared with
+  the native LV2 template. Without this the LV2 target stopped compiling outright
+  (`static assertion failed: Your configured LV2 URI must include a leading scheme
+  specifier`) as soon as the fabricated `COMPANY_WEBSITE` was removed.
 - **The LV2 NULL-port guard actually silences the output (S-14)** instead of
   returning early and leaving the host's previous block in the buffer.
 - **Two templates stopped teaching the wrong buffer pattern.** The JUCE

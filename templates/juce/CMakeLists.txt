@@ -40,6 +40,15 @@ juce_add_plugin({{PLUGIN_NAME}}
     COMPANY_NAME "{{VENDOR_CMAKE}}"
     COMPANY_COPYRIGHT "{{VENDOR_CMAKE}} 2026"
     BUNDLE_ID "com.{{BUNDLE_VENDOR}}.{{PLUGIN_ID}}"
+    # LV2URI is mandatory in practice, not optional: with no LV2URI, JUCE
+    # derives it as "<COMPANY_WEBSITE>/plugins/<Name>". This template no
+    # longer ships a company website (it was a guess), and an empty website
+    # yields "/plugins/<Name>" — no scheme, which fails JUCE's own
+    # static_assert in juce_audio_plugin_client_LV2.cpp. More importantly,
+    # the LV2 URI is the plugin's permanent identity: deriving it from a
+    # domain the user may not own bakes that domain into every saved host
+    # session. Same urn: form the native LV2 template uses.
+    LV2URI "{{PLUGIN_URI}}"
     PLUGIN_MANUFACTURER_CODE {{MANUFACTURER_CODE}}
     PLUGIN_CODE {{PLUGIN_CODE}}
     IS_SYNTH FALSE

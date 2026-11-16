@@ -191,6 +191,7 @@ line names the command that was run in this checkout.
 | **S-10** | Fixed | `options` splits on `;` first, so `-DNAME=value with space` survives (bare whitespace splitting is kept for the common case) | documented in `docs/tools.md` |
 | **S-11** | Fixed | `JUCE_DISPLAY_SCALE_ENABLED` deleted from all three JUCE templates (it has 0 references in JUCE 9.0.5); `JUCE_MODAL_LOOPS_PERMITTED` removed from the two **plugin** templates so a nested event loop cannot be compiled into a host callback, kept in `standalone` with a comment saying why an app may have one | — |
 | **S-12** | Fixed | `COMPANY_WEBSITE` / `COMPANY_EMAIL` removed from all three `juce_add_*` calls — the vendor slug is a guess, and both fields ship verbatim in Windows DLL properties and VST3 metadata | — |
+| **S-22** (found by CI while fixing S-12) | Fixed | Removing `COMPANY_WEBSITE` did not just blank a metadata field: `_juce_initialise_target()` derives `LV2URI = "${company_website}/plugins/${plugin_name}"`, so the plugin's **permanent LV2 identity** was `https://<guessed-domain>/plugins/<Name>` — and with no website it became `/plugins/<Name>`, which fails JUCE's `static_assert(startsWithValidScheme(...))` and broke the LV2 target in both real-JUCE jobs. Both JUCE plugin templates now pass `LV2URI "{{PLUGIN_URI}}"` (the same `urn:<ns>:<id>` the native LV2 template uses, from one derivation in `index.js`) | `tests/templates.test.js` → "passes LV2URI explicitly"; real JUCE build in CI |
 | **S-13** | Fixed | `lv2:AmplifierPlugin` (lv2core: "primarily designed to change the volume of its input"); the fabricated `doap:license` triple is gone, replaced by a comment telling the user to add their own; the four audio ports carry `lv2:designation lv2:left` / `lv2:right` | `tests/templates.test.js` asserts all three; Turtle parsed with rdflib against a real scaffold (`AmplifierPlugin`, no `doap.license`, designations on in_l/in_r/out_l/out_r, 46 triples) |
 | **S-14** | Fixed | the NULL-port guard now `memset`s the connected outputs, so "silence" is what the host actually gets instead of last block's samples | strict `gcc -Werror` compile of the generated `plugin.c` |
 | **S-15** | Fixed | the self-copy pass-through loop is deleted; the comment says why a pass-through needs no code, leaving only the mandatory clear loop | `tests/templates.test.js` asserts `getReadPointer(` no longer appears in a JUCE `processBlock` |
@@ -206,6 +207,11 @@ Still open from §5 (deliberately not done here — they are new CI machinery, n
 inside the CLAP/LV2 template CMakeLists (a compiler-flag change in generated output deserves a
 real-toolchain matrix first), `clang-tidy`, `cmake-lint`, `shellcheck`/`actionlint`,
 `eslint-plugin-n`, and `tsc --noEmit --checkJs`.
+
+Two things here were only findable by running the real thing: the `.cmd`/`timeout` defects in
+`ship.mjs` (no test executed the Windows path) and S-22, which the JUCE stub cannot see because
+it is a CMake-level derivation rather than an API. The first real-JUCE CI run on this branch
+failed both JUCE jobs on it; that is the mechanism the review's §5 asked for, applied to itself.
 
 Verified after the fixes: `npm run lint` clean, `npm test` green, strict
 `gcc -std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wcast-qual -Wcast-align -Wswitch-enum -Wstrict-prototypes -Wmissing-prototypes -Wconversion -Werror`
