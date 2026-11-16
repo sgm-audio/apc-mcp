@@ -2,6 +2,7 @@
 #include "WebViewEditor.h"
 #include <BinaryData.h>
 
+#include <cmath>
 #include <cstddef>
 #include <vector>
 
@@ -147,8 +148,15 @@ bool WebViewEditor::handleJSAction (const juce::String &url)
     {
         auto *gainParam = m_processor.getGainParam();
 
+        // The page is untrusted input. An out-of-range number would be silently
+        // clamped somewhere inside the parameter (hiding the page's bug), and a
+        // NaN would sail through every clamp because all comparisons against NaN
+        // are false — so reject it explicitly and bound the rest here.
+        const auto requested = params.getValue ("data", "1.0").getDoubleValue();
+        const auto safe = std::isfinite (requested) ? juce::jlimit (0.0, 1.0, requested) : 0.75;
+
         if (gainParam != nullptr)
-            *gainParam = static_cast<float> (params.getValue ("data", "1.0").getDoubleValue());
+            *gainParam = static_cast<float> (safe);
     }
 
     return true; // consumed — block the navigation

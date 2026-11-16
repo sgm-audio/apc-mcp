@@ -80,12 +80,19 @@ add_custom_command(TARGET {{PLUGIN_NAME}} POST_BUILD
     VERBATIM)
 
 # ── Install ──────────────────────────────────────────────────────────
-# LV2 hosts search a fixed set of directories; ~/.lv2 and
-# ${CMAKE_INSTALL_PREFIX}/lib/lv2 are the usual targets. Override with
-# -DLV2_INSTALL_DIR=/usr/local/lib/lv2 (or /Library/Audio/Plug-Ins/LV2 on
-# macOS) if your setup differs.
+# LV2 hosts search a fixed set of directories; ${CMAKE_INSTALL_PREFIX}/lib/lv2
+# (i.e. /usr/local/lib/lv2) and ~/.lv2 are the usual targets.
+#
+# DESTINATION must stay RELATIVE. An absolute DESTINATION is baked into
+# cmake_install.cmake at configure time, so `cmake --install build --prefix X`
+# silently installs into the configure-time path instead of X — this template
+# used to expand ${CMAKE_INSTALL_PREFIX} here and did exactly that. With
+# ${CMAKE_INSTALL_LIBDIR}/lv2 (lib on Debian, lib64 on Fedora) both the prefix
+# option and -DCMAKE_INSTALL_PREFIX work. Override LV2_INSTALL_DIR only if you
+# really want to defeat that, e.g. -DLV2_INSTALL_DIR=~/.lv2.
 if(NOT DEFINED LV2_INSTALL_DIR)
-    set(LV2_INSTALL_DIR "${CMAKE_INSTALL_PREFIX}/lib/lv2")
+    include(GNUInstallDirs)
+    set(LV2_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/lv2")
 endif()
 
 install(DIRECTORY "$<TARGET_FILE_DIR:{{PLUGIN_NAME}}>"

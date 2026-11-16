@@ -82,6 +82,10 @@
 namespace juce
 {
     template <typename T> T jmax (T a, T b) { return a > b ? a : b; }
+    template <typename T> T jlimit (T lower, T upper, T value)
+    {
+        return value < lower ? lower : (value > upper ? upper : value);
+    }
     template <typename... Args> void ignoreUnused (Args&&...) {}
 
     class String;
@@ -242,6 +246,9 @@ namespace juce
     {
     public:
         NormalisableRange() = default;
+        // JUCE has both: a 2-argument range is continuous (no interval), which is
+        // what a gain wants; the 3-argument form quantises to the interval.
+        NormalisableRange (T, T) {}
         NormalisableRange (T, T, T) {}
     };
 
@@ -266,8 +273,15 @@ namespace juce
         void clear() {}
         const T *getReadPointer (int) const { return nullptr; }
         T *getWritePointer (int) { return nullptr; }
+        // Non-const in JUCE only because it hands out writable pointers; the
+        // array itself is owned by the buffer and is never reallocated here.
+        T *const *getArrayOfWritePointers() { return channelPointers; }
         T getSample (int, int) const { return {}; }
         void setSample (int destChannel, int destSample, T newValue) { (void) destChannel; (void) destSample; (void) newValue; }
+        void clearActiveBufferRegion() {}
+
+    private:
+        T *channelPointers[2] {};
     };
 
     class MidiBuffer {};
@@ -290,6 +304,27 @@ namespace juce
         static constexpr FloatType pi    = static_cast<FloatType> (3.141592653589793238L);
         static constexpr FloatType twoPi = static_cast<FloatType> (2 * 3.141592653589793238L);
         static constexpr FloatType euler = static_cast<FloatType> (2.718281828459045235L);
+    };
+
+    // juce_audio_basics/utilities/juce_SmoothedValue.h
+    namespace ValueSmoothingTypes { struct Linear {}; struct Multiplicative {}; }
+
+    template <typename FloatType, typename SmoothingType = ValueSmoothingTypes::Linear>
+    class SmoothedValue
+    {
+    public:
+        void reset (double sampleRate, double rampLengthInSeconds)
+        {
+            (void) sampleRate; (void) rampLengthInSeconds;
+        }
+        void setTargetValue (FloatType newValue) { target = newValue; }
+        void setCurrentAndTargetValue (FloatType newValue) { current = target = newValue; }
+        FloatType getCurrentValue() const { return current; }
+        FloatType getTargetValue() const { return target; }
+        FloatType getNextValue() { current = target; return current; }
+
+    private:
+        FloatType current {}, target {};
     };
 
     class Colour

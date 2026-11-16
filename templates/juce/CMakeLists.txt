@@ -32,9 +32,12 @@ juce_add_plugin({{PLUGIN_NAME}}
     FORMATS {{PLUGIN_FORMATS}}
     PRODUCT_NAME "{{PLUGIN_DISPLAY_NAME}}"
     DESCRIPTION "{{PLUGIN_DESCRIPTION_CMAKE}}"
+    # No COMPANY_WEBSITE / COMPANY_EMAIL: the vendor slug is lower-cased from
+    # a display name, so https://acme.com and dev@acme.com are guesses about
+    # a domain nobody has checked. Both fields are displayed verbatim in the
+    # Windows DLL properties and the VST3 metadata, so a wrong guess ships.
+    # Add them back once you own a real address.
     COMPANY_NAME "{{VENDOR_CMAKE}}"
-    COMPANY_WEBSITE "https://{{VENDOR_CMAKE}}.com"
-    COMPANY_EMAIL "dev@{{VENDOR_CMAKE}}.com"
     COMPANY_COPYRIGHT "{{VENDOR_CMAKE}} 2026"
     BUNDLE_ID "com.{{BUNDLE_VENDOR}}.{{PLUGIN_ID}}"
     PLUGIN_MANUFACTURER_CODE {{MANUFACTURER_CODE}}
@@ -64,8 +67,14 @@ target_compile_definitions({{PLUGIN_NAME}} PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
-    JUCE_MODAL_LOOPS_PERMITTED=1
-    JUCE_DISPLAY_SCALE_ENABLED=1
+    # NOT setting JUCE_MODAL_LOOPS_PERMITTED (JUCE default: 0) is the point:
+    # the synchronous dialog helpers then refuse to compile, which is the
+    # correct outcome for plugin code — a nested event loop started from a
+    # host callback deadlocks the host. Use the ...Async variants.
+    #
+    # JUCE_DISPLAY_SCALE_ENABLED was deleted rather than kept: it stopped
+    # existing in JUCE (0 references in the current tree), so defining it
+    # only implied a behaviour that no longer exists.
 )
 
 # Without this the target has no JUCE modules attached and every juce:: symbol

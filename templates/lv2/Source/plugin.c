@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 // The plugin's permanent identity. It MUST be a valid URI (RFC 3986), it MUST
 // match the subject of plugin.ttl and manifest.ttl exactly, and it must never
@@ -96,12 +97,26 @@ static void run(LV2_Handle instance, uint32_t sample_count)
 {
     const {{PLUGIN_ID}} *self = (const {{PLUGIN_ID}} *) instance;
 
+    if (self == NULL) {
+        return;
+    }
+
     // A conforming host connects every declared port before the first run(), so
-    // these are non-NULL in practice. The guard is cheap and turns a malformed
-    // host into silence instead of a crash — and a crash inside a plugin takes
-    // the whole DAW process down with it.
-    if (self == NULL || self->gain == NULL || self->in_l == NULL
-        || self->in_r == NULL || self->out_l == NULL || self->out_r == NULL) {
+    // these are non-NULL in practice. The guard turns a malformed host into
+    // silence instead of a crash — a crash inside a plugin takes the whole DAW
+    // process down with it.
+    //
+    // "Silence" has to be written: an early return leaves whatever the host put
+    // in the output buffer (usually the previous block) and the user hears that
+    // instead of nothing, so the connected outputs are zeroed explicitly.
+    if (self->gain == NULL || self->in_l == NULL || self->in_r == NULL) {
+        const size_t bytes = (size_t) sample_count * sizeof(float);
+        if (self->out_l != NULL) {
+            memset(self->out_l, 0, bytes);
+        }
+        if (self->out_r != NULL) {
+            memset(self->out_r, 0, bytes);
+        }
         return;
     }
 
