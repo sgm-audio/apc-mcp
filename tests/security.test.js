@@ -169,7 +169,7 @@ describe('Layer 1 · zod schema rejects shell metacharacters', () => {
     ['audio_plugin_test',      { testName: 'x\x00y' }],
     ['audio_plugin_create',    { name: '../evil', projectPath: PROJ }],
     ['audio_plugin_create',    { name: 'a;b', projectPath: PROJ }],
-    ['audio_plugin_create',    { vendor: 'v`id`', projectPath: PROJ }],
+    ['audio_plugin_create',    { name: 'BadVendor', vendor: 'v\x00id', projectPath: PROJ }],
   ];
   for (const [tool, extra] of cases) {
     it(`${tool} rejects ${JSON.stringify(extra)}`, async () => {
@@ -467,11 +467,16 @@ describe('symlink containment on status.json and root CMakeLists.txt + Windows p
       assert.equal(fs.readFileSync(cmakeLogPath, 'utf8'), '', `spawned for bad generator "${badGen}"`);
     }
 
-    for (const badVendor of ['-vendor', '.vendor', '..']) {
+    // Vendor metadata is not a command-line option: leading punctuation is
+    // permitted and escaped in generated sources, but controls are forbidden.
+    for (const badVendor of ['bad\nname', 'bad\x00name']) {
       const r = await call('audio_plugin_create',
         { projectPath: PROJ, name: 'ValidPlug', type: 'clap', vendor: badVendor }, { env: { PATH: FAKE_PATH } });
-      assert.equal(r.isError, true, `vendor "${badVendor}" should be rejected`);
+      assert.equal(r.isError, true, `vendor ${JSON.stringify(badVendor)} should be rejected`);
     }
+    const rVendor = await call('audio_plugin_create',
+      { projectPath: PROJ, name: 'PunctuationVendor', type: 'clap', vendor: '-vendor' }, { env: { PATH: FAKE_PATH } });
+    assert.equal(rVendor.isError, false, `printable vendor metadata should be accepted: ${rVendor.text}`);
 
     const rEmptyPath = await call('audio_plugin_plugins',
       { projectPath: '' }, { env: { PATH: FAKE_PATH } });

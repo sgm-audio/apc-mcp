@@ -92,7 +92,7 @@ Artefacts land under `build/plugins/<Name>/<Name>_artefacts/<Config>/`:
 
 Builds never copy into your system plug-in folders (`COPY_PLUGIN_AFTER_BUILD FALSE`); copy or symlink the artefact into your DAW's scan path when you are ready.
 
-`audio_plugin_validate` needs `clap-validator` for CLAP and `pluginval` for VST3. LV2, AudioUnit and Standalone artefacts are found but reported as **skipped**, which makes the validation result incomplete by design. See [Tool reference](tools.md#audio_plugin_validate).
+`audio_plugin_validate` needs `clap-validator` for CLAP and `pluginval` for VST3. LV2, AudioUnit and Standalone artefacts are found but reported as **`NOT CHECKABLE`**: no validator exists for them, so they are not silently counted as passing, and they do not fail the run. See [Tool reference](tools.md#audio_plugin_validate).
 
 ## Where to go next
 

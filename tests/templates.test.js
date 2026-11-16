@@ -638,10 +638,11 @@ describe('standalone application template (juce_add_gui_app)', () => {
     }
   });
 
-  it('does not call start() or stop(), which JUCE 9 removed from AudioAppComponent', () => {
-    // Older JUCE (and most tutorials still circulating) start the device with
-    // start() and stop it with stop(). Neither exists in JUCE 9: setAudioChannels()
-    // starts the callback and shutdownAudio() ends it.
+  it('never calls start() or stop() — AudioAppComponent only has setAudioChannels/shutdownAudio', () => {
+    // AudioAppComponent has never had start()/stop() in any JUCE release
+    // (checked 6.1.6, 7.0.12, 8.0.15 and 9.0.5). setAudioChannels() starts the
+    // callback and shutdownAudio() ends it. This guards against a well-meaning
+    // edit that adds a tutorial start()/stop() pair, which would not compile.
     for (const s of appOnly()) {
       for (const [rel, content] of s.files) {
         if (!/\.(cpp|h)$/.test(rel)) continue;
@@ -962,6 +963,71 @@ describe('native LV2 template', () => {
       `CMake+C++ JucePlugin_Desc DESCRIPTION was not escaped: ${cmLine}`);
     assert.ok(cmLine.includes('{{VENDOR}}') && !cmLine.includes('and acme'),
       `replaceTemplateVars cross-expanded {{VENDOR}} inside CMake DESCRIPTION: ${cmLine}`);
+  });
+
+  it('accepts non-ASCII metadata and escapes vendor text per output grammar', async () => {
+    // Two things are under test. (1) Non-ASCII metadata used to be rejected by an
+    // ASCII-only regex, so "ACME, Inc." was fine but "Café Audio" was not — a
+    // validation rule with no failure mode behind it. (2) The vendor name appears
+    // in four output grammars, and a quote or an ampersand ends the construct in
+    // three of them, so each gets its own escape.
+    const vendor = 'ACME, Inc. & "Sons"';
+    const description = 'Café <delay> & "warm"';
+    const cmQuote = String.raw`\\\"`;   // CMake source: \\" -> \" -> " in the C++ macro
+    const cxxQuote = String.raw`\"`;    // C++ / Turtle source: \" -> "
+    const read = (name, rel) => fs.readFileSync(path.join(PLUGINS, name, rel), 'utf8');
+    const lineWith = (text, needle) => text.split('\n').find(l => l.includes(needle)) ?? '';
+
+    const rJuce = await call('audio_plugin_create', {
+      projectPath: PROJ, name: 'MetaJuce', type: 'juce', ui: 'webview', vendor, description,
+    });
+    assert.equal(rJuce.isError, false, rJuce.text);
+
+    const cm = read('MetaJuce', 'CMakeLists.txt');
+    const nameLine = lineWith(cm, 'COMPANY_NAME');
+    assert.ok(nameLine.includes(`"ACME, Inc. & ${cmQuote}Sons${cmQuote}"`),
+      `CMake COMPANY_NAME must escape the quote for CMake *and* for the C++ macro JUCE derives from it: ${nameLine}`);
+    const descLine = lineWith(cm, 'DESCRIPTION ');
+    assert.ok(descLine.includes('Café'), `non-ASCII description was mangled or rejected: ${descLine}`);
+    assert.ok(descLine.includes(`${cmQuote}warm`), `description quote not escaped for CMake: ${descLine}`);
+
+    const html = read('MetaJuce', 'Source/UI/index.html');
+    const vendorSpan = lineWith(html, 'class="vendor"');
+    assert.ok(vendorSpan.includes('ACME, Inc. &amp; "Sons"'),
+      `an HTML text node must escape & but leave quotes alone: ${vendorSpan}`);
+    assert.ok(!vendorSpan.includes('& Sons'), `raw & left in HTML: ${vendorSpan}`);
+
+    const edLine = lineWith(read('MetaJuce', 'Source/WebViewEditor.cpp'), '"vendor"');
+    assert.ok(edLine.includes(`"ACME, Inc. & ${cxxQuote}Sons${cxxQuote}"`),
+      `C++ string literal must have exactly one backslash per quote: ${edLine}`);
+
+    // The other two grammars need their own scaffold: CLAP holds a C++ literal,
+    // LV2 a Turtle one. Same input, different encodings, both must parse.
+    const rClap = await call('audio_plugin_create', {
+      projectPath: PROJ, name: 'MetaClap', type: 'clap', vendor, description,
+    });
+    assert.equal(rClap.isError, false, rClap.text);
+    const clapVendor = lineWith(read('MetaClap', 'Source/PluginProcessor.cpp'), '.vendor');
+    assert.ok(clapVendor.includes(`"ACME, Inc. & ${cxxQuote}Sons${cxxQuote}"`),
+      `CLAP descriptor vendor literal was not escaped: ${clapVendor}`);
+
+    const rLv2 = await call('audio_plugin_create', {
+      projectPath: PROJ, name: 'MetaLv2', type: 'lv2', vendor, description,
+    });
+    assert.equal(rLv2.isError, false, rLv2.text);
+    const ttl = read('MetaLv2', 'Source/plugin.ttl');
+    const ttlVendor = lineWith(ttl, 'foaf:name');
+    assert.ok(ttlVendor.includes(`"ACME, Inc. & ${cxxQuote}Sons${cxxQuote}"`),
+      `Turtle foaf:name literal was not escaped: ${ttlVendor}`);
+
+    // Control characters stay rejected: a newline ends every one of those
+    // constructs, and no amount of escaping fixes that.
+    const bad = await call('audio_plugin_create', {
+      projectPath: PROJ, name: 'MetaBad', type: 'clap', description: 'two\nlines',
+    });
+    assert.equal(bad.isError, true, 'a multi-line description must be rejected');
+    assert.match(bad.text, /single line without control characters/,
+      `the rejection must explain itself rather than leaking a raw regex: ${bad.text}`);
   });
 
   it('guards null instance pointers in CLAP and LV2 templates and sanitizes bundle/URN vendor IDs', async () => {

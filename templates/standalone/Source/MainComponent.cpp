@@ -10,8 +10,8 @@
     // and add MICROPHONE_PERMISSION_ENABLED / MICROPHONE_PERMISSION_TEXT to
     // juce_add_gui_app() in CMakeLists.txt or macOS will deny the input.
     //
-    // This call both initialises the audio device and starts the callback —
-    // JUCE 9 has no separate start().
+    // This call both initialises the audio device and starts the callback;
+    // AudioAppComponent offers no separate start().
     setAudioChannels(0, 2);
 
     levelLabel.setText("Level", juce::dontSendNotification);
@@ -37,7 +37,7 @@
 {
     // Required. AudioAppComponent's destructor jassert()s if the audio source is
     // still attached, so this is not optional cleanup — see the note in the
-    // header. The JUCE 9 counterpart to the old stop().
+    // header. This is the counterpart to setAudioChannels().
     shutdownAudio();
 }
 

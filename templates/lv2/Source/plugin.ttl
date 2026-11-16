@@ -26,7 +26,7 @@
   doap:shortdesc "{{PLUGIN_DESCRIPTION_TTL}}" ;
   doap:license <https://opensource.org/licenses/MIT> ;
   doap:maintainer [
-    foaf:name "{{VENDOR}}" ;
+    foaf:name "{{VENDOR_TTL}}" ;
   ] ;
 
   # Hosts use these to decide whether a saved project's preset is still

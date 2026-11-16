@@ -20,13 +20,25 @@ Requires Node.js 22+. The server itself is `index.js` (ESM, single file) with tw
 | `npm run lint` | ESLint over the repo + `node --check index.js` |
 | `npm run smoke` | Scaffolds every `type` × `ui` case into a temp project and verifies structure |
 | `npm run smoke:configure` | Same, plus real CMake configure (needs CMake and SDK paths) |
+| `npm run smoke:validate -- --type=clap` | Scaffolds, builds and validates one plugin with the **real** `clap-validator` (needs `APC_CLAP_DIR` + the binary on `PATH`). `--type=juce` does the same with `pluginval` and `APC_JUCE_DIR`. Fails when a dependency is missing — it never skips |
 | `npm run audit` | `npm audit` |
 | `npm run licenses` | Lockfile license gate against `license_decisions.yml` |
 | `npm run docs:check` | Every relative doc link, cross-file anchor, and the [docs index](README.md) coverage |
 | `npm run check` | Full gate: lint + test + smoke + audit + licenses + docs check |
 | `npm run ship` | Guarded release (see below) |
 
-Run `npm run check` before committing; `scripts/ship.mjs` runs the same chain before tagging. CI runs lint, tests, smoke, audit, license checks, documentation links, real C/C++ compile checks and CMake build jobs for CLAP, LV2 and JUCE against upstream SDKs.
+Run `npm run check` before committing; `scripts/ship.mjs` runs the same chain before tagging.
+
+CI runs that same chain on Linux (Node 22 and 24) and macOS, plus jobs that need a real toolchain:
+
+| Job | What it proves |
+|---|---|
+| `compile-scaffold` | Generated C11/C++ syntax-checks against the checked-in JUCE stub |
+| `scaffold-clap`, `scaffold-lv2`, `scaffold-juce` | Generated projects configure, compile and link against real upstream SDKs |
+| `scaffold-clap-validate` | `audio_plugin_validate` runs a real `clap-validator` on a built CLAP plugin and reports PASS (build and validate are separate steps, so a red job says which half broke) |
+| `scaffold-juce-validate` | Same with a real `pluginval` on a built VST3 (`xvfb-run`: pluginval is a GUI app) |
+
+The last two exist because every other `audio_plugin_validate` test installs a PATH shim: shims prove the argv shape and the reporting logic, but not that upstream's binary accepts the invocation, or that a scaffolded plugin passes it. Both jobs fail if the report skips validation instead of running it — an unrun validator must never look like a pass. Neither is part of `npm run check`, since both need a multi-GB SDK download.
 
 To run the C/C++ compile checks locally:
 
@@ -58,7 +70,7 @@ apc-mcp/
 │   ├── artefacts.test.js      # build-artefact discovery
 │   ├── cpp-api.test.js        # real compiler checks against upstream headers
 │   └── release.test.js        # versioning, CI pins, SPDX, docs links, release guards
-├── scripts/                 # smoke-scaffold.mjs, check-licenses.mjs, check-docs.mjs, ship.mjs
+├── scripts/                 # smoke-scaffold.mjs, smoke-validate.mjs, check-licenses.mjs, check-docs.mjs, ship.mjs
 ├── docs/                    # this documentation set
 │   └── archive/             # frozen historical audit / handoff snapshots
 ├── .github/workflows/       # publish.yml (CI + npm publish on v* tags), codeql.yml
