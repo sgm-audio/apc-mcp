@@ -61,6 +61,7 @@ void {{PLUGIN_ID}}MainComponent::releaseResources()
 
 void {{PLUGIN_ID}}MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo &bufferToFill)
 {
+    juce::ScopedNoDenormals noDenormals;
     const float currentLevel = level.load(std::memory_order_relaxed);
 
     // Silence must still clear the buffer. The device may hand back a buffer

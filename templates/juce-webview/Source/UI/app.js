@@ -17,11 +17,19 @@
 
     // Update gain slider without triggering feedback loop
     if (state.gain !== undefined) {
-      const pct = Math.round(state.gain * 100);
+      const pct = Math.max(0, Math.min(100, Math.round(state.gain * 100)));
       if (Number(gainSlider.value) !== pct) {
         gainSlider.value = pct;
         gainValue.textContent = pct + '%';
       }
+      if (state.level === undefined) {
+        meterFill.style.width = pct + '%';
+      }
+    }
+
+    if (state.level !== undefined) {
+      const levelPct = Math.max(0, Math.min(100, Math.round(state.level * 100)));
+      meterFill.style.width = levelPct + '%';
     }
 
     if (state.pluginName) {
@@ -41,18 +49,13 @@
   gainSlider.addEventListener('input', function() {
     const pct = Number(this.value);
     gainValue.textContent = pct + '%';
+    meterFill.style.width = pct + '%';
 
     // Send gain value as 0.0–1.0 float
     sendAction('setGain', pct / 100);
   });
 
-  // ─── Simulated meter bounce (placeholder — real meter needs audio level data) ─
-  let meterAnim = 0;
-  setInterval(function() {
-    meterAnim = Math.max(0, meterAnim - 0.02 + Math.random() * 0.04);
-    meterFill.style.width = Math.min(100, meterAnim * 100) + '%';
-  }, 50);
-
-  // Mark UI as ready
+  // Mark UI as ready and request initial state from C++
   statusEl.textContent = 'initialized';
+  sendAction('ready', 1);
 })();

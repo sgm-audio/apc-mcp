@@ -20,14 +20,11 @@
 //
 // Exit code is non-zero if any check fails.
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
-
-const PKG_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const INDEX = path.join(PKG_DIR, 'index.js');
+import { call } from '../tests/helpers/mcp-client.mjs';
 
 const BUILD_TARGETS = process.argv.includes('--build');
 const CONFIGURE = BUILD_TARGETS || process.argv.includes('--configure');
@@ -75,53 +72,6 @@ const fail = (label, detail) => {
   }
 };
 const ok = label => console.log(`  ok   ${label}`);
-
-// ── MCP client (same lifecycle as a real host) ────────────────────
-function rpc(method, params) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(process.execPath, [INDEX], { stdio: ['pipe', 'pipe', 'pipe'] });
-    let buf = '', settled = false, stderr = '';
-    const send = o => {
-      try { proc.stdin.write(JSON.stringify(o) + '\n'); } catch { /* server gone */ }
-    };
-    const killer = setTimeout(() => proc.kill('SIGKILL'), 60000);
-    const done = (fn, arg) => {
-      if (settled) return;
-      settled = true; clearTimeout(killer);
-      try { proc.stdin.end(); } catch { /* already closed */ }
-      try { proc.kill(); } catch { /* already exited */ }
-      fn(arg);
-    };
-    proc.stderr.on('data', d => stderr += d);
-    proc.on('error', e => done(reject, e));
-    proc.on('close', () => { if (!settled) done(reject, new Error(`server exited early: ${stderr.slice(0, 300)}`)); });
-    proc.stdout.on('data', d => {
-      buf += d;
-      let i;
-      while ((i = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, i).trim();
-        buf = buf.slice(i + 1);
-        if (!line) continue;
-        let msg;
-        try { msg = JSON.parse(line); } catch { continue; }
-        if (msg.id === 1) {
-          send({ jsonrpc: '2.0', method: 'notifications/initialized' });
-          send({ jsonrpc: '2.0', id: 2, method, params });
-        } else if (msg.id === 2) done(resolve, msg);
-      }
-    });
-    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {
-      protocolVersion: '2025-06-18', capabilities: {},
-      clientInfo: { name: 'apc-smoke', version: '1.0' } } });
-  });
-}
-
-async function call(toolName, args) {
-  const msg = await rpc('tools/call', { name: toolName, arguments: args });
-  if (msg.error) return { isError: true, text: JSON.stringify(msg.error) };
-  const res = msg.result || {};
-  return { isError: !!res.isError, text: res.content?.[0]?.text ?? '' };
-}
 
 // ── Project setup ─────────────────────────────────────────────────
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'apc-smoke-'));
@@ -213,10 +163,17 @@ function verifyBuiltArtefacts(c, buildDir) {
   }
   if (c.type === 'standalone') {
     const entries = fs.existsSync(artBase) ? fs.readdirSync(artBase, { withFileTypes: true }) : [];
-    const hasApp = entries.some(e =>
-      (e.isDirectory() && e.name.toLowerCase().endsWith('.app'))
-      || (e.isFile() && e.name !== 'JuceLibraryCode')
-    );
+    const hasApp = entries.some(e => {
+      if (e.isDirectory() && e.name.toLowerCase().endsWith('.app')) return true;
+      if (!e.isFile()) return false;
+      if (process.platform === 'win32') return e.name.toLowerCase().endsWith('.exe');
+      if (path.extname(e.name) !== '') return false;
+      try {
+        return (fs.statSync(path.join(artBase, e.name)).mode & 0o111) !== 0;
+      } catch {
+        return false;
+      }
+    });
     if (!hasApp) {
       fail(`${c.name} artefact`, `no standalone executable/app found in ${artBase}`);
       return;
@@ -226,111 +183,112 @@ function verifyBuiltArtefacts(c, buildDir) {
 }
 
 // ── Run ───────────────────────────────────────────────────────────
-fs.mkdirSync(PLUGINS, { recursive: true });
-vendorTools();
-writeRootCMake([]); // create needs an existing root before it will scaffold
-
-const modeLabel = BUILD_TARGETS
-  ? ' (with cmake configure + build)'
-  : (CONFIGURE ? ' (with cmake configure)' : ' (structural only)');
-console.log(`\nsmoke-scaffold${modeLabel}`);
-console.log(`project: ${PROJ}\n`);
-
 const created = [];
+try {
+  fs.mkdirSync(PLUGINS, { recursive: true });
+  vendorTools();
+  writeRootCMake([]); // create needs an existing root before it will scaffold
 
-console.log('scaffolding:');
-for (const c of CASES) {
-  const r = await call('audio_plugin_create', {
-    projectPath: PROJ, name: c.name, type: c.type, ui: c.ui,
-    vendor: 'smokeco', description: 'smoke "quoted" test',
-  });
-  if (r.isError) { fail(`create ${c.name}`, r.text); continue; }
+  const modeLabel = BUILD_TARGETS
+    ? ' (with cmake configure + build)'
+    : (CONFIGURE ? ' (with cmake configure)' : ' (structural only)');
+  console.log(`\nsmoke-scaffold${modeLabel}`);
+  console.log(`project: ${PROJ}\n`);
 
-  const dir = path.join(PLUGINS, c.name);
-  if (!fs.existsSync(path.join(dir, 'CMakeLists.txt'))) {
-    fail(`create ${c.name}`, 'no CMakeLists.txt was written'); continue;
-  }
-  created.push({ ...c, dir, files: readTree(dir) });
-  ok(`${c.name} (${c.type}/${c.ui})`);
-}
+  console.log('scaffolding:');
+  for (const c of CASES) {
+    const r = await call('audio_plugin_create', {
+      projectPath: PROJ, name: c.name, type: c.type, ui: c.ui,
+      vendor: 'smokeco', description: 'smoke "quoted" test',
+    });
+    if (r.isError) { fail(`create ${c.name}`, r.text); continue; }
 
-console.log('\nstructural checks:');
-const rootCmakeAfterCreate = fs.readFileSync(path.join(PROJ, 'CMakeLists.txt'), 'utf8');
-for (const c of created) {
-  for (const [rel, content] of c.files) {
-    const left = content.match(/\{\{[^}]*\}\}/g);
-    if (left) fail(`${c.name}/${rel}`, `unsubstituted placeholders: ${left.join(', ')}`);
+    const dir = path.join(PLUGINS, c.name);
+    if (!fs.existsSync(path.join(dir, 'CMakeLists.txt'))) {
+      fail(`create ${c.name}`, 'no CMakeLists.txt was written'); continue;
+    }
+    created.push({ ...c, dir, files: readTree(dir) });
+    ok(`${c.name} (${c.type}/${c.ui})`);
   }
-  if (!rootCmakeAfterCreate.includes(`add_subdirectory(plugins/${c.name})`)) {
-    fail(`${c.name}`, 'audio_plugin_create did not register add_subdirectory() in root CMakeLists.txt');
+
+  console.log('\nstructural checks:');
+  const rootCmakeAfterCreate = fs.readFileSync(path.join(PROJ, 'CMakeLists.txt'), 'utf8');
+  for (const c of created) {
+    for (const [rel, content] of c.files) {
+      const left = content.match(/\{\{[^}]*\}\}/g);
+      if (left) fail(`${c.name}/${rel}`, `unsubstituted placeholders: ${left.join(', ')}`);
+    }
+    if (!rootCmakeAfterCreate.includes(`add_subdirectory(plugins/${c.name})`)) {
+      fail(`${c.name}`, 'audio_plugin_create did not register add_subdirectory() in root CMakeLists.txt');
+    }
+    const cm = c.files.get('CMakeLists.txt');
+    const cmd = CMAKE_COMMAND_FOR_TYPE[c.type];
+    if (!cmd) { fail(c.name, `no expected CMake command is known for type "${c.type}"`); continue; }
+    const target = cm.match(new RegExp(`\\b${cmd}\\s*\\(\\s*([^\\s)]+)`))?.[1];
+    if (target !== c.name) {
+      fail(`${c.name}`, `${cmd} target is "${target}", expected "${c.name}"`);
+    } else {
+      ok(`${c.name}: ${cmd} target name & root CMake wiring verified`);
+    }
   }
-  const cm = c.files.get('CMakeLists.txt');
-  const cmd = CMAKE_COMMAND_FOR_TYPE[c.type];
-  if (!cmd) { fail(c.name, `no expected CMake command is known for type "${c.type}"`); continue; }
-  const target = cm.match(new RegExp(`\\b${cmd}\\s*\\(\\s*([^\\s)]+)`))?.[1];
-  if (target !== c.name) {
-    fail(`${c.name}`, `${cmd} target is "${target}", expected "${c.name}"`);
+
+  if (!CONFIGURE) {
+    console.log('\nskipping cmake configure/build (pass --configure or --build to run it)\n');
   } else {
-    ok(`${c.name}: ${cmd} target name & root CMake wiring verified`);
-  }
-}
+    const cmake = spawnSync('cmake', ['--version'], { encoding: 'utf-8' });
+    if (cmake.status !== 0) {
+      fail('--configure', 'cmake is not installed or not on PATH');
+    } else {
+      const hasNinja = spawnSync('ninja', ['--version'], { encoding: 'utf-8' }).status === 0;
+      const genArgs = hasNinja ? ['-G', 'Ninja'] : [];
+      const jobs = String(Math.max(1, os.availableParallelism?.() ?? os.cpus().length ?? 2));
 
-if (!CONFIGURE) {
-  console.log('\nskipping cmake configure/build (pass --configure or --build to run it)\n');
-} else {
-  const cmake = spawnSync('cmake', ['--version'], { encoding: 'utf-8' });
-  if (cmake.status !== 0) {
-    fail('--configure', 'cmake is not installed or not on PATH');
-  } else {
-    const hasNinja = spawnSync('ninja', ['--version'], { encoding: 'utf-8' }).status === 0;
-    const genArgs = hasNinja ? ['-G', 'Ninja'] : [];
-    const jobs = String(Math.max(1, os.availableParallelism?.() ?? os.cpus().length ?? 2));
+      console.log(`\nconfigure${BUILD_TARGETS ? ' + build' : ''} (${cmake.stdout.split('\n')[0]}${hasNinja ? ', Ninja' : ''}):`);
+      const juceReady = JUCE_DIR !== '' && fs.existsSync(JUCE_DIR);
+      const clapReady = CLAP_DIR !== '' && fs.existsSync(CLAP_DIR);
+      const lv2Ready = LV2_DIR !== '' && fs.existsSync(LV2_DIR);
 
-    console.log(`\nconfigure${BUILD_TARGETS ? ' + build' : ''} (${cmake.stdout.split('\n')[0]}${hasNinja ? ', Ninja' : ''}):`);
-    const juceReady = JUCE_DIR !== '' && fs.existsSync(JUCE_DIR);
-    const clapReady = CLAP_DIR !== '' && fs.existsSync(CLAP_DIR);
-    const lv2Ready = LV2_DIR !== '' && fs.existsSync(LV2_DIR);
+      const extraArgsFor = family =>
+        family === 'lv2' ? [`-DLV2_INCLUDE_DIR=${LV2_DIR}`] : [];
 
-    const extraArgsFor = family =>
-      family === 'lv2' ? [`-DLV2_INCLUDE_DIR=${LV2_DIR}`] : [];
+      for (const [family, ready, depName] of [['clap', clapReady, 'APC_CLAP_DIR'],
+                                               ['juce', juceReady, 'APC_JUCE_DIR'],
+                                               ['lv2', lv2Ready, 'APC_LV2_DIR']]) {
+        const members = created.filter(c => c.family === family);
+        const names = members.map(c => c.name);
+        if (names.length === 0) continue;
+        if (!ready) { console.log(`  skip ${family}: ${depName} not set`); continue; }
 
-    for (const [family, ready, depName] of [['clap', clapReady, 'APC_CLAP_DIR'],
-                                             ['juce', juceReady, 'APC_JUCE_DIR'],
-                                             ['lv2', lv2Ready, 'APC_LV2_DIR']]) {
-      const members = created.filter(c => c.family === family);
-      const names = members.map(c => c.name);
-      if (names.length === 0) continue;
-      if (!ready) { console.log(`  skip ${family}: ${depName} not set`); continue; }
-
-      writeRootCMake(names);
-      fs.rmSync(BUILD, { recursive: true, force: true });
-      const res = spawnSync('cmake',
-        ['-S', PROJ, '-B', BUILD, ...genArgs, '-DCMAKE_BUILD_TYPE=Debug', ...extraArgsFor(family)],
-        { encoding: 'utf-8', timeout: 600000 });
-      if (res.status !== 0) {
-        fail(`${family}: cmake configure exited ${res.status}`,
-          `${res.stdout ?? ''}\n${res.stderr ?? ''}`.split('\n').slice(-40).join('\n'));
-        continue;
-      }
-      ok(`${family}: configure succeeded (${names.join(', ')})`);
-
-      if (BUILD_TARGETS) {
-        const buildRes = spawnSync('cmake',
-          ['--build', BUILD, '--config', 'Debug', '--parallel', jobs],
-          { encoding: 'utf-8', timeout: 1800000 });
-        if (buildRes.status !== 0) {
-          fail(`${family}: cmake --build exited ${buildRes.status}`,
-            `${buildRes.stdout ?? ''}\n${buildRes.stderr ?? ''}`.split('\n').slice(-60).join('\n'));
+        writeRootCMake(names);
+        fs.rmSync(BUILD, { recursive: true, force: true });
+        const res = spawnSync('cmake',
+          ['-S', PROJ, '-B', BUILD, ...genArgs, '-DCMAKE_BUILD_TYPE=Debug', ...extraArgsFor(family)],
+          { encoding: 'utf-8', timeout: 600000 });
+        if (res.status !== 0) {
+          fail(`${family}: cmake configure exited ${res.status}`,
+            `${res.stdout ?? ''}\n${res.stderr ?? ''}`.split('\n').slice(-40).join('\n'));
           continue;
         }
-        ok(`${family}: cmake --build succeeded (${names.join(', ')})`);
-        for (const c of members) verifyBuiltArtefacts(c, BUILD);
+        ok(`${family}: configure succeeded (${names.join(', ')})`);
+
+        if (BUILD_TARGETS) {
+          const buildRes = spawnSync('cmake',
+            ['--build', BUILD, '--config', 'Debug', '--parallel', jobs],
+            { encoding: 'utf-8', timeout: 1800000 });
+          if (buildRes.status !== 0) {
+            fail(`${family}: cmake --build exited ${buildRes.status}`,
+              `${buildRes.stdout ?? ''}\n${buildRes.stderr ?? ''}`.split('\n').slice(-60).join('\n'));
+            continue;
+          }
+          ok(`${family}: cmake --build succeeded (${names.join(', ')})`);
+          for (const c of members) verifyBuiltArtefacts(c, BUILD);
+        }
       }
     }
   }
+} finally {
+  fs.rmSync(ROOT, { recursive: true, force: true });
 }
-
-fs.rmSync(ROOT, { recursive: true, force: true });
 
 console.log(failures === 0
   ? `\nsmoke-scaffold: PASS (${created.length}/${CASES.length} scaffolded, ${failures} failures)\n`

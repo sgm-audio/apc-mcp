@@ -34,13 +34,24 @@ const rel = (abs) => path.relative(ROOT, abs).split(path.sep).join('/');
 // enclosed words in the slug), while link extraction additionally strips inline
 // code so example snippets are not mistaken for real links.
 function withoutFences(text) {
-  let fenced = false;
+  let openChar = null;
+  let openLen = 0;
   return text.split('\n').map((line) => {
-    if (/^\s*(```|~~~)/.test(line)) {
-      fenced = !fenced;
-      return '';
+    const m = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (m) {
+      const fence = m[1];
+      if (!openChar) {
+        openChar = fence[0];
+        openLen = fence.length;
+        return '';
+      }
+      if (fence[0] === openChar && fence.length >= openLen && /^\s*(`{3,}|~{3,})\s*$/.test(line)) {
+        openChar = null;
+        openLen = 0;
+        return '';
+      }
     }
-    return fenced ? '' : line;
+    return openChar ? '' : line;
   }).join('\n');
 }
 
@@ -150,11 +161,18 @@ for (const file of files) {
     if (anchor) {
       checkedAnchors += 1;
       if (anchor.startsWith('/') || anchor.startsWith(':')) continue; // route-style href
-      const targetAnchors = resolved === file
+      const anchorFile = fs.statSync(resolved).isDirectory()
+        ? path.join(resolved, 'README.md')
+        : resolved;
+      if (!fs.existsSync(anchorFile) || !fs.statSync(anchorFile).isFile()) {
+        failures.push(`${rel(file)}: cannot verify anchor "#${anchor}" on non-markdown target ${rel(resolved)} -> ${target}`);
+        continue;
+      }
+      const targetAnchors = anchorFile === file
         ? fileAnchors
-        : anchorsOf(withoutFences(fs.readFileSync(resolved, 'utf8')));
+        : anchorsOf(withoutFences(fs.readFileSync(anchorFile, 'utf8')));
       if (!targetAnchors.has(anchor)) {
-        failures.push(`${rel(file)}: missing anchor "#${anchor}" in ${rel(resolved)} -> ${target}`);
+        failures.push(`${rel(file)}: missing anchor "#${anchor}" in ${rel(anchorFile)} -> ${target}`);
       }
     }
   }

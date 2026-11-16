@@ -87,6 +87,22 @@ export default [
           message: 'Do not import exec/execSync — they invoke a shell, which is the '
                  + 'injection vector SECURITY.md exists to close. Use spawnSync.',
         },
+        {
+          selector: "ImportDeclaration[source.value=/^(node:)?child_process$/] > :matches(ImportDefaultSpecifier, ImportNamespaceSpecifier)",
+          message: 'Import named bindings (spawn, spawnSync) from node:child_process so exec/execSync cannot be called via namespace.',
+        },
+        {
+          selector: "CallExpression[callee.property.name='execSync']",
+          message: 'execSync() invokes a shell. Use spawnSync() with an argument array.',
+        },
+        {
+          selector: "CallExpression[callee.name=/^(spawn|spawnSync|execFile|execFileSync)$/] Property[key.name='shell']:not([value.value=false])",
+          message: 'Never enable { shell: true } on process spawn calls; pass an explicit argv array without a shell.',
+        },
+        {
+          selector: "CallExpression[callee.name=/^(spawn|spawnSync|execFile|execFileSync)$/][arguments.0.value=/^(sh|bash|zsh|dash|cmd(\\.exe)?|powershell(\\.exe)?|pwsh(\\.exe)?)$/i]",
+          message: 'Do not spawn a shell binary directly; spawn the target executable with an argument array.',
+        },
       ],
       eqeqeq: ['error', 'always', { null: 'ignore' }],
       'no-var': 'error',
@@ -102,6 +118,13 @@ export default [
       ecmaVersion: 2022,
       sourceType: 'script',
       globals: BROWSER_GLOBALS,
+    },
+    rules: {
+      'no-empty': ['error', { allowEmptyCatch: false }],
+      'no-unused-vars': ['error', { args: 'after-used', argsIgnorePattern: '^_' }],
+      eqeqeq: ['error', 'always', { null: 'ignore' }],
+      'no-var': 'error',
+      'prefer-const': ['error', { destructuring: 'all' }],
     },
   },
 ];

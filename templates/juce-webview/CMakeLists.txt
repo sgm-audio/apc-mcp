@@ -10,7 +10,9 @@ endif()
 # without this file adding it a second time.
 if(NOT TARGET juce::juce_audio_utils)
     if(NOT JUCE_DIR)
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/JUCE/CMakeLists.txt")
+        if(EXISTS "${CMAKE_SOURCE_DIR}/_tools/JUCE/CMakeLists.txt")
+            set(JUCE_DIR "${CMAKE_SOURCE_DIR}/_tools/JUCE")
+        elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/JUCE/CMakeLists.txt")
             set(JUCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/JUCE")
         else()
             message(FATAL_ERROR
@@ -18,7 +20,7 @@ if(NOT TARGET juce::juce_audio_utils)
                 "adding this plugin, or configure with -DJUCE_DIR=/path/to/JUCE.")
         endif()
     endif()
-    add_subdirectory(${JUCE_DIR} ${CMAKE_BINARY_DIR}/_tools/JUCE EXCLUDE_FROM_ALL)
+    add_subdirectory("${JUCE_DIR}" "${CMAKE_BINARY_DIR}/_tools/JUCE" EXCLUDE_FROM_ALL)
 endif()
 
 # ── Plugin target ────────────────────────────────────────────────────
@@ -65,7 +67,7 @@ target_compile_features({{PLUGIN_NAME}} PRIVATE cxx_std_20)
 # juce_add_binary_data() generates BinaryData.h onto its INTERFACE include path,
 # declaring symbols in NAMESPACE {{PLUGIN_ID}}_UI: Source/UI/index.html becomes
 # {{PLUGIN_ID}}_UI::index_html and {{PLUGIN_ID}}_UI::index_htmlSize.
-juce_add_binary_data({{PLUGIN_ID}}_WebData
+juce_add_binary_data({{PLUGIN_NAME}}_WebData
     NAMESPACE {{PLUGIN_ID}}_UI
     SOURCES
         Source/UI/index.html
@@ -87,7 +89,7 @@ target_compile_definitions({{PLUGIN_NAME}} PUBLIC
 
 target_link_libraries({{PLUGIN_NAME}}
     PRIVATE
-        {{PLUGIN_ID}}_WebData
+        {{PLUGIN_NAME}}_WebData
         juce::juce_audio_utils
         juce::juce_gui_extra      # juce::WebBrowserComponent
     PUBLIC

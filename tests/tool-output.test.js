@@ -578,4 +578,25 @@ describe('lint, build, and test edge cases', () => {
     assert.match(rDiag.text, /Gain\.hpp/);
     assert.doesNotMatch(rDiag.text, /Gain\.h\n/);
   });
+
+  it('NODE-02: audio_plugin_configure omits default -G when CMakeCache.txt already exists unless generator is explicit', async () => {
+    fs.mkdirSync(BUILD, { recursive: true });
+    fs.writeFileSync(path.join(BUILD, 'CMakeCache.txt'),
+      'CMAKE_GENERATOR:INTERNAL=Ninja\nCMAKE_BUILD_TYPE:STRING=Debug\n');
+
+    const rExisting = await call('audio_plugin_configure',
+      { projectPath: PROJ, config: 'Release' }, { env: shimEnv() });
+    assert.equal(rExisting.isError, false, rExisting.text);
+    const argsExisting = argvOf('cmake')[0] ?? '';
+    assert.ok(!argsExisting.includes('-G'),
+      `existing CMakeCache.txt must not receive default -G flag: ${argsExisting}`);
+
+    fs.writeFileSync(LOG, '');
+    const rExplicit = await call('audio_plugin_configure',
+      { projectPath: PROJ, generator: 'Ninja', config: 'Release' }, { env: shimEnv() });
+    assert.equal(rExplicit.isError, false, rExplicit.text);
+    const argsExplicit = argvOf('cmake')[0] ?? '';
+    assert.ok(argsExplicit.includes('-G Ninja'),
+      `explicit params.generator should still pass -G: ${argsExplicit}`);
+  });
 });

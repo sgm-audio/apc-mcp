@@ -1,6 +1,7 @@
 #pragma once
 #include <clap/clap.h>
 
+#include <atomic>
 #include <cstdint>
 
 // Shared plugin descriptor. Defined in PluginProcessor.cpp; PluginEntry.cpp uses
@@ -54,7 +55,7 @@ private:
     clap_plugin_t m_plugin {};
     const clap_host_t *m_host = nullptr;
     double m_sampleRate = 48000.0;
-    float m_gain = 1.0f;
+    std::atomic<float> m_gain { 1.0f };
     bool m_isActive = false;
     bool m_isProcessing = false;
 };

@@ -36,8 +36,10 @@ void {{PLUGIN_CLASS_NAME}}::processBlock(juce::AudioBuffer<float> &buffer, juce:
     for (int channel = 0; channel < channelsToProcess; ++channel) {
         const auto *channelData = buffer.getReadPointer(channel);
         auto *outData = buffer.getWritePointer(channel);
-        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
-            outData[sample] = channelData[sample]; // passthrough
+        if (outData != channelData) {
+            for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+                outData[sample] = channelData[sample]; // passthrough
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 #include <clap/clap.h>
 
 #include <cstring>
+#include <new>
 
 #include "PluginProcessor.h"
 
@@ -35,7 +36,9 @@ namespace
             return nullptr;
 
         // Ownership passes to the host, which releases it via clap_plugin_t::destroy.
-        return (new {{PLUGIN_CLASS_NAME}}(host))->clapPlugin();
+        // Never allow C++ exceptions (std::bad_alloc) to cross a C ABI boundary.
+        auto *plugin = new (std::nothrow) {{PLUGIN_CLASS_NAME}}(host);
+        return plugin != nullptr ? plugin->clapPlugin() : nullptr;
     }
 
     const clap_plugin_factory_t s_pluginFactory = {
