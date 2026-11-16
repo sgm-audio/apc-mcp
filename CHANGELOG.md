@@ -71,6 +71,23 @@
 
 ### Fixed
 
+- **JUCE plugin templates set an explicit `LV2URI` (CI: "Scaffolded JUCE
+  builds" and "audio_plugin_validate against real pluginval" were red).** JUCE
+  derives its default LV2 URI from `COMPANY_WEBSITE` as
+  `<website>/plugins/<name>`. The templates ship no `COMPANY_WEBSITE` — it would
+  be a guessed domain (`https://<lower-cased-vendor>.com`) printed verbatim in
+  plugin metadata — so the derived value was `/plugins/<Name>`, which has no
+  scheme and trips JUCE's `static_assert` in
+  `juce_audio_plugin_client_LV2.cpp` (*"Your configured LV2 URI must include a
+  leading scheme specifier"*). Because the LV2 target is built alongside VST3,
+  this failed both the JUCE build job and the pluginval job. `templates/juce`
+  and `templates/juce-webview` now pass `LV2URI "{{PLUGIN_URI}}"` — the same
+  sanitized `urn:<vendor>:<plugin>` identity the native `type="lv2"` template
+  uses — and the guessed `COMPANY_WEBSITE`/`COMPANY_EMAIL` values are gone from
+  the JUCE and standalone templates. Regression tests now require every
+  LV2-capable JUCE template to carry a scheme-prefixed, unique `LV2URI`, and
+  fail if a template hard-codes a vendor `.com`/`.net`/`.org` URL again.
+
 - **`audio_plugin_validate` CLI invocations & custom `pluginsDir` fixed.**
   `pluginval` now receives `--strictness-level 10 <path>` (replacing invalid
   `--strictness` and nonexistent `--validate-in-new-process`), `clap-validator`

@@ -27,11 +27,28 @@ juce_add_plugin({{PLUGIN_NAME}}
     FORMATS {{PLUGIN_FORMATS}}
     PRODUCT_NAME "{{PLUGIN_DISPLAY_NAME}}"
     DESCRIPTION "{{PLUGIN_DESCRIPTION_CMAKE}}"
+    # No COMPANY_WEBSITE / COMPANY_EMAIL: the vendor slug is lower-cased from a
+    # display name, so any https://<vendor-slug>.com / dev@<vendor-slug>.com pair
+    # would be a guess about a domain nobody has checked. Both fields are
+    # displayed verbatim in the Windows DLL properties and the VST3/AU metadata,
+    # so a wrong guess ships. Add them back once you own a real address.
     COMPANY_NAME "{{VENDOR_CMAKE}}"
-    COMPANY_WEBSITE "https://{{VENDOR_CMAKE}}.com"
-    COMPANY_EMAIL "dev@{{VENDOR_CMAKE}}.com"
     COMPANY_COPYRIGHT "{{VENDOR_CMAKE}} 2026"
     BUNDLE_ID "com.{{BUNDLE_VENDOR}}.{{PLUGIN_ID}}"
+    # An LV2 plugin is identified by URI, and JUCE *derives* its default URI from
+    # COMPANY_WEBSITE ("<website>/plugins/<name>"). Because this template sets no
+    # website, that default is "/plugins/{{PLUGIN_ID}}" — no scheme — and JUCE's LV2
+    # wrapper refuses to compile it: "Your configured LV2 URI must include a
+    # leading scheme specifier". Set it explicitly, using the same `urn:` identity
+    # the native LV2 template uses (`audio_plugin_create type="lv2"`), so both LV2
+    # outputs of the scaffolder share one naming scheme.
+    #
+    # Treat this as permanent: hosts store the URI in saved sessions, and changing
+    # it makes existing sessions fail to find the plugin. JUCE appends ":" plus a
+    # suffix to it for the UI, state and per-parameter URIs, so it only has to be
+    # unique per plugin, which the vendor namespace guarantees. Replace it with an
+    # https:// URI if you own a domain you want the plugin to be identified by.
+    LV2URI "{{PLUGIN_URI}}"
     PLUGIN_MANUFACTURER_CODE {{MANUFACTURER_CODE}}
     PLUGIN_CODE {{PLUGIN_CODE}}
     IS_SYNTH FALSE

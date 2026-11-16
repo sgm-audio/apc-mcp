@@ -140,7 +140,7 @@ audio_plugin_create(name="ToneGen", type="standalone", vendor="MyCompany")
 | `name` | **required**, `[A-Za-z][A-Za-z0-9_-]*` | Also the CMake target name; reserved names (`all`, `test`, `install`, …) are rejected |
 | `type` | `clap` (default), `vst3`, `juce`, `lv2`, `standalone` | See the table below |
 | `ui` | `generic` (default), `webview` | JUCE plugin types only; ignored elsewhere |
-| `vendor` | `apc-mcp` | Embedded in plugin metadata. Any single line of text, non-ASCII included ("ACME, Inc." and "Café Audio" both work); quotes, backslashes and `&` are escaped per output grammar. Used in sanitized form for bundle IDs, four-character codes and the LV2 URN |
+| `vendor` | `apc-mcp` | Embedded in plugin metadata. Any single line of text, non-ASCII included ("ACME, Inc." and "Café Audio" both work); quotes, backslashes and `&` are escaped per output grammar. Used in sanitized form for bundle IDs, four-character codes and the LV2 URN — which is also the `LV2URI` of the JUCE plugin templates, so a `type="juce"` LV2 build and a `type="lv2"` build name the plugin's identity the same way |
 | `description` | `An audio plugin` | Any single line of text, non-ASCII included. Escaped separately for C++, CMake and LV2 Turtle |
 
 Control characters (newlines included) are rejected in `vendor` and `description` with an explanatory message: they would terminate the C++, CMake or Turtle construct the value is pasted into, and no amount of escaping makes a newline safe in all three.
