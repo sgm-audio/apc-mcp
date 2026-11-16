@@ -44,9 +44,13 @@ endif()
 juce_add_gui_app({{PLUGIN_NAME}}
     VERSION 1.0.0
     PRODUCT_NAME "{{PLUGIN_DISPLAY_NAME}}"
+    # No COMPANY_WEBSITE / COMPANY_EMAIL: the vendor slug is lower-cased from a
+    # display name, so any https://<vendor-slug>.com / dev@<vendor-slug>.com pair
+    # would be a guess about a domain nobody has checked. Both fields are
+    # displayed verbatim in the Windows executable's properties and the macOS
+    # bundle metadata, so a wrong guess ships. Add them back once you own a real
+    # address.
     COMPANY_NAME "{{VENDOR_CMAKE}}"
-    COMPANY_WEBSITE "https://{{VENDOR_CMAKE}}.com"
-    COMPANY_EMAIL "dev@{{VENDOR_CMAKE}}.com"
     COMPANY_COPYRIGHT "{{VENDOR_CMAKE}} 2026"
     BUNDLE_ID "com.{{BUNDLE_VENDOR}}.{{PLUGIN_ID}}"
     NEEDS_WEB_BROWSER FALSE

@@ -239,6 +239,56 @@ describe('FUNC-02/08/11/12 · JUCE templates use the real JUCE 9 CMake API', () 
     }
   });
 
+  it('passes an explicit, well-formed LV2URI instead of deriving one from COMPANY_WEBSITE', () => {
+    // JUCE 9 derives LV2URI from COMPANY_WEBSITE as "<website>/plugins/<name>"
+    // (JUCEUtils.cmake: _juce_set_property_if_not_set(... LV2URI ...)). This
+    // template deliberately ships no COMPANY_WEBSITE, because any value would be
+    // a guessed domain — so the derived default is "/plugins/<Name>", which has
+    // no scheme and trips the static_assert in
+    // juce_audio_plugin_client_LV2.cpp: "Your configured LV2 URI must include a
+    // leading scheme specifier." That is what turned the "Scaffolded JUCE
+    // builds" and "audio_plugin_validate against real pluginval" CI jobs red:
+    // the LV2 target is compiled even when only the VST3 artefact is validated.
+    //
+    // startsWithValidScheme() accepts exactly this set of prefixes.
+    const prefixes = ['http://', 'https://', 'urn:'];
+    const uris = new Map();
+    for (const s of jucePluginOnly()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      const uri = cm.match(/(?:^|\s)LV2URI\s+"([^"]+)"/)?.[1];
+      assert.ok(uri, `${s.name}: no LV2URI — JUCE would derive "/plugins/${s.name}" from the `
+        + 'absent COMPANY_WEBSITE, and the LV2 wrapper refuses to compile that');
+      assert.ok(prefixes.some(p => uri.startsWith(p)),
+        `${s.name}: LV2URI "${uri}" would fail JUCE's startsWithValidScheme() check`);
+      assert.ok(!/\s/.test(uri), `${s.name}: LV2URI "${uri}" contains whitespace`);
+      // The scaffolded vendor is "acme" (see before()), so the shared URN helper
+      // must have produced exactly this identity — the same one the native LV2
+      // template uses for an identically named plugin.
+      assert.match(uri, /^urn:[a-z0-9]{2,}:[A-Za-z0-9_]+$/,
+        `${s.name}: LV2URI "${uri}" is not the sanitized urn:<vendor>:<plugin> identity`);
+      assert.equal(uris.has(uri), false,
+        `${s.name}: LV2URI "${uri}" is also used by ${uris.get(uri)} — hosts key sessions on it`);
+      uris.set(uri, s.name);
+    }
+  });
+
+  it('never invents a vendor domain or email for the metadata', () => {
+    // https://<vendor-slug>.com is a guess: the slug is lower-cased from a
+    // display name, so "ACME, Inc." becomes acmeinc.com, which nobody owns.
+    // COMPANY_WEBSITE/COMPANY_EMAIL are rendered verbatim in the DLL properties
+    // and VST3/AU metadata, so a guess ships to users. (An LV2URI is required
+    // and is supplied explicitly instead — see the test above.)
+    for (const s of [...jucePluginOnly(), ...appOnly()]) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      assert.ok(!cm.includes('COMPANY_WEBSITE'),
+        `${s.name}: COMPANY_WEBSITE is a guessed domain, not an owned address`);
+      assert.ok(!cm.includes('COMPANY_EMAIL'),
+        `${s.name}: COMPANY_EMAIL is a guessed mailbox, not an owned address`);
+      assert.ok(!/https?:\/\/[A-Za-z0-9.-]+\.(?:com|net|org)\b/.test(cm),
+        `${s.name}: a hard-coded vendor URL is still present in the CMakeLists`);
+    }
+  });
+
   it('guards add_subdirectory(JUCE) so multi-plugin repos can configure', () => {
     for (const s of jucePluginOnly()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
@@ -548,7 +598,8 @@ describe('standalone application template (juce_add_gui_app)', () => {
     // made the original templates look correct while never configuring.
     const pluginOnlyKeywords = ['FORMATS', 'PLUGIN_CODE', 'PLUGIN_MANUFACTURER_CODE',
                                 'IS_SYNTH', 'NEEDS_MIDI_INPUT', 'NEEDS_MIDI_OUTPUT',
-                                'IS_MIDI_EFFECT', 'COPY_PLUGIN_AFTER_BUILD', 'IS_ARA_EFFECT'];
+                                'IS_MIDI_EFFECT', 'COPY_PLUGIN_AFTER_BUILD', 'IS_ARA_EFFECT',
+                                'LV2URI'];
     for (const s of appOnly()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       for (const kw of pluginOnlyKeywords) {
