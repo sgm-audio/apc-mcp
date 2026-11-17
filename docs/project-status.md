@@ -17,13 +17,13 @@ npm ci
 npm run check
 ```
 
-Verified on **2026-11-16** in this checkout (Node v22.22.3 / npm 10.9.8, Linux):
+Verified on **2026-11-17** in this checkout (Node v22.22.3 / npm 10.9.8, Linux):
 
 | Gate | Result |
 |---|---|
 | `npm run lint` | PASS — ESLint (incl. `eslint-plugin-n`) + `node --check index.js` |
 | `npm run typecheck` | PASS — `tsc --checkJs` over `index.js`, `scripts/` and the test helpers, 0 errors |
-| `npm test` | **260 tests**, 252 pass, 0 fail, **8 skipped** — the C/C++ compile+link checks skip when `APC_CLAP_INCLUDE` / `APC_LV2_INCLUDE` are unset; CI sets them and runs them against real upstream headers |
+| `npm test` | **274 tests**, 266 pass, 0 fail, **8 skipped** — the C/C++ compile+link checks skip when `APC_CLAP_INCLUDE` / `APC_LV2_INCLUDE` are unset; CI sets them and runs them against real upstream headers. Includes the 2026-11-17 substantiation round's 13 regression tests, each proven red against the pre-fix tree first |
 | `npm run smoke` | PASS — 10/10 scaffold cases (structure only; `--configure` / `--build` need CMake + SDKs) |
 | `npm audit` | PASS — 0 vulnerabilities, with **no** `--audit-level` flag: the gate is plain `npm audit`, and CI runs that same command (`npm run audit`) rather than a laxer threshold |
 | `npm run licenses` | PASS — 179 lockfile packages checked against `license_decisions.yml` |
@@ -38,6 +38,7 @@ CI on the same work (run `43817093143`, PR #35) reports **11/11 verification job
 - **Security:** path traversal in `audio_plugin_lint` closed with symlink-aware `assertWithinProject()`; `apc-mcp.json` validated per key; per-grammar escaping of `vendor` *and* `description` for C++/CMake/Turtle/HTML, with non-ASCII metadata accepted instead of being rejected by an ASCII-only regex; dependency advisories resolved. See [Security](security.md).
 - **Templates:** all five scaffolds rewritten against verified JUCE 9 / CLAP / LV2 APIs. `type="ara"` removed (it produced an unconfigurable plugin); `standalone` and native `lv2` added.
 - **Output correctness:** `config` from `apc-mcp.json` is honoured; lint/build/test/validate parsers no longer invent counts or report success on failed commands; missing validators and skips are reported; builds pass `--config` and reconfigure single-config caches when `Debug`/`Release` changes.
+- **Substantiation round (2026-11-17):** an evidence-officer audit ([SUBSTANTIATION-LOG.md](../SUBSTANTIATION-LOG.md)) re-graded every 2.0.0 claim against live reproduction and closed its three blockers and five should-fixes: symlink containment on artefact discovery and the config read, a prototype-key-safe schema lookup, honest lint-failure reporting, space-tolerant compiler diagnostics, ctest skip counting, single-`../` rejection in `-D` values, validator-command regression tests, and the doc-drift batch (including the missing PR #36 changelog entry). Every fix landed with a test proven red on the pre-fix tree.
 - **Release engineering:** version has one source of truth (`package.json`), `npm run ship` guards branch/tree/tag/changelog, CI action pins are immutable with explicit permissions, publish is gated on all verification jobs.
 
 ## Known limitations
@@ -56,7 +57,7 @@ Lessons that cost time; check them before "fixing" something that looks odd:
 
 1. **Verify APIs against real upstream source.** Two of the worst historical defects were plausible-sounding APIs that do not exist (`juce_add_webview_ui()`, `WebBrowserComponent::loadHTMLString`). `juce_add_plugin` has **no unparsed-argument check** — an unknown keyword is silently dropped.
 2. **Write the failing test first** and prove it fails against the pre-change code in a throwaway worktree. The original suite was green while scaffolds could neither configure nor compile.
-3. **`_tools/` is two directories up** from each plugin's `CMakeLists.txt`; a custom `pluginsDir` breaks the fallback (use `-D` flags or `add_subdirectory()`).
+3. **`_tools/` discovery is root-first.** Templates check `${CMAKE_SOURCE_DIR}/_tools/…` before the legacy two-up fallback, so a custom `pluginsDir` no longer breaks SDK discovery. (It did before PR #36 — that is *why* the root-first hop exists.)
 4. **JUCE LV2 builds need a display** on headless Linux (`xvfb-run -a`) and a stack of system dev headers.
 5. **Two LV2 implementations exist** (native C11 template vs JUCE's C++ LV2 wrapper). Do not conflate them.
 6. **Single- vs multi-config CMake trees** behave differently on `Debug` ↔ `Release` switches; `buildNeedsConfigure()` exists for a reason.

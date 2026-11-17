@@ -319,6 +319,86 @@ describe('SEC-03 · apc-mcp.json is validated, never trusted blindly', () => {
     const r = await call('audio_plugin_plugins', { projectPath: p }, { env: { PATH: FAKE_PATH } });
     assert.equal(r.isError, false, `unknown config key broke the server: ${r.text}`);
   });
+
+  // SUBSTANTIATION-LOG F4: CONFIG_SCHEMA[key] walked the prototype chain, so a
+  // config containing "constructor" resolved to Object.prototype.constructor
+  // and every tool call died with "validator.safeParse is not a function".
+  it('prototype-chain keys (constructor, toString, __proto__) are unknown keys, not crashes', async () => {
+    const p = projectWith(JSON.parse('{"constructor":"future-key","toString":42,"__proto__x":1,"hasOwnProperty":true}'), 'cfg-proto-keys');
+    const r = await call('audio_plugin_plugins', { projectPath: p }, { env: { PATH: FAKE_PATH } });
+    assert.equal(r.isError, false, `prototype-chain key crashed the server: ${r.text}`);
+    assert.ok(!/safeParse is not a function|TypeError/.test(r.text),
+      `unhandled type error leaked to the user: ${r.text}`);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+describe('SUB-6 · apc-mcp.json symlink containment', () => {
+  function projectWithSymlinkedConfig(target, name) {
+    const p = path.join(ROOT, name);
+    fs.mkdirSync(path.join(p, 'plugins', 'Foo'), { recursive: true });
+    fs.writeFileSync(path.join(p, 'CMakeLists.txt'), 'project(x)\n');
+    fs.writeFileSync(path.join(p, 'plugins', 'Foo', 'CMakeLists.txt'), 'project(Foo)\n');
+    fs.symlinkSync(target, path.join(p, 'apc-mcp.json'));
+    return p;
+  }
+
+  it('a config symlink resolving outside the project root is ignored (defaults apply)', async () => {
+    const outsideConfig = path.join(ROOT, 'outside-apc-mcp.json');
+    fs.writeFileSync(outsideConfig, JSON.stringify({ pluginsDir: 'ext-plugs' }));
+    const p = projectWithSymlinkedConfig(outsideConfig, 'cfg-sym-outside');
+
+    const r = await call('audio_plugin_plugins', { projectPath: p }, { env: { PATH: FAKE_PATH } });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.text, /Foo/,
+      `the outside symlink was honoured (looked for ${'ext-plugs'}/ instead of plugins/): ${r.text}`);
+    assert.doesNotMatch(r.text, /ext-plugs/,
+      `a config outside the project root must not be applied: ${r.text}`);
+    assert.match(r.stderr, /resolving outside the project root/,
+      `the refusal must be visible on stderr, got: ${r.stderr}`);
+  });
+
+  it('a config symlink that stays inside the project is still honoured', async () => {
+    const p = path.join(ROOT, 'cfg-sym-inside');
+    fs.mkdirSync(path.join(p, 'plugins', 'Foo'), { recursive: true });
+    fs.writeFileSync(path.join(p, 'CMakeLists.txt'), 'project(x)\n');
+    fs.writeFileSync(path.join(p, 'plugins', 'Foo', 'CMakeLists.txt'), 'project(Foo)\n');
+    // A pluginsDir that does not exist: the tool names it in its "no such
+    // directory" message, which is the observable for "config was applied".
+    fs.writeFileSync(path.join(p, 'real-config.json'), JSON.stringify({ pluginsDir: 'custom-plugs' }));
+    fs.symlinkSync(path.join(p, 'real-config.json'), path.join(p, 'apc-mcp.json'));
+
+    const r = await call('audio_plugin_plugins', { projectPath: p }, { env: { PATH: FAKE_PATH } });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.text, /custom-plugs/,
+      `an inside-the-project config symlink must still be honoured: ${r.text}`);
+    assert.doesNotMatch(r.stderr, /resolving outside the project root/,
+      `an inside symlink must not be refused: ${r.stderr}`);
+  });
+
+  // macOS CI caught the first version of the guard comparing the resolved
+  // target against the *lexical* project root: on macOS the tmpdir is
+  // /var/folders/… but its real path is /private/var/folders/…, so every
+  // inside-project config symlink was wrongly ignored. This reproduces the
+  // same lexical-vs-real divergence on any POSIX system by reaching the
+  // project through a symlinked directory.
+  it('a config symlink inside a project reached through a symlinked path is honoured', async () => {
+    const real = path.join(ROOT, 'cfg-sym-via-link-real');
+    fs.mkdirSync(path.join(real, 'plugins', 'Foo'), { recursive: true });
+    fs.writeFileSync(path.join(real, 'CMakeLists.txt'), 'project(x)\n');
+    fs.writeFileSync(path.join(real, 'plugins', 'Foo', 'CMakeLists.txt'), 'project(Foo)\n');
+    fs.writeFileSync(path.join(real, 'real-config.json'), JSON.stringify({ pluginsDir: 'custom-plugs' }));
+    fs.symlinkSync(path.join(real, 'real-config.json'), path.join(real, 'apc-mcp.json'));
+    const viaLink = path.join(ROOT, 'cfg-sym-via-link');
+    fs.symlinkSync(real, viaLink, 'dir');
+
+    const r = await call('audio_plugin_plugins', { projectPath: viaLink }, { env: { PATH: FAKE_PATH } });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.text, /custom-plugs/,
+      `realpath(projectPath) != path.resolve(projectPath) must not reject the config: ${r.text}`);
+    assert.doesNotMatch(r.stderr, /resolving outside the project root/,
+      `the guard must compare real-to-real, not real-to-lexical: ${r.stderr}`);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -434,6 +514,12 @@ describe('symlink containment on status.json and root CMakeLists.txt + Windows p
       '-C /tmp/init.cmake',
       '-P /tmp/script.cmake',
       '-DJUCE_DIR=../../outside',
+      // Single-".." values: the token itself is never a bare "..", so a
+      // whole-token hasDotDot() check misses these — the value after '='
+      // must be scanned too (SUBSTANTIATION-LOG F7).
+      '-DTEST=../outside',
+      '-DSDK=..\\outside',
+      '-DROOT=..',
     ];
     for (const options of dangerousOptions) {
       fs.writeFileSync(cmakeLogPath, '');
@@ -708,7 +794,11 @@ describe('SEC-NEW-05 · validate never loads an artefact through a symlink', () 
     const r = await call('audio_plugin_validate',
       { projectPath: p, format: 'VST3' }, { env: { PATH: bin } });
     assert.equal(r.isError, true, `a symlinked artefact was validated: ${r.text}`);
-    assert.match(r.text, /No plugin binaries found/, r.text);
+    // Substantiation-audit strengthening of SEC-NEW-05: a run where every
+    // discovered artefact was skipped reports a named refusal, not the
+    // misleading "No plugin binaries found" (the build tree DID contain one).
+    assert.match(r.text, /## Validation refused/, r.text);
+    assert.match(r.text, /Evil\.vst3/, `the refused artefact must be named: ${r.text}`);
     assert.equal(fs.readFileSync(log, 'utf8'), '', 'the validator must not be invoked at all');
   });
 });

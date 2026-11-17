@@ -880,6 +880,102 @@ Not done, and why: `sord_validate` (it needs the LV2 schema files staged on disk
 `lv2lint` already validates the description through lilv against lv2core) and
 `clang-tidy`'s style families (above).
 
+### Hardening pass — PR #36 (2026-11-16, previously undocumented here)
+
+A static-analysis-driven hardening pass whose findings were catalogued in the PR
+body (SEC-NEW-01..04, NODE-01..05, CPP-01..04, CMAKE-01..02, UI-01, FUP-07) but
+never made it into this file. The user-visible changes:
+
+- **`audio_plugin_configure` `options` are grammar-checked before `cmake` runs**
+  (`SAFE_CMAKE_OPTION_TOKEN`). Only `-D<VAR>[:<TYPE>]=<VALUE>`, `-U<GLOB>` and
+  `-W[no-]dev/deprecated` flags are accepted; `-B`, `--trace-redirect`,
+  `--graphviz`, `-C`, `-P` and friends are rejected, so `options` can no longer
+  redirect the build tree or script execution.
+- **SDK discovery is root-first in every template.** `clap`, `juce`, `vst3`,
+  `standalone`, `lv2` and `juce-webview` all check `${CMAKE_SOURCE_DIR}/_tools/…`
+  before the legacy two-directories-up fallback, so a custom `pluginsDir` in
+  `apc-mcp.json` no longer breaks vendored-SDK resolution.
+- **`audio_plugin_create` cleans up a partially created plugin directory when it
+  fails after creating it** (FUP-07), instead of leaving half-written scaffolds
+  behind.
+- Template-level C++ correctness and WebView fixes (including the
+  `JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING` compile definition), ESLint script
+  hardening, and `toString()`-safe error rendering in the server.
+
+### Substantiation audit remediation — 2026-11-17
+
+A third audit (`SUBSTANTIATION-LOG.md`, kept out of the published package)
+graded every 2.0.0 claim as an evidence officer: claim, current evidence level,
+and what would be required to tag. Core substantiation was Strong; three
+blockers and five should-fixes are closed below. Every fix lands with a
+regression test that was **proven to fail against the pre-fix tree** (10 new
+tests red on `6c23658`, green after).
+
+Three findings were fixed independently and concurrently by the second security
+review above (the artefact-symlink escape, the lint dry-run misreport, and the
+`maxBuffer` doc drift); this PR merges with those and adds what was still
+missing — the reporting semantics, the remaining parser/config defects, and the
+coverage gaps:
+
+- **Residual-risk statement rewritten (security.md).** The old section claimed
+  "no residual risk of … arbitrary file read/write outside the project root",
+  which is falsifiable: a crafted `options` value (`-DCMAKE_PROJECT_INCLUDE=…`)
+  directs CMake to execute a file outside the project, and CMake cache values
+  legitimately accept absolute paths, so no charset can contain that. The section
+  now states the true boundary — apc-mcp's *own* file operations are contained
+  (including the new symlink guards below); the subprocesses it launches
+  (`cmake`, compilers, `clang-format -i`, validators) run with your privileges
+  and are not containable by design.
+- **A refused artefact fails the validation run (blocker-adjacent).** The
+  security review made `findPluginBinaries()` *skip* a symlinked or escaping
+  artefact; the substantiation audit's requirement is one step stronger — a run
+  that declined to validate something it found must never read as clean. A run
+  with refused artefacts now reports them in the header (`N refused`), lists
+  them with their reason, and returns `isError: true`; a run where *every*
+  discovered artefact was refused reports `## Validation refused` instead of
+  "no plugin binaries found".
+- **A symlinked `apc-mcp.json` resolving outside the project root is ignored**
+  (with a stderr warning); one that resolves inside the project is still
+  honoured.
+- **`{"constructor": …}` in `apc-mcp.json` no longer breaks every tool call**
+  (blocker). The schema lookup walked the prototype chain
+  (`CONFIG_SCHEMA[key]`), so inherited properties like `constructor` resolved to
+  `Object.prototype.constructor` and `validator.safeParse is not a function`
+  leaked into every result. The lookup is now `Object.hasOwn()`-based: prototype
+  keys are unknown keys, exactly like the documented forward-compatibility
+  behaviour.
+- **`audio_plugin_lint` dry-run no longer misreports a crashed or timed-out
+  `clang-format` as "0 files with problems"** (blocker; found independently as
+  DEF-1 here and SEC-NEW-08 in the security review — the review's wording and
+  branch merged first, and the regression test added here targets it). The
+  failure cause is surfaced and the `fix=true` advice only appears when
+  per-file diagnostics exist.
+- **Compiler diagnostics from paths containing spaces are counted** (should-fix
+  F3). Both the clang/gcc and MSVC patterns required space-free file tokens, so
+  an exit-0 build emitting `/home/dev/My Project/Foo.cpp:12:3: error: …` was
+  reported as `Build succeeded / Errors: 0`. The anchored `:<line>:<col>:` /
+  `(line[,col]):` suffixes do the discriminating; the file token may contain
+  spaces.
+- **ctest `***Skipped` outcomes are counted as skips** (should-fix F2).
+  Previously the line matched neither outcome alternation nor the summary, so a
+  run whose every test was skipped reported `## Tests passed` with unknown
+  counts. Skips are now a third category (`Skipped: N`, excluded from passed
+  and failed), and an all-skipped run reports
+  `Tests skipped (none ran to completion)` instead of `Tests passed`.
+- **A single `../` inside a `-D` value is rejected** (should-fix F7).
+  `hasDotDot()` ran on the whole token, where `-DTEST=../outside` has no bare
+  `..` segment — only `../../` values were caught, and the test loop only
+  covered that case. The value after `=` is now checked too; the security test
+  covers `../x`, `..\x` and a bare `..`.
+- **`validateCommand` / `clapValidatorCommand` are regression-tested
+  end-to-end** (should-fix): a custom `clapValidatorCommand` receives
+  `validate <path>`, and values failing `SAFE_TARGET` (`/x/y`, `a b`, `..`)
+  degrade to the default commands rather than escaping.
+- **Doc drift** (should-fix): the `options` grammar is documented in `tools.md`
+  (merged with the review's `;`-separator documentation), `_tools` discovery is
+  described root-first in `toolchain.md` and `project-status.md` (PR #36
+  behaviour), and this file gained the missing PR #36 entry above. (The
+  `maxBuffer` 2 MB → 16 MB doc fix was also carried by the security review.)
 ## [1.5.0] — 2026-06-17
 
 ### Added
