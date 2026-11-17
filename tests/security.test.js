@@ -770,7 +770,11 @@ describe('SEC-NEW-05 · validate never loads an artefact through a symlink', () 
     const r = await call('audio_plugin_validate',
       { projectPath: p, format: 'VST3' }, { env: { PATH: bin } });
     assert.equal(r.isError, true, `a symlinked artefact was validated: ${r.text}`);
-    assert.match(r.text, /No plugin binaries found/, r.text);
+    // Substantiation-audit strengthening of SEC-NEW-05: a run where every
+    // discovered artefact was skipped reports a named refusal, not the
+    // misleading "No plugin binaries found" (the build tree DID contain one).
+    assert.match(r.text, /## Validation refused/, r.text);
+    assert.match(r.text, /Evil\.vst3/, `the refused artefact must be named: ${r.text}`);
     assert.equal(fs.readFileSync(log, 'utf8'), '', 'the validator must not be invoked at all');
   });
 });

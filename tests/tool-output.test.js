@@ -682,8 +682,8 @@ describe('DEF-1 · a failed lint run is not a formatting verdict', () => {
         exit: 127,
       }) });
     assert.equal(r.isError, true);
-    assert.match(r.text, /Lint failed/, `got: ${r.text}`);
-    assert.match(r.text, /not a formatting verdict/i, `got: ${r.text}`);
+    assert.match(r.text, /Lint could not run/, `got: ${r.text}`);
+    assert.match(r.text, /tool\s+failure rather than a formatting problem/i, `got: ${r.text}`);
     assert.match(r.text, /libclang-format\.so/, `the actual cause was discarded: ${r.text}`);
     assert.doesNotMatch(r.text, /Lint found issues/,
       `0-of-N "issues" is a crash, not a verdict: ${r.text}`);

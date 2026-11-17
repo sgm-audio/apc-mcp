@@ -176,3 +176,39 @@ measurement (VERIFICATION-MATRIX Medium; misleading label, not a defect in this
 server). F6 is the VERIFICATION-MATRIX name for the single-`../` `-D` gap —
 that one **is** fixed here (F7 row above; the two logs use different IDs for
 the same defect).
+
+---
+
+## Merge note — reconciliation with the concurrent security review (2026-11-17)
+
+While this remediation was in flight, an independent second security review
+(`SECURITY-REVIEW-2.0.0.md`, PR #43) landed on `main` and fixed three of the
+same defects from its own findings: the artefact-symlink escape (their
+SEC-NEW-05), the lint dry-run misreport (their SEC-NEW-08, same branch as this
+log's DEF-1), and the `maxBuffer` doc drift (their SEC-NEW-07). It also closed
+the F1 execution vector this log had graded "document, not fix", via a
+`CMAKE_VARS_THAT_EXECUTE` blocklist plus `CMakeCache.txt` sanitisation.
+
+This branch merged with that work rather than duplicating it. The reconciliation:
+
+- **Adopted from main** (their implementation, their wording): write-time
+  containment, the code-loading `-D` blocklist, cache sanitisation, the lint
+  `could not run` branch, `findPluginBinaries()`' symlink/outside skip.
+- **Kept from this audit on top**: a refused artefact now **fails** the run
+  (header `N refused`, named list, `isError: true`, and a dedicated
+  `## Validation refused` report when every discovered artefact was skipped —
+  main's "No plugin binaries found" was misleading for a tree that did contain
+  one); plus everything still absent from main: F4 (prototype-key lookup),
+  config-symlink containment, F2 (ctest skips), F3 (space-in-path diagnostics),
+  F7 (single `../` in `-D` values), and the validator-command regression tests.
+- **Residual-risk statement** (blocker 1): both rewrites were combined — the
+  review's blocklist/race paragraphs plus this log's subprocess-boundary
+  framing, including the honest caveat that a blocklist of known code-loading
+  variables is enumerated knowledge, not a proof.
+
+Red phase re-verified after the merge against main's `index.js` (see
+`git diff origin/main -- index.js` for exactly the unique deltas): the F2, F3,
+F4, F7, config-symlink and refused-isError tests fail on main's code and pass
+on the merged tree. Full gate on the merged tree: lint PASS, typecheck PASS,
+**273 tests / 265 pass / 0 fail / 8 skipped**, smoke 10/10, audit 0
+vulnerabilities, licenses 179/179, docs:check PASS.
