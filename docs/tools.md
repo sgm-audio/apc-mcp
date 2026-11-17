@@ -29,7 +29,12 @@ audio_plugin_configure(options="-DJUCE_DIR=/path/to/JUCE -DLV2_INCLUDE_DIR=/path
 | `projectPath` | string, optional | Auto-detected from CWD |
 | `config` | `Debug` \| `Release` | Falls back to `apc-mcp.json` → `Debug` |
 | `generator` | string, optional | CMake default on Windows, `Unix Makefiles` on POSIX. Common: `Ninja`, `Xcode` |
-| `options` | string, optional | Space-separated CMake cache flags; each token becomes its own argv entry. Allowed grammar (anything else is rejected before `cmake` runs): `-D<NAME>[:<TYPE>]=<VALUE>` (NAME starts with a letter or `_`; VALUE may contain `A–z`, digits, `_ = / . \ - + : @ ,`), `-U<NAME>`, and `-Wdev` / `-Wno-dev` / `-Wdeprecated` / `-Wno-deprecated` / `-Werror=dev` / `-Werror=deprecated`. Neither a flag nor a `-D` value may contain a `..` path segment — use absolute paths for SDK locations (e.g. `-DJUCE_DIR=/opt/JUCE`). |
+| `options` | string, optional | `-DNAME=VALUE` cache flags; each token becomes its own argv entry. Allowed grammar (anything else is rejected before `cmake` runs): `-D<NAME>[:<TYPE>]=<VALUE>` (NAME starts with a letter or `_`; VALUE may contain letters, digits, `_ = / . \ - + : @ ,` and spaces), `-U<NAME>`, and `-Wdev` / `-Wno-dev` / `-Wdeprecated` / `-Wno-deprecated` / `-Werror=dev` / `-Werror=deprecated`. Neither a flag nor a `-D` value may contain a `..` path segment — use absolute paths for SDK locations (e.g. `-DJUCE_DIR=/opt/JUCE`). Variables whose value CMake would load or execute (project includes, toolchain, compilers, launchers, `*_FLAGS`, …) are rejected outright. |
+
+Separate flags with `;` when a value itself contains a space:
+`options="-DCMAKE_PREFIX_PATH=/Users/me/My Plugins;-DJUCE_DIR=/path/to/JUCE"`. A space-only
+string still works for the common case, but it cannot tell `-DNAME=a b` from
+two flags, so it splits there — use `;` whenever a value has a space in it.
 
 Only pass `-G` when creating a fresh cache; an existing cache created with a different generator must not be re-issued a `-G` flag, so `audio_plugin_build` handles reconfiguration itself.
 
@@ -90,6 +95,8 @@ audio_plugin_plugins(format="json")
 
 Lists directories under the configured `pluginsDir` that contain a `CMakeLists.txt`, with optional `status.json` metadata. `format` is `text` (default) or `json`. Symlinked `status.json` files are refused.
 
+`status.json` is **user-authored**: no tool creates or edits it, so a plugin without one simply has no metadata beyond what is on disk. See the layout note in [configuration](configuration.md).
+
 ### audio_plugin_validate
 
 ```text
@@ -140,7 +147,7 @@ audio_plugin_create(name="ToneGen", type="standalone", vendor="MyCompany")
 | `name` | **required**, `[A-Za-z][A-Za-z0-9_-]*` | Also the CMake target name; reserved names (`all`, `test`, `install`, …) are rejected |
 | `type` | `clap` (default), `vst3`, `juce`, `lv2`, `standalone` | See the table below |
 | `ui` | `generic` (default), `webview` | JUCE plugin types only; ignored elsewhere |
-| `vendor` | `apc-mcp` | Embedded in plugin metadata. Any single line of text, non-ASCII included ("ACME, Inc." and "Café Audio" both work); quotes, backslashes and `&` are escaped per output grammar. Used in sanitized form for bundle IDs, four-character codes and the LV2 URN |
+| `vendor` | `apc-mcp` | Embedded in plugin metadata. Any single line of text, non-ASCII included ("ACME, Inc." and "Café Audio" both work); quotes, backslashes and `&` are escaped per output grammar. Used in sanitized form for bundle IDs, four-character codes and the LV2 URN — which is also the `LV2URI` of the JUCE plugin templates, so a `type="juce"` LV2 build and a `type="lv2"` build name the plugin's identity the same way |
 | `description` | `An audio plugin` | Any single line of text, non-ASCII included. Escaped separately for C++, CMake and LV2 Turtle |
 
 Control characters (newlines included) are rejected in `vendor` and `description` with an explanatory message: they would terminate the C++, CMake or Turtle construct the value is pasted into, and no amount of escaping makes a newline safe in all three.

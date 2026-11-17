@@ -19,10 +19,12 @@
     "smoke": "node scripts/smoke-scaffold.mjs",
     "smoke:configure": "node scripts/smoke-scaffold.mjs --configure",
     "smoke:validate": "node scripts/smoke-validate.mjs",
-    "quality": "npm run lint && npm test",
+    "cmake:lint": "cmake-lint templates/*/CMakeLists.txt",
+    "quality": "npm run lint && npm run typecheck && npm test",
     "security": "npm audit && echo '\u2705 Security gate passed'",
     "check": "npm run quality && npm run smoke && npm run audit && npm run licenses && npm run docs:check",
-    "ship": "node scripts/ship.mjs"
+    "ship": "node scripts/ship.mjs",
+    "typecheck": "tsc -p tsconfig.json"
   },
   "engines": {
     "node": ">=22"
@@ -52,6 +54,9 @@
   ],
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.15.0"
+    "@types/node": "^22.20.5",
+    "eslint": "^10.15.0",
+    "eslint-plugin-n": "^18.5.0",
+    "typescript": "^5.9.3"
   }
 }

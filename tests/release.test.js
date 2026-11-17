@@ -97,10 +97,63 @@ describe('OPS-02 · a failed publish must fail the workflow', () => {
     const text = workflowText('publish.yml');
     const needs = /^\s*needs:\s*\[([^\]]+)\]/m.exec(text)?.[1]
       ?.split(',').map(s => s.trim()).filter(Boolean) ?? [];
-    for (const job of ['test', 'license', 'compile-scaffold', 'scaffold-clap', 'scaffold-lv2', 'scaffold-juce',
-      'scaffold-clap-validate', 'scaffold-juce-validate']) {
+    for (const job of ['test', 'license', 'lint-config', 'compile-scaffold', 'scaffold-clap', 'scaffold-lv2',
+      'scaffold-juce', 'scaffold-clap-validate', 'scaffold-juce-validate']) {
       assert.ok(needs.includes(job), `publish must need ${job}: ${needs.join(', ')}`);
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+describe('QA-08 · every static-analysis gate is wired into CI', () => {
+  // A gate that exists only as a config file is a gate nobody runs. Each of
+  // these was a hole in the previous release: TypeScript never checked the JS,
+  // nothing parsed the workflow YAML or the CMake templates, no installer was
+  // ever run, and the Turtle metadata was never read by a validator.
+  const text = () => workflowText('publish.yml');
+
+  it('CI typechecks the JavaScript with tsc --checkJs', () => {
+    assert.match(text(), /run:\s*npm run typecheck/,
+      'publish.yml never runs `npm run typecheck`; tests alone do not typecheck scripts/');
+    const ts = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'tsconfig.json'), 'utf8'));
+    assert.equal(ts.compilerOptions.checkJs, true, 'tsconfig.json must set checkJs: true');
+    assert.equal(ts.compilerOptions.allowJs, true, 'tsconfig.json must set allowJs: true');
+    assert.equal(ts.compilerOptions.noEmit, true, 'tsconfig.json must set noEmit: true');
+  });
+
+  it('CI runs actionlint and cmake-lint', () => {
+    const t = text();
+    assert.match(t, /uses:\s*[\w-]+\/actionlint@[0-9a-f]{40}/, 'actionlint is never run');
+    assert.match(t, /cmake-lint\s+templates\/\*\.\/CMakeLists\.txt|cmake-lint['"]?\s+.*CMakeLists\.txt/,
+      'cmake-lint is never run over templates/*/CMakeLists.txt');
+  });
+
+  it('the scaffolded-build jobs ask for install, lv2lint and clang-tidy', () => {
+    const t = text();
+    for (const flag of ['--install', '--lv2lint', '--clang-tidy']) {
+      assert.ok(t.includes(flag), `no CI job passes ${flag} to smoke-scaffold.mjs`);
+    }
+    // lv2lint is packaged by neither Debian, Ubuntu nor Homebrew, so CI builds it
+    // from the upstream mirror; clang-tidy is a normal package.
+    assert.match(t, /git clone[^\n]*lv2lint/, 'lv2lint is never obtained');
+    assert.match(t, /apt-get install[^\n]*clang-tidy/, 'clang-tidy is never installed');
+  });
+
+  it('the tool configurations the gates depend on are present and strict', () => {
+    const tidy = fs.readFileSync(path.join(PROJECT_ROOT, '.clang-tidy'), 'utf8');
+    // smoke-scaffold treats a non-promoted warning as proof the config was not
+    // loaded, so WarningsAsErrors is what makes that check non-vacuous.
+    assert.match(tidy, /WarningsAsErrors:\s*'?\*'?/, '.clang-tidy must promote findings to errors');
+    for (const check of ['clang-analyzer-*', 'bugprone-*']) {
+      assert.ok(tidy.includes(check), `.clang-tidy no longer enables ${check}`);
+    }
+
+    const cmakeFmt = fs.readFileSync(path.join(PROJECT_ROOT, '.cmake-format.py'), 'utf8');
+    // The templates' style is declared rather than suppressed: no lint code may
+    // be disabled, or the C0301/C0307 checks stop meaning anything.
+    assert.doesNotMatch(cmakeFmt, /disabled_codes\s*=\s*\[[^\]]*C0/,
+      '.cmake-format.py must state the house style (tab_size/line_width), not disable C0301/C0307');
+    assert.match(cmakeFmt, /tab_size\s*=\s*4/, '.cmake-format.py must declare the 4-space indent');
   });
 });
 
@@ -150,6 +203,46 @@ describe('QA-07 · the validators are exercised for real, not only through shims
       'a missing validator must fail, not skip: an unrun validator must never look like a pass');
     assert.match(script, /SKIPPED\|NOT CHECKABLE\|MISSING-VALIDATOR/,
       'smoke-validate must reject a report that skipped validation');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+describe('LINT-01 · the no-shell rule is binding-based, not name-based', () => {
+  // The rule used to match an object literally named `child_process` and a named
+  // import called `exec`. Three things slipped past it: a default import, a
+  // namespace import, and `{ shell: true }` on the sanctioned spawnSync — which
+  // is the one option that turns an argv array back into a shell string. Each is
+  // run through the real ESLint config here, because a static assertion on the
+  // config text would pass even if the selectors did not match anything.
+  const eslintBin = path.join(PROJECT_ROOT, 'node_modules', '.bin', 'eslint');
+
+  const lintSnippet = source => spawnSync(
+    eslintBin,
+    ['--no-ignore', '--stdin', '--stdin-filename', 'index.js'],
+    { cwd: PROJECT_ROOT, input: source, encoding: 'utf-8' });
+
+  const VIOLATIONS = {
+    'a default import of child_process': "import cp from 'node:child_process';\nexport const f = () => cp.execSync('x');\n",
+    'a namespace import of child_process': "import * as cp from 'node:child_process';\nexport const f = () => cp.exec('x');\n",
+    'the shell option on spawnSync': "import { spawnSync } from 'node:child_process';\nexport const f = () => spawnSync('cmake', [], { shell: true });\n",
+    'spawning a shell by name': "import { spawnSync } from 'node:child_process';\nexport const f = () => spawnSync('bash', ['-c', 'id']);\n",
+  };
+
+  for (const [label, source] of Object.entries(VIOLATIONS)) {
+    it(`rejects ${label}`, () => {
+      const r = lintSnippet(source);
+      assert.notEqual(r.status, 0, `eslint accepted ${label}:\n${source}`);
+      assert.match(r.stdout + r.stderr, /no-restricted-(syntax|properties)/,
+        `expected a no-restricted-* violation for ${label}`);
+    });
+  }
+
+  it('does not reject RegExp.prototype.exec or an ordinary spawnSync', () => {
+    const r = lintSnippet(
+      "import { spawnSync } from 'node:child_process';\n"
+      + "export const ok = (re, s) => re.exec(s) ?? spawnSync('cmake', ['-B', 'build']);\n");
+    assert.equal(r.status, 0,
+      `the rule must not fire on legitimate code:\n${r.stdout}${r.stderr}`);
   });
 });
 
@@ -255,6 +348,29 @@ describe('OPS-05 · ship cannot tag a branch it is not on', () => {
     assert.match(r.stderr, /refusing to release/);
     assert.match(r.stderr, /definitely-not-checked-out/);
     assert.match(r.stderr, /not "definitely-not-checked-out"|not 'definitely-not-checked-out'/);
+  });
+
+  it('spawns no .cmd shim and bounds every child process', () => {
+    const src = fs.readFileSync(path.join(PROJECT_ROOT, 'scripts', 'ship.mjs'), 'utf8');
+    // Node throws EINVAL when asked to spawn a .cmd without shell:true, and a
+    // shell would reintroduce the argument-quoting hazard index.js bans. npm
+    // ships as JS, so the Windows path runs npm-cli.js with node itself.
+    assert.ok(!/'npm\.cmd'|"npm\.cmd"/.test(src),
+      'ship must not spawn npm.cmd — Node cannot spawn batch files without a shell');
+    assert.match(src, /npm_execpath/,
+      'ship must run npm through its own JS entrypoint (npm_execpath) via process.execPath, '
+      + 'not through a platform shim');
+
+    // A missing key or a 2FA prompt must fail the release, not hang it.
+    const callSites = src.split('spawnSync(').slice(1);
+    assert.equal(callSites.length, 2, `expected two spawnSync call sites, found ${callSites.length}`);
+    for (const site of callSites) {
+      const options = site.slice(0, site.indexOf('});'));
+      assert.match(options, /timeout:\s*\S+/,
+        'every spawnSync needs a timeout, or a credential prompt blocks the release forever');
+    }
+    assert.match(src, /GIT_TERMINAL_PROMPT:\s*'0'/,
+      'git must run non-interactively so a missing credential fails instead of prompting');
   });
 
   it('rejects unknown options with a usage message', () => {

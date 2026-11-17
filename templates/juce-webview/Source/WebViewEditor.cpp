@@ -161,6 +161,11 @@ bool WebViewEditor::handleJSAction (const juce::String &url)
 
         if (gainParam != nullptr)
         {
+            // The page is untrusted input. A NaN would sail through jlimit —
+            // every comparison against NaN is false — and an out-of-range number
+            // would be silently clamped inside the parameter, hiding the page's
+            // bug; so bound it here and report the change as a gesture, which is
+            // what a host records and what an automation lane expects.
             const auto raw = static_cast<float> (params.getValue ("data", "1.0").getDoubleValue());
             const auto clamped = std::isfinite (raw) ? juce::jlimit (0.0f, 1.0f, raw) : 0.75f;
             gainParam->beginChangeGesture();

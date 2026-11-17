@@ -78,6 +78,12 @@ void {{PLUGIN_ID}}MainComponent::getNextAudioBlock(const juce::AudioSourceChanne
     const double rate = currentSampleRate > 0.0 ? currentSampleRate : 44100.0;
     const double phaseStep = frequencyHz * juce::MathConstants<double>::twoPi / rate;
     const int numChannels = bufferToFill.buffer->getNumChannels();
+    const int offset = bufferToFill.startSample;
+
+    // AudioBuffer owns this pointer array, so fetching it once per callback is
+    // allocation-free; calling setSample() per sample was not — it takes the same
+    // bounds-checked path as a random access and cannot be hoisted or vectorised.
+    auto *const *channels = bufferToFill.buffer->getArrayOfWritePointers();
 
     for (int i = 0; i < bufferToFill.numSamples; ++i)
     {
@@ -88,7 +94,7 @@ void {{PLUGIN_ID}}MainComponent::getNextAudioBlock(const juce::AudioSourceChanne
         phase += phaseStep;
 
         for (int channel = 0; channel < numChannels; ++channel)
-            bufferToFill.buffer->setSample(channel, bufferToFill.startSample + i, sample);
+            channels[channel][offset + i] = sample;
     }
 
     // Keep the phase inside one cycle. Left unbounded it grows for the lifetime

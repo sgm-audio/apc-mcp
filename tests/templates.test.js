@@ -239,6 +239,56 @@ describe('FUNC-02/08/11/12 · JUCE templates use the real JUCE 9 CMake API', () 
     }
   });
 
+  it('passes an explicit, well-formed LV2URI instead of deriving one from COMPANY_WEBSITE', () => {
+    // JUCE 9 derives LV2URI from COMPANY_WEBSITE as "<website>/plugins/<name>"
+    // (JUCEUtils.cmake: _juce_set_property_if_not_set(... LV2URI ...)). This
+    // template deliberately ships no COMPANY_WEBSITE, because any value would be
+    // a guessed domain — so the derived default is "/plugins/<Name>", which has
+    // no scheme and trips the static_assert in
+    // juce_audio_plugin_client_LV2.cpp: "Your configured LV2 URI must include a
+    // leading scheme specifier." That is what turned the "Scaffolded JUCE
+    // builds" and "audio_plugin_validate against real pluginval" CI jobs red:
+    // the LV2 target is compiled even when only the VST3 artefact is validated.
+    //
+    // startsWithValidScheme() accepts exactly this set of prefixes.
+    const prefixes = ['http://', 'https://', 'urn:'];
+    const uris = new Map();
+    for (const s of jucePluginOnly()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      const uri = cm.match(/(?:^|\s)LV2URI\s+"([^"]+)"/)?.[1];
+      assert.ok(uri, `${s.name}: no LV2URI — JUCE would derive "/plugins/${s.name}" from the `
+        + 'absent COMPANY_WEBSITE, and the LV2 wrapper refuses to compile that');
+      assert.ok(prefixes.some(p => uri.startsWith(p)),
+        `${s.name}: LV2URI "${uri}" would fail JUCE's startsWithValidScheme() check`);
+      assert.ok(!/\s/.test(uri), `${s.name}: LV2URI "${uri}" contains whitespace`);
+      // The scaffolded vendor is "acme" (see before()), so the shared URN helper
+      // must have produced exactly this identity — the same one the native LV2
+      // template uses for an identically named plugin.
+      assert.match(uri, /^urn:[a-z0-9]{2,}:[A-Za-z0-9_]+$/,
+        `${s.name}: LV2URI "${uri}" is not the sanitized urn:<vendor>:<plugin> identity`);
+      assert.equal(uris.has(uri), false,
+        `${s.name}: LV2URI "${uri}" is also used by ${uris.get(uri)} — hosts key sessions on it`);
+      uris.set(uri, s.name);
+    }
+  });
+
+  it('never invents a vendor domain or email for the metadata', () => {
+    // https://<vendor-slug>.com is a guess: the slug is lower-cased from a
+    // display name, so "ACME, Inc." becomes acmeinc.com, which nobody owns.
+    // COMPANY_WEBSITE/COMPANY_EMAIL are rendered verbatim in the DLL properties
+    // and VST3/AU metadata, so a guess ships to users. (An LV2URI is required
+    // and is supplied explicitly instead — see the test above.)
+    for (const s of [...jucePluginOnly(), ...appOnly()]) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      assert.ok(!cm.includes('COMPANY_WEBSITE'),
+        `${s.name}: COMPANY_WEBSITE is a guessed domain, not an owned address`);
+      assert.ok(!cm.includes('COMPANY_EMAIL'),
+        `${s.name}: COMPANY_EMAIL is a guessed mailbox, not an owned address`);
+      assert.ok(!/https?:\/\/[A-Za-z0-9.-]+\.(?:com|net|org)\b/.test(cm),
+        `${s.name}: a hard-coded vendor URL is still present in the CMakeLists`);
+    }
+  });
+
   it('guards add_subdirectory(JUCE) so multi-plugin repos can configure', () => {
     for (const s of jucePluginOnly()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
@@ -294,11 +344,29 @@ describe('FUNC-02/08/11/12 · JUCE templates use the real JUCE 9 CMake API', () 
         `${s.name}: missing using AudioProcessor::processBlock; triggers -Woverloaded-virtual`);
       assert.match(h, /isBusesLayoutSupported\s*\(\s*const\s+BusesLayout\s*&[^)]*\)\s*const\s+override/,
         `${s.name}: missing isBusesLayoutSupported() override`);
-      assert.ok(cpp.includes('std::min(totalNumInputChannels, totalNumOutputChannels)'),
-        `${s.name}: processBlock must clamp channel loop against asymmetric layouts`);
+      // processBlock gets the input in place, so a "pass-through" has nothing to
+      // copy: the copy this assertion used to demand wrote getReadPointer(i) into
+      // getWritePointer(i), i.e. one buffer onto itself. What every plugin does
+      // need is the clear loop for output channels an asymmetric layout left
+      // empty — skip it and those channels replay whatever the host had there.
+      assert.ok(cpp.includes('for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)'),
+        `${s.name}: processBlock must silence output channels that have no input`);
+      assert.ok(cpp.includes('buffer.clear(i, 0, buffer.getNumSamples())'),
+        `${s.name}: the clear loop must actually clear the channel it names`);
+      assert.ok(!cpp.includes('getReadPointer('),
+        `${s.name}: processBlock must not read a channel it is about to write — that is a self-copy`);
       if (s.ui === 'webview') {
         assert.match(cpp, /juce::ParameterID\s*\{\s*"gain"\s*,\s*1\s*\}/,
           `${s.name}: AudioParameterFloat needs ParameterID version hint >= 1 to avoid JUCE 9 AU Debug jassert`);
+        // A gain applied as a bare multiply steps once per block; that is zipper
+        // noise. The smoother has to be driven from prepareToPlay's sample rate
+        // and read once per sample in processBlock.
+        assert.ok(cpp.includes('m_gainSmoothed.reset(sampleRate, 0.02)'),
+          `${s.name}: the gain smoother must be configured from the host sample rate in prepareToPlay`);
+        assert.ok(cpp.includes('m_gainSmoothed.getNextValue()'),
+          `${s.name}: processBlock must advance the gain smoother per sample, not read the raw parameter`);
+        assert.ok(!cpp.includes('channelData[sample] * gain'),
+          `${s.name}: the unsmoothed per-block multiply must be gone`);
       }
     }
   });
@@ -548,7 +616,8 @@ describe('standalone application template (juce_add_gui_app)', () => {
     // made the original templates look correct while never configuring.
     const pluginOnlyKeywords = ['FORMATS', 'PLUGIN_CODE', 'PLUGIN_MANUFACTURER_CODE',
                                 'IS_SYNTH', 'NEEDS_MIDI_INPUT', 'NEEDS_MIDI_OUTPUT',
-                                'IS_MIDI_EFFECT', 'COPY_PLUGIN_AFTER_BUILD', 'IS_ARA_EFFECT'];
+                                'IS_MIDI_EFFECT', 'COPY_PLUGIN_AFTER_BUILD', 'IS_ARA_EFFECT',
+                                'LV2URI'];
     for (const s of appOnly()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       for (const kw of pluginOnlyKeywords) {
@@ -841,6 +910,83 @@ describe('native LV2 template', () => {
     }
   });
 
+  it('classifies the gain plugin as an AmplifierPlugin and claims no licence', () => {
+    // lv2core: AmplifierPlugin is "primarily designed to change the volume of its
+    // input"; UtilityPlugin is its superclass and says nothing about what the
+    // plugin does, which is what hosts sort menus by.
+    for (const s of lv2Only()) {
+      const ttl = s.files.get('Source/plugin.ttl');
+      assert.ok(ttl.includes('lv2:AmplifierPlugin'),
+        `${s.name}: a gain plugin must declare lv2:AmplifierPlugin, not only lv2:UtilityPlugin`);
+      // Choosing a licence on the user's behalf is a claim, not a default: the
+      // scaffold ships no LICENSE file, so doap:license would assert something
+      // untrue in a file hosts display.
+      assert.ok(!/^\s*doap:license\s/m.test(ttl),
+        `${s.name}: plugin.ttl must not assert a licence the user has not chosen`);
+    }
+  });
+
+  it('gives the stereo ports an lv2:designation', () => {
+    // Without a designation a host cannot pair in_l with out_l, or route a mono
+    // host into both sides; it is left guessing from the symbol name.
+    for (const s of lv2Only()) {
+      const ports = ttlPorts(s.files.get('Source/plugin.ttl'));
+      const audio = ports.filter(p => /AudioPort/.test(p.body ?? ''));
+      for (const p of audio) {
+        const want = /_l$/.test(p.symbol) ? 'lv2:left' : /_r$/.test(p.symbol) ? 'lv2:right' : null;
+        assert.ok(want, `${s.name}: unexpected audio port symbol ${p.symbol}`);
+        assert.ok((p.body ?? '').includes(`lv2:designation ${want}`),
+          `${s.name}: port ${p.symbol} needs \`lv2:designation ${want}\``);
+      }
+    }
+  });
+
+  it('passes LV2URI explicitly instead of deriving it from a company website', () => {
+    // JUCE's own comment in juce_audio_plugin_client_LV2.cpp: "it may be because
+    // you haven't explicitly set an LV2 URI". With FORMATS including LV2 and no
+    // LV2URI, JUCEUtils.cmake falls back to
+    //   LV2URI = "<COMPANY_WEBSITE>/plugins/<Name>"
+    // so dropping the invented COMPANY_WEBSITE silently produced
+    // "/plugins/<Name>" and the LV2 target failed to compile. The URI is also the
+    // plugin's permanent identity in saved host sessions, which is not something
+    // to inherit from a guessed domain.
+    for (const s of jucePluginOnly()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      const formats = /FORMATS\s+([^\n)]+)/.exec(cm)?.[1] ?? '';
+      const uri = /LV2URI\s+"([^"]+)"/.exec(cm)?.[1];
+      // One CMakeLists serves every format combination, so a VST3-only scaffold
+      // still carries the keyword; JUCE just never reads it. Only the LV2 case
+      // can fail to build.
+      if (/\bLV2\b/.test(formats)) {
+        assert.ok(uri, `${s.name}: FORMATS includes LV2 but no LV2URI is passed — JUCE then `
+          + `derives it from COMPANY_WEBSITE, which this template does not set`);
+      }
+      if (!uri) continue;
+      assert.match(uri, /^(urn:[a-z0-9]{2,}:|https?:\/\/)/,
+        `${s.name}: LV2URI "${uri}" needs a urn: or http(s) scheme — JUCE static_asserts on it`);
+      // PLUGIN_ID keeps the name's case (JuceGen, mydelay), so compare folded.
+      const id = s.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      assert.ok(uri.toLowerCase().endsWith(`:${id}`),
+        `${s.name}: LV2URI "${uri}" does not identify this plugin (expected it to end in ":${id}")`);
+    }
+  });
+
+  it('keeps the LV2 install destination relative so --prefix still applies', () => {
+    // An absolute DESTINATION is expanded at configure time and frozen into
+    // cmake_install.cmake, so `cmake --install build --prefix X` installs into
+    // the configure-time path and leaves X empty. GNUInstallDirs + a relative
+    // path is what makes both --prefix and CMAKE_INSTALL_PREFIX work.
+    for (const s of lv2Only()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      const dest = /DESTINATION\s+"([^"]+)"/.exec(cm)?.[1];
+      assert.ok(dest, `${s.name}: no install(... DESTINATION ...) found`);
+      assert.ok(!dest.startsWith('/') && !dest.includes('CMAKE_INSTALL_PREFIX'),
+        `${s.name}: DESTINATION "${dest}" is absolute, so --prefix is silently ignored`);
+      assert.ok(cm.includes('include(GNUInstallDirs)'),
+        `${s.name}: must include(GNUInstallDirs) to derive lib/lv2 instead of hard-coding "lib"`);
+    }
+  });
+
   it('names the binary in manifest.ttl exactly as CMake builds it', () => {
     for (const s of lv2Only()) {
       const binary = (s.files.get('Source/manifest.ttl').match(/lv2:binary\s+<([^>]+)>/) ?? [])[1];
@@ -868,8 +1014,23 @@ describe('native LV2 template', () => {
     for (const s of lv2Only()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       const expected = `plugins/${s.name}/${s.name}_artefacts/$<CONFIG>/LV2/${s.name}.lv2`;
-      assert.ok(cm.includes(expected),
-        `${s.name}: LIBRARY_OUTPUT_DIRECTORY must be ${expected} so the built bundle is discoverable`);
+      // The paths live in LV2_ARTEFACTS_DIR/LV2_BUNDLE_DIR so that no line runs
+      // past the length the lint enforces; expand one level of `set(VAR "...")`
+      // so this still asserts the path that ends up in the property.
+      const vars = new Map([...cm.matchAll(/^\s*set\s*\(\s*(\w+)\s+"([^"]*)"\s*\)/gm)]
+        .map(m => [m[1], m[2]]));
+      const expand = t => {
+        for (let i = 0; i < 5; i++) {
+          const next = t.replace(/\$\{(\w+)\}/g, (all, n) => (vars.has(n) ? vars.get(n) : all));
+          if (next === t) break;
+          t = next;
+        }
+        return t;
+      };
+      const outputs = cm.match(/LIBRARY_OUTPUT_DIRECTORY\s+"?([^"\s)]+)/)?.[1];
+      assert.ok(outputs, `${s.name}: no LIBRARY_OUTPUT_DIRECTORY set`);
+      assert.ok(expand(outputs).endsWith(`/${expected}`),
+        `${s.name}: LIBRARY_OUTPUT_DIRECTORY must end in ${expected} so the built bundle is discoverable, got ${expand(outputs)}`);
       // A bundle is a directory holding the binary AND the metadata.
       assert.ok(/copy_if_different[\s\S]*manifest\.ttl[\s\S]*plugin\.ttl/.test(cm),
         `${s.name}: the .ttl files must be copied into the bundle next to the binary`);
@@ -993,8 +1154,11 @@ describe('native LV2 template', () => {
 
     const html = read('MetaJuce', 'Source/UI/index.html');
     const vendorSpan = lineWith(html, 'class="vendor"');
-    assert.ok(vendorSpan.includes('ACME, Inc. &amp; "Sons"'),
-      `an HTML text node must escape & but leave quotes alone: ${vendorSpan}`);
+    // Quotes are escaped too, not because this use needs it (it is a text node),
+    // but so the helper stays safe if a template later interpolates the same
+    // value into an attribute (AUDIT SEC-NEW-09).
+    assert.ok(vendorSpan.includes('ACME, Inc. &amp; &quot;Sons&quot;'),
+      `HTML must escape & and quotes so the helper is attribute-safe: ${vendorSpan}`);
     assert.ok(!vendorSpan.includes('& Sons'), `raw & left in HTML: ${vendorSpan}`);
 
     const edLine = lineWith(read('MetaJuce', 'Source/WebViewEditor.cpp'), '"vendor"');
@@ -1178,6 +1342,56 @@ describe('native LV2 template', () => {
         `CLAP CMakeLists.txt must honour custom pluginsDir: ${clapCm}`);
     } finally {
       fs.rmSync(customProj, { recursive: true, force: true });
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+describe('the native templates compile with warnings as errors', () => {
+  // These templates generate C/C++ that the user then owns. A scaffold that
+  // ships warnings on day one teaches its owner to ignore warnings on day two,
+  // so the flags are part of the contract, not a convenenience: CI builds both
+  // templates with the real headers on every push (scaffold-clap /
+  // scaffold-lv2), and those builds stay green only because the generated code
+  // is genuinely warning-free.
+  const nativeCmake = () => [
+    ...scaffolded.values().filter(s => s.type === 'clap' || s.type === 'lv2'),
+  ];
+
+  it('every native template turns on -Wall -Wextra -Wpedantic -Werror', () => {
+    const seen = new Set();
+    for (const s of nativeCmake()) {
+      const code = cmakeCode(s.files.get('CMakeLists.txt'));
+      // cmake may receive the flags either as one argument or as a list; assert
+      // on the presence of each flag inside a target_compile_options call rather
+      // than on one particular spelling.
+      const m = code.match(/target_compile_options\s*\(\s*([^\s)]+)[\s\S]*?\)/);
+      assert.ok(m, `${s.name}: no target_compile_options() in CMakeLists.txt`);
+      assert.equal(m[1], s.name,
+        `${s.name}: warning flags must apply to the generated target PRIVATE, not to ${m[1]}`);
+      for (const flag of ['-Wall', '-Wextra', '-Wpedantic', '-Werror']) {
+        assert.ok(code.includes(flag), `${s.name}: CMakeLists.txt does not pass ${flag}`);
+      }
+      // MSVC spells these differently and rejects the GCC ones, so the flags
+      // have to be behind a compiler switch.
+      assert.match(code, /if\s*\(\s*MSVC\s*\)/,
+        `${s.name}: -Werror-style flags must be guarded by if(MSVC) or the Windows build breaks`);
+      for (const flag of ['/W4', '/WX']) {
+        assert.ok(code.includes(flag), `${s.name}: no MSVC equivalent ${flag}`);
+      }
+      seen.add(s.type);
+    }
+    assert.deepEqual([...seen].sort(), ['clap', 'lv2'],
+      'both native template families must be covered');
+  });
+
+  it('LV2 headers are included as SYSTEM so -Werror only judges generated code', () => {
+    for (const s of lv2Only()) {
+      const code = cmakeCode(s.files.get('CMakeLists.txt'));
+      assert.match(code, /target_include_directories\s*\(\s*[^\s)]+\s+SYSTEM\s+PRIVATE\s+\$\{LV2_INCLUDE_DIR\}/,
+        `${s.name}: the third-party LV2 headers must be SYSTEM, or a warning inside lv2/lv2 fails a user's build`);
+      assert.match(code, /target_include_directories\s*\(\s*[^\s)]+\s+PRIVATE\s+Source\s*\)/,
+        `${s.name}: Source/ must NOT be SYSTEM — its warnings are ours to fix`);
     }
   });
 });

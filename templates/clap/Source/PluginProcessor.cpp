@@ -71,7 +71,6 @@ const clap_plugin_descriptor_t *{{PLUGIN_ID}}_descriptor() { return &s_descripto
     m_plugin.on_main_thread   = &{{PLUGIN_CLASS_NAME}}::onMainThread;
 }
 
-{{PLUGIN_CLASS_NAME}}::~{{PLUGIN_CLASS_NAME}}() = default;
 
 const clap_plugin_descriptor_t *{{PLUGIN_CLASS_NAME}}::descriptor() const { return &s_descriptor; }
 
@@ -153,8 +152,15 @@ clap_process_status {{PLUGIN_CLASS_NAME}}::process(const clap_plugin_t *plugin,
         const float *src = in.data32[ch];
         float       *dst = out.data32[ch];
 
-        if (src == nullptr || dst == nullptr)
+        if (dst == nullptr)
             continue;
+
+        if (src == nullptr) {
+            // A missing input channel is silence. Leaving `dst` untouched plays
+            // back whatever the host's buffer held from the previous block.
+            std::fill(dst, dst + frames, 0.0f);
+            continue;
+        }
 
         for (uint32_t f = 0; f < frames; ++f)
             dst[f] = src[f] * gain;

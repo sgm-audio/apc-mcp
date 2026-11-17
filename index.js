@@ -11,11 +11,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { spawnSync } from 'child_process';
-import path from 'path';
-import fs from 'fs';
-import os from 'os';
-import { fileURLToPath } from 'url';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 // ─── Paths ──────────────────────────────────────────────────────────
 const PKG_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -42,9 +42,36 @@ const SAFE_TARGET = /^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/;
 // CMake generators: start with a letter, then alphanumeric, spaces, underscores, hyphens
 const SAFE_GENERATOR = /^[a-zA-Z][a-zA-Z0-9_ -]*$/;
 // CMake options flags: -DNAME=VALUE, space-separated (allows Windows `\` paths)
-const SAFE_OPTIONS = /^[a-zA-Z0-9_= /.\-\\+:@,]+$/;
+// `;` is allowed because it is the documented option separator (see the split
+// in audio_plugin_configure); it can never reach cmake — every token is checked
+// against SAFE_CMAKE_OPTION_TOKEN, which has no `;` in any of its branches.
+const SAFE_OPTIONS = /^[a-zA-Z0-9_= /.\-\\+:@,;]+$/;
 // Allowed individual CMake configure option token (-DVAR[:TYPE]=VAL, -UVAR, -W[no-]dev/deprecated)
-const SAFE_CMAKE_OPTION_TOKEN = /^(?:-D[A-Za-z_][A-Za-z0-9_]*(?::[A-Z]+)?=[a-zA-Z0-9_=/.\-\\+:@,]*|-U[A-Za-z_][A-Za-z0-9_]*|-W(?:no-)?(?:dev|error(?:=dev)?|deprecated|error=deprecated))$/;
+const SAFE_CMAKE_OPTION_TOKEN = /^(?:-D[A-Za-z_][A-Za-z0-9_]*(?::[A-Z]+)?=[a-zA-Z0-9_=/.\-\\+:@, ]*|-U[A-Za-z_][A-Za-z0-9_]*|-W(?:no-)?(?:dev|error(?:=dev)?|deprecated|error=deprecated))$/;
+
+// CMake variables whose *value* is not data: CMake parses it as a script, loads
+// it as a toolchain, or hands it a command line. The character allowlist above
+// cannot help here — `/tmp/evil.cmake` is a perfectly well-formed value — so an
+// option that sets one of these is rejected outright. Without this, a single
+// tool argument chose which code ran at configure time (AUDIT SEC-NEW-06):
+//   -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=/tmp/evil.cmake  → file(WRITE …) ran
+//   -DCMAKE_C_COMPILER=/tmp/fakecc                      → arbitrary executable ran
+const CMAKE_VARS_THAT_EXECUTE = [
+  /^CMAKE_PROJECT_TOP_LEVEL_INCLUDES$/,
+  /^CMAKE_PROJECT_INCLUDE(_BEFORE)?$/,
+  /^CMAKE_(TOOLCHAIN_FILE|MODULE_PATH|USER_MAKE_RULES_OVERRIDE(_[A-Z]+)?)$/,
+  /^CMAKE_(MAKE_PROGRAM|COMMAND|CTEST_COMMAND|CPACK_COMMAND|LINKER|AR|RANLIB|OBJCOPY|STRIP)$/,
+  /^CMAKE_(C|CXX|ASM|OBJC|OBJCXX|CUDA|HIP|ISPC)_COMPILER$/,
+  /^CMAKE_(C|CXX|ASM|OBJC|OBJCXX|CUDA|HIP|ISPC|EXE|SHARED|MODULE|STATIC)_COMPILER_LAUNCHER$/,
+  /^CMAKE_(C|CXX|ASM|OBJC|OBJCXX|CUDA|HIP|ISPC)_FLAGS(_[A-Z0-9_]+)?$/,
+  /^CMAKE_(EXE|SHARED|MODULE|STATIC)_LINKER_FLAGS(_[A-Z0-9_]+)?$/,
+];
+
+// True when an option would set one of the variables above.
+function cmakeOptionSetsCode(flag) {
+  const m = flag.match(/^-D([A-Za-z_][A-Za-z0-9_]*)(?::[A-Z]+)?=/);
+  return Boolean(m) && CMAKE_VARS_THAT_EXECUTE.some(re => re.test(m[1]));
+}
 // Plugin names for creation: start with a letter, then alphanumeric, underscores, hyphens
 const SAFE_PLUGIN_NAME = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 // Built-in CMake targets that a plugin target name must never shadow.
@@ -85,8 +112,10 @@ const SAFE_REGEX = /^[\x20-\x7E]+$/;
 const SAFE_FORMATS = /^[a-zA-Z0-9_;-]+$/;
 // Charset for values pasted into *CMake source* (the project's pluginsDir /
 // buildDir are interpolated into add_subdirectory() lines). This is a genuine
-// code-injection surface and stays restricted.
-const SAFE_PATH = /^[a-zA-Z0-9_ /\\.\-:@~]+$/;
+// code-injection surface and stays restricted. `\` and `:` are excluded because
+// CMake reads `\` as the start of an escape sequence, so a value containing one
+// scaffolds a project that cannot be configured.
+const SAFE_PATH = /^[a-zA-Z0-9_ /.@~-]+$/;
 
 // User-supplied filesystem paths (projectPath, lint target) are deliberately NOT
 // charset-restricted. They reach path.resolve(), fs and spawnSync argv — never a
@@ -131,8 +160,13 @@ function assertWithinProject(projectRoot, candidate, label = 'path') {
   let realRoot;
   try {
     realRoot = fs.realpathSync(root);
-  } catch {
-    return resolved;
+  } catch (e) {
+    // Fail *closed*. Returning `resolved` here silently skipped the symlink
+    // check whenever the root was not resolvable, turning a containment guard
+    // into a decorative one under a race or a permission problem.
+    throw new Error(
+      `${label} cannot be checked — project root is not resolvable (${e.message}): ${projectRoot}`,
+      { cause: e });
   }
 
   // Walk up to the deepest existing ancestor (via lstat so dangling symlinks
@@ -155,6 +189,139 @@ function assertWithinProject(projectRoot, candidate, label = 'path') {
     throw new Error(`${label} escapes project root via symlink — rejected: ${candidate}`);
   }
   return resolved;
+}
+
+// ─── Containment at write time (SEC-NEW-05) ─────────────────────────
+// assertWithinProject() above is a *check-time* control: it proves the path is
+// inside the project at the moment it runs. Every write that follows re-traverses
+// the same string, so a concurrent process that replaces an ancestor directory
+// with a symlink between the check and the write redirects the write outside the
+// root. That is a real escape, not a theoretical one, and it cannot be closed by
+// checking harder — the path has to be re-proved at the point of use.
+//
+// These helpers therefore:
+//   * re-resolve the *real* path of the directory immediately before writing,
+//   * refuse to traverse a symlink on the way down,
+//   * create directories one level at a time and re-verify each level,
+//   * open files with O_NOFOLLOW (and O_EXCL for new files), so the file itself
+//     can never be a link that points elsewhere.
+//
+// Residual: Node exposes no openat(2), so the last check and the mkdir/open are
+// still two syscalls. A race there can create an empty directory outside the
+// project (removed again below) but cannot write file content outside it.
+
+// O_NOFOLLOW does not exist on Windows; 0 keeps the flag set valid there.
+const O_NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
+
+function realInside(projectRoot, dir, label) {
+  const realRoot = fs.realpathSync(projectRoot);
+  const real = fs.realpathSync(dir);
+  if (real !== realRoot && !real.startsWith(realRoot + path.sep)) {
+    throw new Error(`${label} escapes project root via symlink — rejected: ${dir}`);
+  }
+  return real;
+}
+
+// A directory that may be written into: a real directory, not a symlink, inside
+// the project once fully resolved.
+function assertRealDir(projectRoot, dir, label = 'Directory') {
+  let stat;
+  try {
+    stat = fs.lstatSync(dir);
+  } catch {
+    throw new Error(`${label} does not exist: ${dir}`);
+  }
+  if (stat.isSymbolicLink()) {
+    throw new Error(`${label} is a symlink — refusing to write through it: ${dir}`);
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(`${label} is not a directory: ${dir}`);
+  }
+  realInside(projectRoot, dir, label);
+  return dir;
+}
+
+// mkdir -p that never traverses a symlink and never leaves the project.
+function mkdirInside(projectRoot, dir) {
+  const root = path.resolve(projectRoot);
+  const target = path.resolve(dir);
+  if (target !== root && !target.startsWith(root + path.sep)) {
+    throw new Error(`Path escapes project root — rejected: ${dir}`);
+  }
+  // The project root itself may be reached through a symlink (~/current ->
+  // ~/src/proj is a normal layout), so resolve it once and build the missing
+  // tail under the real directory. Every level below that must be a real
+  // directory: that is what stops a swapped `plugins` symlink.
+  const realRoot = fs.realpathSync(root);
+
+  const components = path.relative(root, target).split(path.sep).filter(Boolean);
+  let current = realRoot;
+  let createdLeaf = false;
+  for (const part of components) {
+    current = path.join(current, part);
+    let created = false;
+    try {
+      fs.mkdirSync(current);
+      created = true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    try {
+      assertRealDir(projectRoot, current, 'Directory');
+    } catch (e) {
+      // The race window between the check above and mkdir() can leave an empty
+      // directory outside the project. Remove it (rmdir refuses non-empty
+      // directories, so this can never delete anything we did not create).
+      if (created) {
+        try { fs.rmdirSync(current); } catch { /* not empty or already gone */ }
+      }
+      throw e;
+    }
+    createdLeaf = created;
+  }
+  // Callers that create a project subdirectory use this to know whether a
+  // failure should remove the directory: only ever delete what we made.
+  return components.length > 0 && createdLeaf;
+}
+
+// Write a file inside the project without following a symlink at the leaf.
+//
+// The project root itself may be reached through a symlink (~/current -> ~/src),
+// so the root is resolved once and the *components below it* are the ones that
+// must be real directories.
+function writeFileInside(projectRoot, file, content, { exclusive = false } = {}) {
+  const realRoot = fs.realpathSync(projectRoot);
+  if (realRoot !== path.resolve(projectRoot)) {
+    // The caller's project path is (or goes through) a symlink; that is allowed,
+    // but the write target has to be expressed under the real root so the
+    // component walk below starts from a directory that cannot be replaced.
+    file = path.join(realRoot, path.relative(path.resolve(projectRoot), path.resolve(file)));
+  }
+  const dir = path.dirname(file);
+  let realDir;
+  try {
+    realDir = fs.realpathSync(dir);
+  } catch {
+    throw new Error(`Destination directory does not exist: ${dir}`);
+  }
+  if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) {
+    throw new Error(`Destination directory escapes project root — rejected: ${dir}`);
+  }
+  let walk = realRoot;
+  for (const part of path.relative(realRoot, realDir).split(path.sep).filter(Boolean)) {
+    walk = path.join(walk, part);
+    if (fs.lstatSync(walk).isSymbolicLink()) {
+      throw new Error(`Refusing to write through symlinked directory: ${walk}`);
+    }
+  }
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | O_NOFOLLOW |
+    (exclusive ? fs.constants.O_EXCL : 0);
+  const fd = fs.openSync(file, flags, 0o644);
+  try {
+    fs.writeFileSync(fd, content, 'utf-8');
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 // ─── Prerequisite checking ─────────────────────────────────────────
@@ -227,14 +394,43 @@ function checkOptionalTool(binName) {
 // Uses spawnSync with argument arrays — NO shell, NO injection.
 // User-controlled values are passed as separate argv entries.
 
+// Bounded by design: a build that produces more than this is truncated rather
+// than allowed to grow the server's memory. Kept in sync with docs/security.md
+// (AUDIT SEC-NEW-07: the doc said 2 MB while the code used 16 MB).
+const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
+
+// Synchronous by construction (spawnSync) despite the name; `spawn` is kept
+// because every call site reads like the async API it replaces, and the ESLint
+// rules in eslint.config.js are written against that name.
 function spawn(cmd, args, opts = {}) {
-  return spawnSync(cmd, args, {
+  // `spawnSync` does honour `detached` (libuv's uv_spawn takes it, and the
+  // process-group kill below depends on it), but `@types/node` only declares the
+  // option on the async `spawn` overloads — hence the intersection. The
+  // annotation also pins the string encoding so `stdout` stays a `string`.
+  /** @type {import('node:child_process').SpawnSyncOptionsWithStringEncoding & { detached: boolean }} */
+  const spawnOptions = {
     timeout: (opts.timeout ?? 180) * 1000,
     encoding: 'utf-8',
-    maxBuffer: 16 * 1024 * 1024,
+    maxBuffer: MAX_OUTPUT_BYTES,
     cwd: opts.cwd,
     stdio: 'pipe',
-  });
+    // POSIX only: put the child in its own process group so a timeout can kill
+    // the whole tree. `cmake --build --parallel` spawns make/ninja workers as
+    // grandchildren that survive a SIGKILL aimed at the direct child alone.
+    detached: process.platform !== 'win32',
+  };
+  return spawnSync(cmd, args, spawnOptions);
+}
+
+// spawnSync kills only the direct child on timeout. Kill the rest of the group
+// too, or a timed-out `cmake --build` keeps compiling in the background.
+function killProcessTree(pid) {
+  if (!pid) return;
+  if (process.platform === 'win32') {
+    try { spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 10000 }); } catch { /* best effort */ }
+    return;
+  }
+  try { process.kill(-pid, 'SIGKILL'); } catch { /* group already gone */ }
 }
 
 // spawnSync reports failures on `result.error` / `result.signal` — it does NOT
@@ -246,19 +442,29 @@ function trySpawn(cmd, args, opts = {}) {
   const output = result.stdout || '';
   const partialStderr = result.stderr ? `\n${result.stderr.trim()}` : '';
 
-  if (result.error) {
-    const code = result.error.code;
+  // `spawnSync` types its `error` as a plain Error, but at runtime it is an
+  // ErrnoException: `code` is how ENOENT/ENOBUFS/ETIMEDOUT arrive. Saying so once
+  // here is what lets `tsc --checkJs` see that the branches below are reachable.
+  /** @type {NodeJS.ErrnoException | undefined} */
+  const spawnError = result.error;
+  if (spawnError) {
+    const code = spawnError.code;
     if (code === 'ENOENT') {
       return { ok: false, output: '', stderr: installHint(cmd) };
     }
     if (code === 'ENOBUFS') {
+      // maxBuffer (16 MB) was exceeded. spawnSync reports this on `error`, but
+      // the process ran fine — reporting "could not be started" misdiagnoses the
+      // one case (a verbose build) where the output is the whole point.
       return {
         ok: false,
         output,
-        stderr: `'${cmd}' exceeded maximum output buffer (16 MB) and was terminated.${partialStderr}`,
+        stderr: `'${cmd}' exceeded the maximum output buffer (${MAX_OUTPUT_BYTES / (1024 * 1024)} MB) and was terminated.` +
+                ` Narrow the target or build one plugin at a time.${partialStderr}`,
       };
     }
     if (code === 'ETIMEDOUT' || result.signal === 'SIGTERM' || result.signal === 'SIGKILL') {
+      killProcessTree(result.pid);
       return {
         ok: false,
         output,
@@ -294,6 +500,10 @@ const defaultConfig = {
   validateFormats: ['VST3', 'CLAP'],
   validateCommand: 'pluginval',
   clapValidatorCommand: 'clap-validator',
+  // pluginval's own scale is 1-10; 10 enables the fuzz/GUI categories, which is
+  // the right default for a scaffold (CI asserts a fresh plugin passes it) but
+  // the wrong ceiling to hard-code for every user's work-in-progress plugin.
+  strictnessLevel: 10,
 };
 
 // Formats findPluginBinaries() actually knows how to locate.
@@ -313,7 +523,13 @@ const VALIDATOR_CONFIG_KEY = { VST3: 'validateCommand', CLAP: 'clapValidatorComm
 // all, so a non-array `validateFormats` crashed on .join() and a `buildDir` of
 // "../x" escaped the project root (AUDIT SEC-03).
 const RELATIVE_DIR = z.string()
-  .regex(SAFE_PATH, 'may contain only letters, digits, spaces and _ / . \\ - : @ ~')
+  .max(1024)
+  // No backslash and no colon: these values are pasted into CMake *source*
+  // (`add_subdirectory(${CMAKE_BINARY_DIR}/{{PLUGINS_DIR}}/...)`), where `\`
+  // begins an escape sequence — `pluginsDir: "pl\ugins"` produced a plugin that
+  // scaffolded successfully and then failed to configure with
+  // "Invalid character escape '\u'" (AUDIT SEC-NEW-10).
+  .regex(SAFE_PATH, 'may contain only letters, digits, spaces and _ / . @ ~ -')
   .refine(p => !hasDotDot(p), 'may not contain ".." segments')
   .refine(p => !path.isAbsolute(p), 'must be relative to the project root');
 
@@ -325,6 +541,7 @@ const CONFIG_SCHEMA = {
   validateFormats: z.array(z.enum(KNOWN_FORMATS)).min(1),
   validateCommand: z.string().regex(SAFE_TARGET, 'may contain only letters, digits, _ . and -'),
   clapValidatorCommand: z.string().regex(SAFE_TARGET, 'may contain only letters, digits, _ . and -'),
+  strictnessLevel: z.number().int().min(1).max(10),
 };
 
 // Validates each key independently so one bad value degrades to its default
@@ -451,6 +668,28 @@ function stripAnsi(text) {
   return text.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
 }
 
+// Flatten untrusted project text to one short printable line. Applied to
+// anything read out of the project and echoed back to the model (directory
+// names, status.json, paths in errors): a newline, a backtick or a control
+// character in a plugin's own metadata must not be able to restructure the
+// tool's output or hand the model a fresh "### SYSTEM" section.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+
+function cleanScalar(value, maxLength = 200) {
+  return String(value)
+    .replace(CONTROL_CHARS, ' ')
+    .replace(/`/g, "'")
+    .slice(0, maxLength);
+}
+
+// status.json is project-authored metadata, not server state: bound what a
+// repository can make the server echo back.
+const STATUS_MAX_BYTES = 4096;
+
+// Longest single diagnostic line echoed back to the model.
+const DIAGNOSTIC_MAX_CHARS = 500;
+
 // Compiler/linker diagnostic shapes, in priority order. Each captures the
 // severity as group 1.
 //
@@ -508,8 +747,11 @@ function parseBuildOutput(text) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     const kind = classifyDiagnostic(trimmed);
-    if (kind === 'error') errors.push(trimmed);
-    else if (kind === 'warning') warnings.push(trimmed);
+    // A single generated line can be megabytes long (inlined templates,
+    // concatenated minified JS in a Unity build). Bound each item as well as
+    // the count, or "20 errors" is still an unbounded response.
+    if (kind === 'error') errors.push(trimmed.slice(0, DIAGNOSTIC_MAX_CHARS));
+    else if (kind === 'warning') warnings.push(trimmed.slice(0, DIAGNOSTIC_MAX_CHARS));
   }
 
   return {
@@ -575,11 +817,21 @@ function parseTestOutput(text) {
 
 const LINT_EXTENSIONS = ['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx'];
 
+// Returns { files, skipped }. `skipped` exists because the previous version did
+// `catch { return; }` on readdirSync: an unreadable subtree vanished from the
+// walk, and the caller then reported "No formatting issues found across project"
+// with isError false — a false clean from a tool that can rewrite sources.
 function findFilesByExt(dir, exts, skipNames = new Set(), skipPaths = new Set()) {
   const results = [];
+  const skipped = [];
   function walk(d) {
     let entries;
-    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch (e) {
+      skipped.push({ path: d, reason: e.code || e.message });
+      return;
+    }
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue;
       if (entry.isSymbolicLink()) continue;
@@ -593,7 +845,7 @@ function findFilesByExt(dir, exts, skipNames = new Set(), skipPaths = new Set())
     }
   }
   walk(dir);
-  return results;
+  return { files: results, skipped };
 }
 
 // JUCE's artefact layout, taken from `_juce_set_plugin_target_properties()` and
@@ -668,11 +920,17 @@ function standaloneArtefacts(dir) {
 
 // Scans <buildDir>/<pluginsDir>/<target>/<target>_artefacts/<config>/ for built
 // artefacts of the requested formats.
-function findPluginBinaries(config, buildDir, formats, pluginsRelDir = 'plugins') {
+//
+// An artefact is not a passive file: the validator *loads* it, so it runs code.
+// A symlink inside the build tree therefore must never be followed — otherwise a
+// repository decides which library the validator executes, from a path outside
+// the project (AUDIT SEC-NEW-05). Skipped candidates are reported, not hidden.
+function findPluginBinaries(config, buildDir, formats, pluginsRelDir = 'plugins', projectRoot = null) {
+  const found = [];
+  const skipped = [];
   const outDir = path.join(buildDir, pluginsRelDir);
-  if (!fs.existsSync(outDir)) return [];
+  if (!fs.existsSync(outDir)) return { found, skipped };
 
-  const results = [];
   const plugins = fs.readdirSync(outDir, { withFileTypes: true })
     .filter(e => e.isDirectory())
     .map(e => e.name);
@@ -686,14 +944,30 @@ function findPluginBinaries(config, buildDir, formats, pluginsRelDir = 'plugins'
       if (!layout) continue;   // a format this server does not know how to locate
 
       const fmtDir = path.join(artDir, layout.dir);
-      const found = layout.suffix
+      const candidates = layout.suffix
         ? artefactsWithSuffix(fmtDir, layout.suffix)
         : standaloneArtefacts(fmtDir);
 
-      for (const p of found) results.push({ plugin, format: fmt, path: p });
+      for (const p of candidates) {
+        let stat;
+        try { stat = fs.lstatSync(p); } catch { continue; }
+        if (stat.isSymbolicLink()) {
+          skipped.push({ plugin, format: fmt, path: p, reason: 'symlink — not loaded' });
+          continue;
+        }
+        if (projectRoot) {
+          try {
+            realInside(projectRoot, p, 'Plugin artefact');
+          } catch {
+            skipped.push({ plugin, format: fmt, path: p, reason: 'outside the project root — not loaded' });
+            continue;
+          }
+        }
+        found.push({ plugin, format: fmt, path: p });
+      }
     }
   }
-  return results;
+  return { found, skipped };
 }
 
 // Single-pass placeholder substitution so values containing `{{OTHER_KEY}}`
@@ -719,8 +993,7 @@ function mapPluginType(type, ui) {
         + 'JUCE FORMATS list. Remove the `formats` argument (or use type="juce" for multi-format builds).',
     };
     case 'vst3': return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3' };
-    case 'juce':
-    default:     return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3;LV2;Standalone' };
+    case 'juce': return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3;LV2;Standalone' };
     // A standalone *application*: juce_add_gui_app() builds one executable that
     // owns its audio device, so it has no plugin FORMATS at all. `formats: null`
     // is what tells the create handler to skip format validation. `ui` is not
@@ -746,6 +1019,10 @@ function mapPluginType(type, ui) {
         + 'AudioProcessor instead, use type="juce" with formats="LV2".)',
     };
   }
+  // The `type` enum in the tool schema is the real gate; this is the belt to its
+  // braces. A `default:` arm here would silently scaffold a JUCE plugin if a new
+  // enum member were ever added without a template.
+  throw new Error(`no template for plugin type "${type}"`);
 }
 
 // An LV2 plugin is identified by URI, and that URI appears in three places that
@@ -773,25 +1050,27 @@ function bundleVendor(vendor) {
     .replace(/^\.+|\.+$/g, '') || 'apc-mcp';
 }
 
-// Turtle string literals are delimited by `"` and honour backslash escapes, so a
-// value containing either character would terminate the literal early and
-// produce invalid metadata. SAFE_TEXT permits both, so they must be escaped
-// rather than assumed absent.
-function turtleEscape(text) {
+// C++ string literals and Turtle string literals are delimited by `"` and honour
+// backslash escapes, so a value containing either character terminates the
+// literal early and produces invalid source or metadata. SAFE_TEXT permits both,
+// so they must be escaped rather than assumed absent. Both grammars need exactly
+// the same two escapes (Turtle's extra \n \t \r escapes are unreachable while
+// control characters are rejected), so there is one implementation: two
+// identical functions with different names were free to drift apart.
+function escapeBackslashQuote(text) {
   return String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-function cxxStringEscape(text) {
-  return String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
-
-// HTML *text* context (the scaffolded WebView UI). Quotes are harmless in a text
-// node; &, < and > are not.
+// HTML context (the scaffolded WebView UI). Today every use is a text node, where
+// quotes are harmless — but escaping them too costs nothing and makes the helper
+// safe if a template later puts the value in an attribute (AUDIT SEC-NEW-09).
 function htmlEscape(text) {
   return String(text)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // JUCE's JUCEUtils.cmake passes DESCRIPTION into target_compile_definitions as
@@ -803,7 +1082,13 @@ function juceDescriptionEscape(text) {
     .replace(/\\/g, '\\\\\\\\')
     .replace(/"/g, '\\\\\\"')
     .replace(/\$/g, '\\$')
-    .replace(/;/g, '\\;');
+    // '#' and ';' also have meaning in the *generated command line* (Makefile
+    // comment / shell separator / CMake list separator), which is one context
+    // further out than the quoted CMake argument this value is written into.
+    // Octal C escapes survive the whole chain and cannot run on into a
+    // following hex digit the way \x23 would.
+    .replace(/#/g, '\\\\043')
+    .replace(/;/g, '\\\\073');
 }
 
 // Strips hyphens and underscores from SAFE_PLUGIN_NAME to form a valid C/C++
@@ -930,6 +1215,52 @@ function registerTool(name, schema, handler) {
   });
 }
 
+// ─── CMake cache trust ──────────────────────────────────────────────
+// A CMakeCache.txt is project state that CMake reads before anything else, and it
+// can carry the same code-loading variables that configure's -D options are not
+// allowed to set. A repository that commits one therefore turned a plain
+// `configure` — or the auto-configure inside `build` — into code execution
+// (AUDIT SEC-NEW-06, reproduction 3). A cache that belongs to another source tree,
+// or that carries a code-loading mark, is not trusted: it is deleted and the
+// configure starts clean.
+const CACHE_CODE_MARK = new RegExp('^CMAKE_(?:' + [
+  'PROJECT_TOP_LEVEL_INCLUDES',
+  'PROJECT_INCLUDE(?:_BEFORE)?',
+  'TOOLCHAIN_FILE',
+  'MODULE_PATH',
+  'USER_MAKE_RULES_OVERRIDE[A-Z_]*',
+  '[A-Z_]*COMPILER_LAUNCHER',
+].join('|') + '):', 'm');
+
+function sanitizeCmakeCache(projectRoot, buildDir) {
+  const cachePath = path.join(buildDir, 'CMakeCache.txt');
+  if (!fs.existsSync(cachePath)) return null;
+
+  let text;
+  try {
+    text = fs.readFileSync(cachePath, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  // Compare *resolved* paths: CMake records whatever -S/cwd it was given, and on
+  // macOS /var/folders/... is the same tree as /private/var/folders/..., so a
+  // lexical comparison would call every ordinary cache foreign and delete it.
+  const resolveReal = p => {
+    try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+  };
+  const home = text.match(/^CMAKE_HOME_DIRECTORY:INTERNAL=(.*)$/m)?.[1]?.trim();
+  const foreign = Boolean(home) && resolveReal(home) !== resolveReal(projectRoot);
+
+  const carriesCode = CACHE_CODE_MARK.test(text);
+  if (!foreign && !carriesCode) return null;
+
+  fs.rmSync(cachePath, { force: true });
+  return foreign
+    ? 'Removed a CMakeCache.txt that belongs to a different source tree; configuring from scratch.'
+    : 'Removed a CMakeCache.txt that carried code-loading settings (project include / toolchain / module path / rules override / compiler launcher); configuring from scratch.';
+}
+
 function buildNeedsConfigure(buildDir, config) {
   const cachePath = path.join(buildDir, 'CMakeCache.txt');
   if (!fs.existsSync(cachePath)) return true;
@@ -949,11 +1280,11 @@ function buildNeedsConfigure(buildDir, config) {
 registerTool(
   'audio_plugin_build',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD if you have apc-mcp.json or CMakeLists.txt in a parent directory.'),
     config: z.enum(['Debug', 'Release']).optional()
       .describe('Build configuration. Debug includes symbols and assertions; Release is optimized. Falls back to "config" in apc-mcp.json, else Debug.'),
-    target: z.string().regex(SAFE_TARGET).optional()
+    target: z.string().max(256).regex(SAFE_TARGET).optional()
       .describe('Build only this CMake target (e.g. "MyPlugin_VST3", "MyPlugin_Standalone"). Omit to build all.'),
     clean: z.boolean().default(false)
       .describe('Clean build: rebuild everything from scratch.'),
@@ -965,11 +1296,15 @@ registerTool(
     const config = params.config ?? cfg.config ?? 'Debug';
     const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
 
+    // A cache is project state; one that belongs to another tree or carries
+    // code-loading settings is discarded before it can reach a reconfigure.
+    const cacheNotice = sanitizeCmakeCache(proj, buildDir);
+
     // Auto-configure when unconfigured, or when a single-config cache has a
     // different (or empty) CMAKE_BUILD_TYPE than the requested config.
     const cacheExists = fs.existsSync(path.join(buildDir, 'CMakeCache.txt'));
     if (buildNeedsConfigure(buildDir, config)) {
-      fs.mkdirSync(buildDir, { recursive: true });
+      mkdirInside(proj, buildDir);
       // Only pass `-G` when creating a fresh cache; passing a default generator
       // onto an existing CMakeCache.txt built with another generator (e.g. Ninja)
       // makes CMake abort with a generator mismatch error.
@@ -1002,11 +1337,12 @@ registerTool(
       ? (r.stderr || r.output).trim().slice(-2000)
       : '';
     const text = [
+      ...(cacheNotice ? [cacheNotice, ''] : []),
       `## Build ${r.ok && parsed.errorCount === 0 ? 'succeeded' : 'failed'}`,
       `Config: ${config}${params.target ? ` | Target: ${params.target}` : ''}`,
       `Errors: ${parsed.errorCount}, Warnings: ${parsed.warningCount}`,
       ...(parsed.errors.length ? ['', '### Errors', ...parsed.errors] : []),
-      ...(rawTail ? ['', '### Output', rawTail] : []),
+      ...(rawTail ? ['', '### Output (untrusted project output)', rawTail] : []),
       ...(parsed.warnings.length ? ['', '### Warnings', ...parsed.warnings] : []),
       ...(parsed.truncated ? ['', '_(truncated to first 20 items)_'] : []),
     ].join('\n');
@@ -1022,7 +1358,7 @@ registerTool(
 registerTool(
   'audio_plugin_configure',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
     config: z.enum(['Debug', 'Release']).optional()
       .describe('Build configuration. Falls back to "config" in apc-mcp.json, else Debug.'),
@@ -1037,9 +1373,12 @@ registerTool(
     const cfg = loadProjectConfig(proj);
     const config = params.config ?? cfg.config ?? 'Debug';
     const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
+    // A cache is project state; one that belongs to another tree or carries
+    // code-loading settings must not be reused (see sanitizeCmakeCache).
+    const cacheNotice = sanitizeCmakeCache(proj, buildDir);
     const cacheExists = fs.existsSync(path.join(buildDir, 'CMakeCache.txt'));
     const generator = params.generator || (!cacheExists ? cfg.generator : null);
-    fs.mkdirSync(buildDir, { recursive: true });
+    mkdirInside(proj, buildDir);
 
     const args = [
       '-B', buildDir,
@@ -1047,8 +1386,17 @@ registerTool(
       `-DCMAKE_BUILD_TYPE=${config}`,
     ];
     if (params.options) {
-      // Split space-separated flags safely — each token becomes its own argv entry
-      for (const flag of params.options.split(/\s+/)) {
+      // Each token becomes its own argv entry — there is no shell. `;` is the
+      // documented separator because a CMake value may legitimately contain a
+      // space (`-DCMAKE_PREFIX_PATH=/Users/me/My Plugins`) and there is no quote
+      // character in the allowed charset to protect it. Whitespace splitting
+      // remains for backwards compatibility with existing callers and docs.
+      // Every token is still validated: `;` is a separator, never a payload.
+      const tokens = params.options.includes(';')
+        ? params.options.split(';')
+        : params.options.split(/\s+/);
+      for (const raw of tokens) {
+        const flag = raw.trim();
         if (!flag) continue;
         // The `..` check must look INSIDE a -DVALUE too: hasDotDot() on the
         // whole token sees the segment "-DX=..", never a bare "..", so a value
@@ -1065,12 +1413,22 @@ registerTool(
             isError: true,
           };
         }
+        if (cmakeOptionSetsCode(flag)) {
+          return {
+            content: [{ type: 'text', text:
+              `Invalid CMake option "${flag}": this variable names code CMake would load or execute ` +
+              `(project include, toolchain, compiler, launcher, make program or *FLAGS). ` +
+              `Values are configuration data for every other variable.` }],
+            isError: true,
+          };
+        }
         args.push(flag);
       }
     }
     const r = trySpawn('cmake', args, { cwd: proj, timeout: 120 });
-    const errMsg = (r.stderr || r.output || 'cmake exited non-zero with no output.').trim();
-    const text = r.ok ? 'Configure succeeded.' : `## Configure failed\n${errMsg}`;
+    const errMsg = (r.stderr || r.output || 'cmake exited non-zero with no output.').trim().slice(0, 4000);
+    const text = [cacheNotice, r.ok ? 'Configure succeeded.' : `## Configure failed\n${errMsg}`]
+      .filter(Boolean).join('\n\n');
     return { content: [{ type: 'text', text }], isError: !r.ok };
   }
 );
@@ -1079,11 +1437,11 @@ registerTool(
 registerTool(
   'audio_plugin_test',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
     config: z.enum(['Debug', 'Release']).optional()
       .describe('Build configuration for the test executable. Falls back to "config" in apc-mcp.json, else Debug.'),
-    testName: z.string().regex(SAFE_REGEX).optional()
+    testName: z.string().max(512).regex(SAFE_REGEX).optional()
       .describe('Run only tests matching this regex. Example: "MyPluginTest.*" to run a subset.'),
   },
   async (params) => {
@@ -1152,11 +1510,11 @@ registerTool(
 registerTool(
   'audio_plugin_lint',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
     fix: z.boolean().default(false)
       .describe('Auto-fix formatting in place. Without this flag, runs as dry-run and reports files that would change.'),
-    target: z.string().min(1)
+    target: z.string().min(1).max(4096)
       .refine(t => !t.includes('\0'), 'must not contain a NUL byte')
       .optional()
       .describe('Specific file or subdirectory to lint, relative to project root. Example: "plugins/Foo/Source". Must stay inside the project. Lints the whole project if omitted.'),
@@ -1200,6 +1558,7 @@ registerTool(
     // for LV2 plugins while skipping build trees and vendored SDKs (`_tools/`).
     const stat = fs.statSync(searchRoot);
     let files;
+    let skipped = [];
     if (stat.isFile()) {
       files = LINT_EXTENSIONS.some(e => searchRoot.endsWith(e)) ? [searchRoot] : [];
     } else {
@@ -1214,11 +1573,32 @@ registerTool(
       if (searchRoot !== resolvedToolsDir && !searchRoot.startsWith(resolvedToolsDir + path.sep)) {
         skipPaths.add(resolvedToolsDir);
       }
-      files = findFilesByExt(searchRoot, LINT_EXTENSIONS, skipNames, skipPaths);
+      ({ files, skipped } = findFilesByExt(searchRoot, LINT_EXTENSIONS, skipNames, skipPaths));
     }
 
     if (files.length === 0) {
-      return { content: [{ type: 'text', text: 'No C/C++ source files found to lint.' }] };
+      // A directory walk that could not read part of the tree is a *read*
+      // failure, not an empty project: say which directories, and fail.
+      if (skipped.length) {
+        const text = [
+          '## Lint could not read the project',
+          `No source file was linted: ${skipped.length} director${skipped.length === 1 ? 'y' : 'ies'} could not be read.`,
+          '',
+          '```',
+          ...skipped.slice(0, 10).map(s => `${s.path}  (${s.reason})`),
+          '```',
+        ].join('\n');
+        return { content: [{ type: 'text', text }], isError: true };
+      }
+      // Asking for a specific target and linting nothing is not a clean result
+      // either: the old message ("No C/C++ source files found to lint." with
+      // isError false) reads as success and lets a model report a clean file
+      // that was never opened (AUDIT SEC-NEW-08).
+      const text = params.target
+        ? `No C/C++ source files found under "${params.target}" — nothing was linted. ` +
+          'Check the path and that it contains .c/.cpp/.cc/.h/.hpp files.'
+        : 'No C/C++ source files found in the project — nothing was linted.';
+      return { content: [{ type: 'text', text }], isError: Boolean(params.target) };
     }
 
     // Run clang-format in bounded batches so large projects never hit OS E2BIG.
@@ -1266,26 +1646,24 @@ registerTool(
         }
         return false;
       });
-
-      // clang-format failed without naming a single file: this is not a
-      // formatting verdict. The cause is a timeout, the output cap (ENOBUFS) or
-      // a crash, and trySpawn() wrote the human-readable explanation into
-      // r.stderr — surface it instead of discarding it. Advising fix=true here
-      // would be actively wrong: it re-runs the same failing binary with
-      // in-place write permissions.
+      // A non-zero exit that names no file is a *tool* failure (crash, timeout,
+      // missing style config, permission denied), not "0 files had issues".
+      // (Found independently by the substantiation audit as DEF-1 and by the
+      // security review as SEC-NEW-08; same branch, kept in the review's
+      // wording since it merged first.)
       if (badFiles.length === 0) {
+        const detail = (r.stderr || r.output || '').trim().slice(0, 2000);
         const text = [
-          '## Lint failed',
-          `clang-format exited non-zero with no per-file diagnostics across ${files.length} file(s).`,
-          'This is not a formatting verdict — the run itself failed (timeout, output cap or crash).',
+          '## Lint could not run',
+          '`clang-format` exited non-zero without naming any file, so this is a tool',
+          'failure rather than a formatting problem. No file was rewritten.',
           '',
           '```',
-          (r.stderr || r.output || '(no output)').slice(0, 2000),
+          detail || '(no output)',
           '```',
         ].join('\n');
         return { content: [{ type: 'text', text }], isError: true };
       }
-
       const relative = badFiles.map(f => path.relative(proj, f));
       const text = [
         '## Lint found issues',
@@ -1297,10 +1675,15 @@ registerTool(
       return { content: [{ type: 'text', text }], isError: true };
     }
 
-    return { content: [{ type: 'text', text: params.target
+    const skipNote = skipped.length
+      ? `\n\n_${skipped.length} director${skipped.length === 1 ? 'y was' : 'ies were'} unreadable and ` +
+        `not linted: ${skipped.slice(0, 5).map(s => s.path).join(', ')}. The result above covers only the ` +
+        `${files.length} file(s) that could be read._`
+      : '';
+    const clean = params.target
       ? `No formatting issues in ${params.target}.`
-      : 'No formatting issues found across project.'
-    }] };
+      : `No formatting issues found in ${files.length} file(s).`;
+    return { content: [{ type: 'text', text: clean + skipNote }] };
   }
 );
 
@@ -1308,7 +1691,7 @@ registerTool(
 registerTool(
   'audio_plugin_plugins',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
     format: z.enum(['text', 'json']).default('text')
       .describe('Output format. "json" returns structured data the LLM can process. "text" is human-readable.'),
@@ -1327,7 +1710,7 @@ registerTool(
 
     const details = plugins.map(name => {
       const statusPath = path.join(pluginsDir, name, 'status.json');
-      let meta = { name };
+      const meta = { name: cleanScalar(name, 128) };
       let statusStat = null;
       try { statusStat = fs.lstatSync(statusPath); } catch { /* absent */ }
       if (statusStat) {
@@ -1336,14 +1719,22 @@ registerTool(
             throw new Error('refusing to read symlinked status.json');
           }
           assertWithinProject(proj, statusPath, 'Plugin status.json');
+          if (statusStat.size > STATUS_MAX_BYTES) {
+            throw new Error(`status.json is ${statusStat.size} bytes (limit ${STATUS_MAX_BYTES})`);
+          }
           const parsed = JSON.parse(fs.readFileSync(statusPath, 'utf-8'));
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            meta = { ...parsed, name };
+            // Whitelisted fields only, each flattened to one short line: the
+            // file is project-authored, so it may inform the listing but not
+            // choose which keys, how long, or on how many lines it appears.
+            for (const key of ['type', 'status', 'version']) {
+              if (typeof parsed[key] === 'string') meta[key] = cleanScalar(parsed[key], 200);
+            }
           }
         } catch (e) {
           // A malformed or symlinked status.json must not break the listing —
           // surface a warning instead of leaking external files or dropping silently.
-          meta = { ...meta, statusError: `status.json is unreadable: ${e.message}` };
+          meta.statusError = cleanScalar(`status.json is unreadable: ${e.message}`, 200);
         }
       }
       return meta;
@@ -1373,7 +1764,7 @@ registerTool(
 registerTool(
   'audio_plugin_validate',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
     config: z.enum(['Debug', 'Release']).optional()
       .describe('Build configuration (matches the build you ran). Falls back to "config" in apc-mcp.json, else Debug.'),
@@ -1406,31 +1797,23 @@ registerTool(
       }
     }
 
-    const binaries = findPluginBinaries(config, buildDir, formats, cfg.pluginsDir);
+    const { found: binaries, skipped } = findPluginBinaries(
+      config, buildDir, formats, cfg.pluginsDir, proj);
 
-    // A symlink planted anywhere inside the build tree (the buildDir itself is
-    // already containment-checked, but its contents are not) can point a
-    // "discovered" artefact at a path outside the project root — redirecting
-    // what gets validated, and handing a validator (which loads the file as a
-    // plugin, i.e. executes it) an arbitrary path. Refuse those paths with a
-    // dedicated outcome instead of following them.
-    const binaries2 = [];
-    const escaped = [];
-    for (const b of binaries) {
-      try {
-        assertWithinProject(proj, b.path, 'Artefact path');
-        binaries2.push(b);
-      } catch {
-        escaped.push(b);
-      }
-    }
-    if (escaped.length && !binaries2.length) {
+    // findPluginBinaries() already refuses to *load* an artefact that is a
+    // symlink or resolves outside the project (SEC-NEW-05). The substantiation
+    // audit adds the reporting half of that requirement: a run that declined to
+    // validate something it found must never read as clean. A run where EVERY
+    // discovered artefact was skipped reports a refusal, not "no binaries"…
+    if (!binaries.length && skipped.length) {
       const lines = [
         '## Validation refused',
-        `Every discovered artefact for format(s) ${formats.join(', ')} resolves outside the`,
-        'project root via a symlink — nothing will be handed to a validator.',
+        `Every discovered artefact for format(s) ${formats.join(', ')} was skipped —`,
+        'each is a symlink or resolves outside the project root, so nothing was',
+        'handed to a validator (a validator loads its argument as a plugin).',
         '',
-        ...escaped.map(b => `- ${b.plugin} [${b.format}]: \`${b.path}\``),
+        ...skipped.map(s =>
+          `- ${cleanScalar(s.plugin, 128)} [${s.format}]: \`${cleanScalar(s.path, 200)}\` — ${s.reason}`),
         '',
         'Check the build tree for symlinks pointing outside the project; a build',
         'directory and its artefacts are expected to live entirely inside it.',
@@ -1438,16 +1821,15 @@ registerTool(
       return { content: [{ type: 'text', text: lines.join('\n') }], isError: true };
     }
 
-    if (!binaries2.length) {
+    if (!binaries.length) {
       const hint = fs.existsSync(buildDir) ? '' : ' (build directory not found — run audio_plugin_build first)';
       return {
         content: [{ type: 'text', text: `No plugin binaries found for format(s): ${formats.join(', ')}.${hint}` }],
         isError: true,
       };
     }
-    const binariesToValidate = binaries2;
 
-    // Five distinct outcomes, and only three of them are errors:
+    // Four distinct per-artefact outcomes, two of which are errors:
     //
     //   pass              validated and the validator exited 0
     //   fail              validated and the validator exited non-zero
@@ -1456,13 +1838,20 @@ registerTool(
     //   not-checkable     no validator exists for this format in this server at
     //                     all (LV2/AudioUnit/Standalone) → nothing to install,
     //                     so it is reported and NOT treated as an error
-    //   refused-escape    the artefact path resolves outside the project root
-    //                     via a symlink → isError; the run did not validate
-    //                     everything it found, and no install fixes this
-    const results = [
-      ...escaped.map(b => ({ ...b, status: 'refused-escape' })),
-    ];
-    for (const b of binariesToValidate) {
+    //
+    // …plus the skipped list from discovery: an artefact that is a symlink or
+    // resolves outside the project root. Those are never loaded, and they fail
+    // the run below — silently dropping them would be validation theatre.
+    /**
+     * `reason` only exists on a missing-validator row and `output` only on a fail
+     * row; typing the array stops a future edit from reading either one without
+     * checking the status first (which is what `tsc --checkJs` flagged here).
+     * @type {Array<{ plugin: string, format: string, path: string,
+     *   status: 'pass' | 'fail' | 'missing-validator' | 'not-checkable',
+     *   reason?: string, output?: string }>}
+     */
+    const results = [];
+    for (const b of binaries) {
       const bin = validatorFor[b.format];
 
       if (!bin) {
@@ -1478,9 +1867,11 @@ registerTool(
       // Tracktion/pluginval uses --strictness-level (out-of-process is already
       // default); free-audio/clap-validator requires the `validate` subcommand.
       const args = b.format === 'VST3'
-        ? ['--strictness-level', '10', b.path]
+        ? ['--strictness-level', String(cfg.strictnessLevel ?? 10), b.path]
         : ['validate', b.path];
-      const r = trySpawn(bin, args, { timeout: 120 });
+      // cwd: validators write logs; without this they land wherever the MCP
+      // client happened to spawn the server, i.e. outside the project.
+      const r = trySpawn(bin, args, { cwd: proj, timeout: 120 });
       results.push({
         ...b,
         status: r.ok ? 'pass' : 'fail',
@@ -1493,13 +1884,12 @@ registerTool(
     const failed = count('fail');
     const missing = count('missing-validator');
     const notCheckable = count('not-checkable');
-    const refused = count('refused-escape');
 
     const lines = [
       `## Validation results — ${passed} passed, ${failed} failed` +
         (missing ? `, ${missing} skipped` : '') +
         (notCheckable ? `, ${notCheckable} not checkable` : '') +
-        (refused ? `, ${refused} refused` : ''),
+        (skipped.length ? `, ${skipped.length} refused` : ''),
     ];
     for (const r of results) {
       const status = {
@@ -1507,21 +1897,22 @@ registerTool(
         fail: 'FAIL',
         'missing-validator': 'SKIPPED',
         'not-checkable': 'NOT CHECKABLE',
-        'refused-escape': 'REFUSED',
       }[r.status];
-      lines.push(`\n### ${r.plugin} [${r.format}] — ${status}`);
+      lines.push(`\n### ${cleanScalar(r.plugin, 128)} [${r.format}] — ${status}`);
       lines.push(`\`${r.path}\``);
       if (r.status === 'not-checkable') {
         lines.push(`_apc-mcp has no ${r.format} validator. The binary was found and is fine — ` +
           `it simply cannot be checked here. Informational only, not a failure._`);
-      } else if (r.status === 'refused-escape') {
-        lines.push(`_This path resolves outside the project root via a symlink — refused. ` +
-          `A validator loads its argument as a plugin, so an uncontained path is not ` +
-          `handed to one. Check the build tree for symlinks._`);
       } else if (r.status === 'missing-validator') {
         lines.push(`_${r.reason}_`);
       } else if (r.status === 'fail') {
         lines.push(`\`\`\`\n${r.output}\n\`\`\``);
+      }
+    }
+    if (skipped.length) {
+      lines.push('', '**Refused** (an artefact that is a symlink, or resolves outside the project, is never loaded):');
+      for (const s of skipped) {
+        lines.push(`- ${cleanScalar(s.plugin, 128)} [${s.format}] ${cleanScalar(s.path, 200)} — ${s.reason}`);
       }
     }
     if (missing > 0) {
@@ -1535,7 +1926,7 @@ registerTool(
     // dropping it would be validation theatre.
     return {
       content: [{ type: 'text', text: lines.join('\n') }],
-      isError: failed > 0 || missing > 0 || refused > 0,
+      isError: failed > 0 || missing > 0 || skipped.length > 0,
     };
   }
 );
@@ -1544,9 +1935,9 @@ registerTool(
 registerTool(
   'audio_plugin_create',
   {
-    projectPath: z.string().optional()
+    projectPath: z.string().max(4096).optional()
       .describe('Parent project root where the plugins/ directory lives. Auto-detected from CWD.'),
-    name: z.string().min(1).regex(SAFE_PLUGIN_NAME)
+    name: z.string().min(1).max(64).regex(SAFE_PLUGIN_NAME)
       .describe('Plugin name. Use kebab-case, snake_case, or CamelCase. Examples: "Phaser9000", "my-delay", "TapeEcho".'),
     type: z.enum(['clap', 'vst3', 'juce', 'standalone', 'lv2']).default('clap')
       .describe('What to scaffold. "clap" generates a CLAP plugin against the free-audio/clap headers. "vst3" generates a JUCE plugin targeting VST3 only. "juce" generates a JUCE AudioProcessor for VST3;LV2;Standalone. "standalone" generates a standalone audio APPLICATION (juce_add_gui_app) — one executable that owns its audio device, not a plugin a host loads. "lv2" generates a native LV2 plugin in C with Turtle metadata, unrelated to the LV2 that type="juce" can emit from C++. (ARA is not offered yet — it needs a dedicated template.)'),
@@ -1631,16 +2022,16 @@ registerTool(
       PLUGIN_ID: id,
       PLUGIN_CLASS_NAME: id + 'Processor',
       PLUGIN_DISPLAY_NAME: displayName(params.name),
-      PLUGIN_DESCRIPTION_CXX: cxxStringEscape(params.description),
+      PLUGIN_DESCRIPTION_CXX: escapeBackslashQuote(params.description),
       PLUGIN_DESCRIPTION_CMAKE: juceDescriptionEscape(params.description),
       PLUGIN_FORMATS: formats,
       PLUGINS_DIR: cfg.pluginsDir.split(path.sep).join('/'),
       // One placeholder per output grammar. There is deliberately no bare
       // {{VENDOR}}: a template that referenced it would leave a literal
       // placeholder behind, which the scaffold smoke test treats as a failure.
-      VENDOR_CXX: cxxStringEscape(params.vendor),
+      VENDOR_CXX: escapeBackslashQuote(params.vendor),
       VENDOR_CMAKE: juceDescriptionEscape(params.vendor),
-      VENDOR_TTL: turtleEscape(params.vendor),
+      VENDOR_TTL: escapeBackslashQuote(params.vendor),
       VENDOR_HTML: htmlEscape(params.vendor),
       BUNDLE_VENDOR: bundleVendor(params.vendor),
       MANUFACTURER_CODE: fourCharCode(params.vendor),
@@ -1648,18 +2039,24 @@ registerTool(
       // Used only by templates/lv2, but computed for every scaffold so a template
       // can never reference a variable that was never supplied.
       PLUGIN_URI: lv2Uri(params.vendor, id),
-      PLUGIN_DESCRIPTION_TTL: turtleEscape(params.description),
+      PLUGIN_DESCRIPTION_TTL: escapeBackslashQuote(params.description),
     };
 
-    function copyDir(src, dest) {
-      fs.mkdirSync(dest, { recursive: true });
+    // SEC-NEW-05: every directory level is created and re-verified, and every
+    // file is opened with O_NOFOLLOW|O_EXCL. A `plugins` directory swapped for a
+    // symlink between checkPluginPath() and this write can no longer redirect the
+    // scaffold outside the project — reproduced before the fix with 313 creates
+    // and a flipping symlink, which wrote three plugin trees outside the root.
+    function copyDir(src, dest, depth = 0) {
+      const created = mkdirInside(proj, dest);
+      if (depth === 0) createdPluginDir = created;
       for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
         const srcPath = path.join(src, entry.name);
         const destPath = path.join(dest, entry.name);
-        if (entry.isDirectory()) copyDir(srcPath, destPath);
+        if (entry.isDirectory()) copyDir(srcPath, destPath, depth + 1);
         else if (entry.isFile()) {
           const content = replaceTemplateVars(fs.readFileSync(srcPath, 'utf-8'), vars);
-          fs.writeFileSync(destPath, content, 'utf-8');
+          writeFileInside(proj, destPath, content, { exclusive: true });
         }
       }
     }
@@ -1672,7 +2069,8 @@ registerTool(
         throw new Error('Root CMakeLists.txt is a symlink — refusing to modify it');
       }
 
-      createdPluginDir = true;
+      // copyDir() reports whether *this call* created the plugin directory, so a
+      // failure never deletes a directory that appeared concurrently.
       copyDir(templateDir, pluginDir);
 
       const relPluginDir = path.relative(proj, pluginDir).split(path.sep).join('/');
@@ -1680,10 +2078,11 @@ registerTool(
       const subLine = `add_subdirectory(${subArg})`;
 
       if (!lstatExists(rootCmakePath)) {
-        fs.writeFileSync(
+        writeFileInside(
+          proj,
           rootCmakePath,
           `cmake_minimum_required(VERSION 3.22)\nproject(AudioPlugins LANGUAGES C CXX)\n\n${subLine}\n`,
-          'utf-8'
+          { exclusive: true }
         );
         cmakeRegistration = `Created CMakeLists.txt with \`${subLine}\``;
       } else {
@@ -1696,7 +2095,7 @@ registerTool(
         ).test(uncommented);
         if (!alreadyWired) {
           const sep = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
-          fs.writeFileSync(rootCmakePath, `${existing}${sep}${subLine}\n`, 'utf-8');
+          writeFileInside(proj, rootCmakePath, `${existing}${sep}${subLine}\n`);
           cmakeRegistration = `Registered \`${subLine}\` in CMakeLists.txt`;
         } else {
           cmakeRegistration = `Already registered in CMakeLists.txt: \`${subLine}\``;

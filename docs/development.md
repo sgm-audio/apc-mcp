@@ -18,13 +18,16 @@ Requires Node.js 22+. The server itself is `index.js` (ESM, single file) with tw
 |---|---|
 | `npm test` | Full suite (`node --test`, auto-discovers `tests/`). Some C/C++ compile checks skip unless `APC_CLAP_INCLUDE` / `APC_LV2_INCLUDE` point at real upstream headers |
 | `npm run lint` | ESLint over the repo + `node --check index.js` |
+| `npm run typecheck` | `tsc -p tsconfig.json`: `checkJs` over `index.js`, `scripts/` and the test helpers. No emit |
 | `npm run smoke` | Scaffolds every `type` × `ui` case into a temp project and verifies structure |
 | `npm run smoke:configure` | Same, plus real CMake configure (needs CMake and SDK paths) |
+| `npm run smoke -- --build` | Plus compile/link and artefact checks. Add `--install` (honour `cmake --install --prefix`), `--lv2lint` (validate the built bundle; no distribution packages `lv2lint`, the CI job builds it from source) or `--clang-tidy` (static analysis) — each fails when its tool is missing rather than skipping. A build run also fails when a family has no SDK, so pass `--family=clap`, `--family=juce` or `--family=lv2` when the machine has only some of them (CI passes exactly one per job) |
+| `npm run cmake:lint` | `cmake-lint` over `templates/*/CMakeLists.txt`, configured by `.cmake-format.py` (needs `pip install cmakelang`) |
 | `npm run smoke:validate -- --type=clap` | Scaffolds, builds and validates one plugin with the **real** `clap-validator` (needs `APC_CLAP_DIR` + the binary on `PATH`). `--type=juce` does the same with `pluginval` and `APC_JUCE_DIR`. Fails when a dependency is missing — it never skips |
 | `npm run audit` | `npm audit` |
 | `npm run licenses` | Lockfile license gate against `license_decisions.yml` |
 | `npm run docs:check` | Every relative doc link, cross-file anchor, and the [docs index](README.md) coverage |
-| `npm run check` | Full gate: lint + test + smoke + audit + licenses + docs check |
+| `npm run check` | Full gate: lint + typecheck + test + smoke + audit + licenses + docs check |
 | `npm run ship` | Guarded release (see below) |
 
 Run `npm run check` before committing; `scripts/ship.mjs` runs the same chain before tagging.
@@ -34,7 +37,8 @@ CI runs that same chain on Linux (Node 22 and 24) and macOS, plus jobs that need
 | Job | What it proves |
 |---|---|
 | `compile-scaffold` | Generated C11/C++ syntax-checks against the checked-in JUCE stub |
-| `scaffold-clap`, `scaffold-lv2`, `scaffold-juce` | Generated projects configure, compile and link against real upstream SDKs |
+| `scaffold-clap`, `scaffold-lv2`, `scaffold-juce` | Generated projects configure, compile and link against real upstream SDKs, with `-Werror` inherited from the templates. The CLAP and LV2 jobs also run `clang-tidy`; the LV2 job additionally runs `cmake --install --prefix` and `lv2lint` on the built bundle |
+| `lint-config` | `actionlint` (workflow schema, expressions, `shellcheck` over every `run:` block) and `cmake-lint` over the templates |
 | `scaffold-clap-validate` | `audio_plugin_validate` runs a real `clap-validator` on a built CLAP plugin and reports PASS (build and validate are separate steps, so a red job says which half broke) |
 | `scaffold-juce-validate` | Same with a real `pluginval` on a built VST3 (`xvfb-run`: pluginval is a GUI app) |
 
@@ -105,6 +109,8 @@ apc-mcp/
 ## Release process
 
 `npm run ship` refuses to release unless every precondition holds. It runs `npm run check`, then verifies HEAD is on `main`, the working tree is clean, the version tag does not exist locally or on origin, and `CHANGELOG.md` has a `## [<version>]` heading — then tags `v<version>` and pushes. CI publishes to npm on `v*` tags.
+
+**Publishing credential.** The publish job authenticates with an `NPM_TOKEN` repository secret. Prefer [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC) instead: the workflow already requests `id-token: write` for `--provenance`, and a trusted publisher needs no long-lived secret at all — so a leaked token stops being a way to publish as the package. The trade-off is a one-time publisher configuration on npmjs.com; after that, delete the `NPM_TOKEN` secret.
 
 Human steps:
 

@@ -68,8 +68,54 @@
   original fix pinned `minimatch@^11.0.5` through an override while `eslint`
   declared `^10.2.6`; that worked for the audit but left `npm ls` reporting an
   invalid tree across a declared major, and the override is gone.)
+- **Second security review (`SECURITY-REVIEW-2.0.0.md`), all findings fixed.**
+  - `audio_plugin_configure` no longer forwards `-D` variables whose value CMake
+    executes or loads (`CMAKE_PROJECT_TOP_LEVEL_INCLUDES`, `CMAKE_PROJECT_INCLUDE*`,
+    toolchain/module paths, compilers, launchers, `*_FLAGS`, `CMAKE_MAKE_PROGRAM`, …).
+    A single option could previously run an arbitrary `.cmake` script or binary.
+  - A `CMakeCache.txt` that belongs to another source tree, or that carries one of
+    those settings, is deleted before `configure` and before `build`'s
+    auto-configure — a committed cache used to execute code with no arguments at all.
+  - Every write in `audio_plugin_create` now re-resolves the real path immediately
+    before use, refuses to traverse a symlinked directory, creates directories one
+    level at a time and opens files with `O_NOFOLLOW`/`O_EXCL`. A `plugins/`
+    directory swapped for a symlink mid-call could previously redirect the scaffold
+    outside the project root (reproduced: three plugin trees written outside).
+  - `#` and `;` in `description`/`vendor` are escaped as octal C escapes (`\043`,
+    `\073`). They reach a generated compile definition, where a raw `#` comments out
+    the rest of the Makefile line and `;` splits the CMake list — either one made a
+    legally-named JUCE plugin fail to compile.
+  - `audio_plugin_plugins` caps `status.json` at 4 KiB, echoes only
+    `type`/`status`/`version`, and flattens every project-authored string to one
+    short line. A 2 MB or newline-bearing `status.json` was echoed verbatim.
+  - `audio_plugin_validate` skips artefacts that are symlinks or resolve outside the
+    project instead of handing them to the validator, and reports what it skipped.
+  - `audio_plugin_lint` returns `isError` when an explicit target contains no C/C++
+    files instead of reporting a clean result for zero files checked.
+  - `buildDir`/`pluginsDir` reject `\` and `:` — values that produced CMake that
+    could not configure (`Invalid character escape '\u'`) after a successful scaffold.
+  - `htmlEscape()` also escapes quotes; diagnostic lines are capped at 500 characters;
+    the documented `maxBuffer` (16 MB) now matches the code; timeouts kill the whole
+    process group instead of just `cmake`.
 
 ### Fixed
+
+- **JUCE plugin templates set an explicit `LV2URI` (CI: "Scaffolded JUCE
+  builds" and "audio_plugin_validate against real pluginval" were red).** JUCE
+  derives its default LV2 URI from `COMPANY_WEBSITE` as
+  `<website>/plugins/<name>`. The templates ship no `COMPANY_WEBSITE` — it would
+  be a guessed domain (`https://<lower-cased-vendor>.com`) printed verbatim in
+  plugin metadata — so the derived value was `/plugins/<Name>`, which has no
+  scheme and trips JUCE's `static_assert` in
+  `juce_audio_plugin_client_LV2.cpp` (*"Your configured LV2 URI must include a
+  leading scheme specifier"*). Because the LV2 target is built alongside VST3,
+  this failed both the JUCE build job and the pluginval job. `templates/juce`
+  and `templates/juce-webview` now pass `LV2URI "{{PLUGIN_URI}}"` — the same
+  sanitized `urn:<vendor>:<plugin>` identity the native `type="lv2"` template
+  uses — and the guessed `COMPANY_WEBSITE`/`COMPANY_EMAIL` values are gone from
+  the JUCE and standalone templates. Regression tests now require every
+  LV2-capable JUCE template to carry a scheme-prefixed, unique `LV2URI`, and
+  fail if a template hard-codes a vendor `.com`/`.net`/`.org` URL again.
 
 - **`audio_plugin_validate` CLI invocations & custom `pluginsDir` fixed.**
   `pluginval` now receives `--strictness-level 10 <path>` (replacing invalid
@@ -687,6 +733,153 @@ behaviour here is new — it is the difference between a claim and a check.
   drive POSIX shebang shims, so a Windows job would test the fixtures, not the
   server.
 
+### Static-quality review (S-1 … S-22)
+
+Root-cause fixes for the findings in [REVIEW-STATIC-QUALITY.md](REVIEW-STATIC-QUALITY.md).
+Each one is now guarded by a probe, a test, or a real toolchain run.
+
+A subset (S-1, S-2, S-3, S-8 and the `npm.cmd` half of S-19) was fixed in a parallel
+change that landed first; the entries below describe the code as it ships now, and
+the review's §8 records which change carries which fix.
+
+- **The no-shell lint rule now bans the option, not the variable name (S-1).** It
+  matched an object literally named `child_process` and an import named `exec`, so a
+  default import, a namespace import and `{ shell: true }` on the sanctioned
+  `spawnSync` all passed. All four are rejected now, and `tests/release.test.js`
+  lints each one through the real config so the rule cannot rot.
+- **A crashed lint tool is no longer reported as "0 of N files with issues" (S-2)**,
+  and unreadable directories are listed as skipped instead of vanishing (S-3).
+- **`cmake --install` honours `--prefix` for LV2 (S-4).** The install `DESTINATION`
+  was expanded from `CMAKE_INSTALL_PREFIX` at configure time, which froze the path
+  into `cmake_install.cmake`: `cmake --install build --prefix X` installed into the
+  configure-time prefix and left `X` empty. It is now relative
+  (`${CMAKE_INSTALL_LIBDIR}/lv2`) via `GNUInstallDirs`.
+- **The WebView gain is smooth and bounded (S-5).** The parameter was quantised to
+  0.01 and applied as one multiply per block — zipper noise. It is now continuous
+  and driven by a 20 ms `juce::SmoothedValue` advanced once per sample; the page's
+  `setGain` message is clamped to 0..1 with NaN rejected instead of being trusted.
+- **`strictnessLevel` is configurable (S-9)** — 1..10 in `apc-mcp.json`, still 10 by
+  default — and the validator runs with the project as its working directory so its
+  logs land inside the project.
+- **`options` accepts values containing spaces (S-10)** by splitting on `;` first;
+  plain whitespace separation still works. `;` was added to the schema charset and a
+  space to the value class of `SAFE_CMAKE_OPTION_TOKEN` — each token is still one
+  argv entry and is still validated, so `-DA=ON; rm -rf /` is still rejected.
+- **Templates no longer assert things that are not true.** `JUCE_DISPLAY_SCALE_ENABLED`
+  is gone (0 references in JUCE 9.0.5), `COMPANY_WEBSITE`/`COMPANY_EMAIL` are gone
+  (they shipped a guessed domain in DLL properties and VST3 metadata), the LV2 gain
+  is an `lv2:AmplifierPlugin` with `lv2:designation` on its ports instead of an
+  anonymous `lv2:UtilityPlugin`, and the fabricated `doap:license` triple was
+  replaced by a comment telling the user to state their own. `JUCE_MODAL_LOOPS_PERMITTED`
+  is no longer defined for plugin targets, so a nested event loop cannot be compiled
+  into a host callback (the standalone app keeps it deliberately).
+- **The JUCE templates now pass an explicit `LV2URI`.** JUCE derives it as
+  `<COMPANY_WEBSITE>/plugins/<Name>` when it is not given, which meant the LV2 identity
+  of every scaffolded JUCE plugin was `https://<vendor>.com/plugins/<Name>` built from
+  an invented domain — and the plugin's LV2 URI is permanent once a host saves a
+  session. It is now `urn:<vendor>:<name>`, derived once in `index.js` and shared with
+  the native LV2 template. Without this the LV2 target stopped compiling outright
+  (`static assertion failed: Your configured LV2 URI must include a leading scheme
+  specifier`) as soon as the fabricated `COMPANY_WEBSITE` was removed.
+- **The LV2 NULL-port guard actually silences the output (S-14)** instead of
+  returning early and leaving the host's previous block in the buffer.
+- **Two templates stopped teaching the wrong buffer pattern.** The JUCE
+  pass-through copied each channel onto itself (S-15; the loop is deleted, the
+  comment says why a pass-through needs no code), and the standalone generator
+  hoists `getArrayOfWritePointers()` instead of calling `setSample()` per sample
+  (S-16).
+- **`ship` is Windows-correct and cannot hang (S-19).** It spawns `npm.cmd`, which
+  Node refuses to spawn without `shell: true` (`EINVAL`); it now runs npm's CLI JS
+  with `process.execPath`. Every child has a timeout and git runs with
+  `GIT_TERMINAL_PROMPT=0`, so a missing credential fails the release instead of
+  blocking it forever.
+- **`assertWithinProject()` fails closed (S-21)**: a `realpath` error now rejects
+  instead of silently skipping the symlink check.
+- Schema fields gained `.max()` caps (S-6), the single `spawn()` wrapper diagnoses
+  `ENOBUFS` as a 16 MB output overflow rather than a failed start (S-8), the template
+  map throws on an unknown type instead of falling through a `default:` arm (S-17),
+  and the docs now say that **no tool** writes
+  `status.json` (S-18).
+
+`outputSchema` / `structuredContent` (S-20) is deferred: it is an additive feature,
+not a defect, and the existing `format: "json"` modes remain machine-readable.
+
+
+### Static-analysis gates (review §5)
+
+The review's §5 listed analysis that was missing. PR #37 left it open on purpose: it
+is new CI machinery rather than a defect fix. Each gate below is wired into CI, was
+run in this checkout, and was shown to fail on a deliberately broken input before
+being kept.
+
+- **`tsc --checkJs` over `index.js` and `scripts/`** — `tsconfig.json`, `npm run
+  typecheck`, and `npm run quality` is now lint + typecheck + test. It found four
+  defects: `spawnSync(...).error.code` was read at four sites behind a type that says
+  `code` does not exist (narrowed now, through `trySpawn()`'s `spawnError` and
+  `ship.mjs`'s `errno()`); `audio_plugin_validate`'s result rows mixed `reason` and
+  `output` freely across statuses (now a JSDoc union that says which status owns
+  which field); and two test helpers passed loosely-typed options.
+- **`eslint-plugin-n`** — its recommended module rules plus `n/prefer-node-protocol`.
+  It caught two defects in code that shipped in 2.0.0: `scripts/smoke-stdio.mjs` used
+  `import.meta.dirname`, which exists only on Node ≥ 22.16.0 (and 24), while
+  `engines.node` promises `>=22` — so the stdio smoke test threw on its first line on
+  Node 22.0–22.15; and `index.js` imported `path`/`fs`/`os`/`url` without the `node:`
+  prefix. `n/no-process-exit` and `n/hashbang` are off, with the reason written where
+  they are configured rather than suppressed inline.
+- **`-Wall -Wextra -Wpedantic -Werror` in `templates/clap` and `templates/lv2`**
+  (`/W4 /WX` under MSVC, guarded by `if(MSVC)`), applied `PRIVATE` to the generated
+  target so a host project's targets are unaffected, with the third-party headers
+  included `SYSTEM` so `-Werror` only judges generated code. Both templates build
+  clean against real `free-audio/clap` and `lv2/lv2` headers.
+- **`clang-tidy`** over the generated sources, configured by a new `.clang-tidy`
+  (analyzers plus `bugprone-*`, `performance-*`, `portability-*`, findings promoted to
+  errors) and driven through CMake's `compile_commands.json`. The style families
+  (`readability-*`, `cppcoreguidelines-*`, `modernize-*`) are deliberately excluded: a
+  scaffold that ships a stranger's taste is not thereby more correct. It runs with
+  `--config-file=` because the scaffolded sources live in a temp directory, so
+  clang-tidy's own upward search would never find the config — the first CI run proved
+  that by reporting warnings that were not promoted to errors.
+- **`lv2lint`** on every built bundle. Nothing in the repo previously parsed the Turtle
+  that gets copied into the bundle, so a malformed or mis-typed description could only
+  be found by a host.
+- **`cmake --install --prefix` smoke** — the thing that would have caught S-4. It fails
+  if the bundle lands under `/usr/local/lib/lv2` despite `--prefix`, and it checks the
+  installed bundle for the binary and both `.ttl` files.
+- **`cmake-lint`** (`npm run cmake:lint`, and the CI `lint-config` job) with a new
+  `.cmake-format.py` that *declares* the house style — 4-space indents, 100 columns —
+  instead of disabling the two checks that complained, so `C0301`/`C0307` still fire on
+  a real violation. It found two 121-column `OUTPUT_DIRECTORY` lines in the LV2
+  template, now the `LV2_ARTEFACTS_DIR`/`LV2_BUNDLE_DIR` variables.
+- **`actionlint` + `shellcheck`** in a new `lint-config` CI job, which `publish` now
+  needs along with the rest. `actionlint` checks the workflow schema and expressions and
+  runs `shellcheck` over every `run:` block; it is pinned to a commit like every other
+  action here.
+
+`scripts/smoke-scaffold.mjs` no longer reports a pass for work it did not do: a
+`--build` run with a missing SDK used to print `skip <family>` and finish with exit 0,
+so a misconfigured job looked green. A build run now names the family it was asked for
+(`--family=clap|juce|lv2`, once per family) and fails if that family has no SDK; each
+CI job passes exactly the one it has. Outside a `--build` run the skip is still a skip.
+The new `--install`, `--lv2lint` and `--clang-tidy` flags fail when their tool is
+absent, for the same reason.
+
+`license_decisions.yml` gained `PSF-2.0`, reached dev-only through
+`eslint-plugin-n → js-yaml → argparse`; nothing under it is distributed.
+
+Bringing the gates up found three more things, all fixed here: `lv2lint` takes a plugin
+URI and a *bundle* directory (`-I` is handed to `lilv_world_load_bundle()`), not a path,
+and it is packaged by neither Debian, Ubuntu nor Homebrew, so CI builds it from the
+upstream mirror at a pinned commit; `clang-tidy`'s `performance-trivially-destructible`
+flagged the CLAP template's out-of-line `~Processor() = default;`, which hid that the
+class is trivially destructible (now defaulted on its first declaration); and
+`portability-avoid-pragma-once` is disabled, argued in `.clang-tidy`, because
+`#pragma once` is what these templates use and what GCC, Clang and MSVC all support.
+Three checks are excluded in total, each with its reason written next to the setting.
+
+Not done, and why: `sord_validate` (it needs the LV2 schema files staged on disk, and
+`lv2lint` already validates the description through lilv against lv2core) and
+`clang-tidy`'s style families (above).
+
 ### Hardening pass — PR #36 (2026-11-16, previously undocumented here)
 
 A static-analysis-driven hardening pass whose findings were catalogued in the PR
@@ -714,9 +907,15 @@ never made it into this file. The user-visible changes:
 A third audit (`SUBSTANTIATION-LOG.md`, kept out of the published package)
 graded every 2.0.0 claim as an evidence officer: claim, current evidence level,
 and what would be required to tag. Core substantiation was Strong; three
-blockers and five should-fixes are closed by the changes below. Every fix lands
-with a regression test that was **proven to fail against the pre-fix tree**
-(10 new tests red on `6c23658`, green after):
+blockers and five should-fixes are closed below. Every fix lands with a
+regression test that was **proven to fail against the pre-fix tree** (10 new
+tests red on `6c23658`, green after).
+
+Three findings were fixed independently and concurrently by the second security
+review above (the artefact-symlink escape, the lint dry-run misreport, and the
+`maxBuffer` doc drift); this PR merges with those and adds what was still
+missing — the reporting semantics, the remaining parser/config defects, and the
+coverage gaps:
 
 - **Residual-risk statement rewritten (security.md).** The old section claimed
   "no residual risk of … arbitrary file read/write outside the project root",
@@ -727,12 +926,14 @@ with a regression test that was **proven to fail against the pre-fix tree**
   (including the new symlink guards below); the subprocesses it launches
   (`cmake`, compilers, `clang-format -i`, validators) run with your privileges
   and are not containable by design.
-- **Artefact discovery is containment-checked (blocker-adjacent).** A symlink
-  planted in the build tree (`…/Release/CLAP` → anywhere) previously let
-  `audio_plugin_validate` hand a path outside the project to a validator, which
-  loads its argument as a plugin. Escaping artefacts are now refused with a
-  dedicated `REFUSED` outcome (and `isError: true`); a mixed run validates the
-  contained artefacts and refuses the escaped ones by name.
+- **A refused artefact fails the validation run (blocker-adjacent).** The
+  security review made `findPluginBinaries()` *skip* a symlinked or escaping
+  artefact; the substantiation audit's requirement is one step stronger — a run
+  that declined to validate something it found must never read as clean. A run
+  with refused artefacts now reports them in the header (`N refused`), lists
+  them with their reason, and returns `isError: true`; a run where *every*
+  discovered artefact was refused reports `## Validation refused` instead of
+  "no plugin binaries found".
 - **A symlinked `apc-mcp.json` resolving outside the project root is ignored**
   (with a stderr warning); one that resolves inside the project is still
   honoured.
@@ -744,11 +945,10 @@ with a regression test that was **proven to fail against the pre-fix tree**
   keys are unknown keys, exactly like the documented forward-compatibility
   behaviour.
 - **`audio_plugin_lint` dry-run no longer misreports a crashed or timed-out
-  `clang-format` as "0 files with problems"** (blocker). The failure cause
-  (timeout, output cap, crash) was discarded and the tool advised
-  `fix=true` — re-running a broken binary with in-place write permissions. A
-  non-zero exit with no per-file diagnostics is now reported as
-  `## Lint failed` with the cause; the `fix=true` advice only appears when
+  `clang-format` as "0 files with problems"** (blocker; found independently as
+  DEF-1 here and SEC-NEW-08 in the security review — the review's wording and
+  branch merged first, and the regression test added here targets it). The
+  failure cause is surfaced and the `fix=true` advice only appears when
   per-file diagnostics exist.
 - **Compiler diagnostics from paths containing spaces are counted** (should-fix
   F3). Both the clang/gcc and MSVC patterns required space-free file tokens, so
@@ -771,11 +971,11 @@ with a regression test that was **proven to fail against the pre-fix tree**
   end-to-end** (should-fix): a custom `clapValidatorCommand` receives
   `validate <path>`, and values failing `SAFE_TARGET` (`/x/y`, `a b`, `..`)
   degrade to the default commands rather than escaping.
-- **Doc drift** (should-fix): `security.md` now says 16 MB `maxBuffer` (was
-  2 MB), documents the `options` grammar in `tools.md`, `_tools` discovery is
+- **Doc drift** (should-fix): the `options` grammar is documented in `tools.md`
+  (merged with the review's `;`-separator documentation), `_tools` discovery is
   described root-first in `toolchain.md` and `project-status.md` (PR #36
-  behaviour), and this file gained the missing PR #36 entry above.
-
+  behaviour), and this file gained the missing PR #36 entry above. (The
+  `maxBuffer` 2 MB → 16 MB doc fix was also carried by the security review.)
 ## [1.5.0] — 2026-06-17
 
 ### Added

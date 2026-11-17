@@ -1,7 +1,5 @@
 #include "PluginProcessor.h"
 
-#include <algorithm>
-
 {{PLUGIN_CLASS_NAME}}::{{PLUGIN_CLASS_NAME}}()
     : AudioProcessor(BusesProperties()
           .withInput("Input", juce::AudioChannelSet::stereo(), true)
@@ -32,21 +30,22 @@ void {{PLUGIN_CLASS_NAME}}::processBlock(juce::AudioBuffer<float> &buffer, juce:
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear(i, 0, buffer.getNumSamples());
 
-    const auto channelsToProcess = std::min(totalNumInputChannels, totalNumOutputChannels);
-    for (int channel = 0; channel < channelsToProcess; ++channel) {
-        const auto *channelData = buffer.getReadPointer(channel);
-        auto *outData = buffer.getWritePointer(channel);
-        if (outData != channelData) {
-            for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
-                outData[sample] = channelData[sample]; // passthrough
-        }
-    }
+    // Nothing else to do. JUCE hands processBlock the input already in place, so
+    // the copy this body used to make was buffer.getReadPointer(i) ->
+    // getWritePointer(i), i.e. the same memory written onto itself: a full-block
+    // loop that looked like DSP but could not change a single sample. A real
+    // processor replaces this comment with its own per-sample work; the only
+    // mandatory part is the clear loop above, which silences any output channel
+    // an asymmetric layout left without an input.
 }
 
 juce::AudioProcessorEditor *{{PLUGIN_CLASS_NAME}}::createEditor() {
     return new juce::GenericAudioProcessorEditor(*this);
 }
 
+// This processor has no parameters, so its state is empty: a host that saves a
+// preset gets an empty block and restores nothing, which is the correct answer.
+// The webview template shows the ValueTree round-trip once there is state.
 void {{PLUGIN_CLASS_NAME}}::getStateInformation(juce::MemoryBlock &destData) {
     juce::ignoreUnused(destData);
 }

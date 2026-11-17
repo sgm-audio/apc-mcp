@@ -37,8 +37,29 @@ if (unknown) {
   process.exit(2);
 }
 
-function git(args) {
-  const r = spawnSync('git', args, { cwd: PKG_DIR, encoding: 'utf-8' });
+// Every child gets a deadline and a non-interactive git. Without them a missing
+// SSH key or a 2FA-backed push opens a credential prompt on a terminal that may
+// not exist (CI) and the release hangs forever instead of failing — the one
+// failure mode that looks like "still working".
+const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '' };
+
+/**
+ * spawnSync types `error` as a plain Error; at runtime it is an ErrnoException
+ * whose `code` carries ETIMEDOUT/ENOENT. Narrowing it in one place keeps the
+ * checks below honest for `tsc --checkJs` and for a reader.
+ * @param {unknown} error
+ * @returns {NodeJS.ErrnoException | undefined}
+ */
+function errno(error) {
+  return /** @type {NodeJS.ErrnoException | undefined} */ (error);
+}
+
+function git(args, timeoutMs = 30000) {
+  const r = spawnSync('git', args, { cwd: PKG_DIR, encoding: 'utf-8', timeout: timeoutMs, env: GIT_ENV });
+  if (errno(r.error)?.code === 'ETIMEDOUT') {
+    console.error(`\nship: git ${args[0]} timed out after ${timeoutMs / 1000}s — a credential prompt or a hung network?`);
+    process.exit(1);
+  }
   if (r.error) {
     console.error(`\nship: failed to execute git (${r.error.message}).`);
     process.exit(1);
@@ -46,16 +67,19 @@ function git(args) {
   return r;
 }
 
-function run(cmd, args, label) {
-  console.log(`\n$ ${cmd} ${args.join(' ')}`);
+function run(cmd, args, label, timeoutMs = 900000) {
+  console.log(`\n$ ${path.basename(cmd)} ${args.join(' ')}`);
   if (DRY_RUN) { console.log('  (dry run — not executed)'); return { status: 0 }; }
-  const r = spawnSync(cmd, args, { cwd: PKG_DIR, stdio: 'inherit' });
-  if (r.error) {
+  const r = spawnSync(cmd, args, { cwd: PKG_DIR, stdio: 'inherit', timeout: timeoutMs, env: GIT_ENV });
+  if (r.error && errno(r.error)?.code !== 'ETIMEDOUT') {
     console.error(`\nship: ${label} failed to start (${r.error.message}).`);
     process.exit(1);
   }
   if (r.status !== 0) {
-    console.error(`\nship: ${label} failed (exit ${r.status}).`);
+    const why = errno(r.error)?.code === 'ETIMEDOUT'
+      ? `timed out after ${timeoutMs / 1000}s`
+      : `exit ${r.status ?? `${r.signal ?? 'unknown signal'}`}`;
+    console.error(`\nship: ${label} failed (${why}).`);
     process.exit(r.status ?? 1);
   }
   return r;
@@ -75,9 +99,11 @@ if (!/^\d+\.\d+\.\d+([-+].+)?$/.test(version)) {
   stop(`"${version}" is not a valid semver version.`);
 }
 
-// On Windows Node >= 20.12.2 (CVE-2024-27980), spawnSync('npm.cmd', ...) throws
-// EINVAL without shell:true. Running npm's JS entrypoint through process.execPath
-// stays 100% shell-free on every OS.
+// npm must never be spawned as `npm.cmd`: on Windows (Node >= 20.12.2, the fix
+// for CVE-2024-27980) a batch file cannot be spawned without shell:true, and a
+// shell is exactly what this repo bans in index.js. `npm_execpath` is the JS
+// entrypoint npm sets for its own scripts, so running it through process.execPath
+// stays shell-free on every OS.
 const npmExecPath = process.env.npm_execpath;
 const [NPM_BIN, NPM_PREFIX_ARGS] = (npmExecPath && fs.existsSync(npmExecPath))
   ? [process.execPath, [npmExecPath]]
@@ -141,7 +167,7 @@ if (existing.status === 0) {
   stop(`tag ${tagName} already exists and points at ${existing.stdout?.trim()}.\n` +
        '  Bump the version in package.json before shipping again.');
 }
-const remoteTag = git(['ls-remote', '--tags', 'origin', `refs/tags/${tagName}`]);
+const remoteTag = git(['ls-remote', '--tags', 'origin', `refs/tags/${tagName}`], 120000);
 if (remoteTag.status === 0 && remoteTag.stdout?.trim()) {
   stop(`tag ${tagName} already exists on origin (${remoteTag.stdout.trim().split(/\s+/)[0]}).\n` +
        '  Bump the version in package.json before shipping again.');
@@ -171,9 +197,9 @@ if (/^## \[Unreleased\]/m.test(changelog) && DRY_RUN) {
 // Push the branch BEFORE creating the local tag so a failed branch push does
 // not leave an unpushed local tag blocking a retry.
 console.log('\nship: all guards passed.');
-run('git', ['push', 'origin', branch], `git push origin ${branch}`);
+run('git', ['push', 'origin', branch], `git push origin ${branch}`, 300000);
 run('git', ['tag', '-a', tagName, '-m', `${pkg.name} ${tagName}`], `git tag ${tagName}`);
-run('git', ['push', 'origin', tagName], `git push origin ${tagName}`);
+run('git', ['push', 'origin', tagName], `git push origin ${tagName}`, 300000);
 
 console.log(DRY_RUN
   ? `\nship: dry run complete — would have tagged ${tagName} and pushed ${branch}.\n`
