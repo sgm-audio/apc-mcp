@@ -21,12 +21,14 @@ Verified on **2026-11-16** in this checkout (Node v22.22.3 / npm 10.9.8, Linux):
 
 | Gate | Result |
 |---|---|
-| `npm run lint` | PASS — ESLint + `node --check index.js` |
-| `npm test` | **254 tests**, 246 pass, 0 fail, **8 skipped** — the C/C++ compile+link checks skip when `APC_CLAP_INCLUDE` / `APC_LV2_INCLUDE` are unset; CI sets them and runs them against real upstream headers |
+| `npm run lint` | PASS — ESLint (incl. `eslint-plugin-n`) + `node --check index.js` |
+| `npm run typecheck` | PASS — `tsc --checkJs` over `index.js`, `scripts/` and the test helpers, 0 errors |
+| `npm test` | **260 tests**, 252 pass, 0 fail, **8 skipped** — the C/C++ compile+link checks skip when `APC_CLAP_INCLUDE` / `APC_LV2_INCLUDE` are unset; CI sets them and runs them against real upstream headers |
 | `npm run smoke` | PASS — 10/10 scaffold cases (structure only; `--configure` / `--build` need CMake + SDKs) |
 | `npm audit` | PASS — 0 vulnerabilities, with **no** `--audit-level` flag: the gate is plain `npm audit`, and CI runs that same command (`npm run audit`) rather than a laxer threshold |
-| `npm run licenses` | PASS — 163 lockfile packages checked against `license_decisions.yml` |
+| `npm run licenses` | PASS — 179 lockfile packages checked against `license_decisions.yml` |
 | `npm run check` | PASS (exit 0) |
+| `npm run cmake:lint` | PASS — 5 template CMakeLists, 0 findings (cmakelang 0.6.13, `.cmake-format.py`) |
 | `git tag` / npm registry | Latest tag `v1.5.0`; `@sgm-audio/apc-mcp` returns 404 (not published) |
 
 CI on the same work (run `43817093143`, PR #35) reports **11/11 verification jobs green**: configure/compile/link of generated CLAP, LV2 and JUCE targets against real SDKs; `audio_plugin_validate` against a real `clap-validator 0.4.1` and a real `pluginval 1.0.4` on built artefacts; and the whole Node suite on macOS as well as Linux (`publish` is skipped unless the ref is a `v*` tag). Treat the table above as a dated snapshot, not a promise: re-run the commands rather than copying the numbers into other docs.

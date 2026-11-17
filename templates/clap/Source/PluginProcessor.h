@@ -20,7 +20,10 @@ const clap_plugin_descriptor_t *{{PLUGIN_ID}}_descriptor();
 class {{PLUGIN_CLASS_NAME}} {
 public:
     explicit {{PLUGIN_CLASS_NAME}}(const clap_host_t *host);
-    ~{{PLUGIN_CLASS_NAME}}();
+    // Defaulted here rather than defined out of line in the .cpp: every member
+    // is a complete type, so an out-of-line `= default` only stops the compiler
+    // from knowing the type is trivially destructible.
+    ~{{PLUGIN_CLASS_NAME}}() = default;
 
     {{PLUGIN_CLASS_NAME}}(const {{PLUGIN_CLASS_NAME}} &) = delete;
     {{PLUGIN_CLASS_NAME}} &operator=(const {{PLUGIN_CLASS_NAME}} &) = delete;

@@ -43,9 +43,20 @@ if (unknown) {
 // failure mode that looks like "still working".
 const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '' };
 
+/**
+ * spawnSync types `error` as a plain Error; at runtime it is an ErrnoException
+ * whose `code` carries ETIMEDOUT/ENOENT. Narrowing it in one place keeps the
+ * checks below honest for `tsc --checkJs` and for a reader.
+ * @param {unknown} error
+ * @returns {NodeJS.ErrnoException | undefined}
+ */
+function errno(error) {
+  return /** @type {NodeJS.ErrnoException | undefined} */ (error);
+}
+
 function git(args, timeoutMs = 30000) {
   const r = spawnSync('git', args, { cwd: PKG_DIR, encoding: 'utf-8', timeout: timeoutMs, env: GIT_ENV });
-  if (r.error?.code === 'ETIMEDOUT') {
+  if (errno(r.error)?.code === 'ETIMEDOUT') {
     console.error(`\nship: git ${args[0]} timed out after ${timeoutMs / 1000}s — a credential prompt or a hung network?`);
     process.exit(1);
   }
@@ -60,12 +71,12 @@ function run(cmd, args, label, timeoutMs = 900000) {
   console.log(`\n$ ${path.basename(cmd)} ${args.join(' ')}`);
   if (DRY_RUN) { console.log('  (dry run — not executed)'); return { status: 0 }; }
   const r = spawnSync(cmd, args, { cwd: PKG_DIR, stdio: 'inherit', timeout: timeoutMs, env: GIT_ENV });
-  if (r.error && r.error.code !== 'ETIMEDOUT') {
+  if (r.error && errno(r.error)?.code !== 'ETIMEDOUT') {
     console.error(`\nship: ${label} failed to start (${r.error.message}).`);
     process.exit(1);
   }
   if (r.status !== 0) {
-    const why = r.error?.code === 'ETIMEDOUT'
+    const why = errno(r.error)?.code === 'ETIMEDOUT'
       ? `timed out after ${timeoutMs / 1000}s`
       : `exit ${r.status ?? `${r.signal ?? 'unknown signal'}`}`;
     console.error(`\nship: ${label} failed (${why}).`);

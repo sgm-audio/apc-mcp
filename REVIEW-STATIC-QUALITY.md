@@ -128,19 +128,21 @@ $ echo $?
 
 ## 5. Missing static analysis (ordered by value per minute)
 
-| Add | Would have caught | Where |
-|---|---|---|
-| **`{ shell: true }` + binding-aware `child_process` rules** | S-1 | `eslint.config.js` |
-| **`tsc --noEmit --checkJs` over `index.js` + `scripts/`** (JSDoc or migrate) | S-6 (unbounded strings), S-8 (`ENOBUFS`/nullable `result.error`), S-21 (fail-open catch), the `var`→`float` casts in templates' JS | `package.json` |
-| **`-Wall -Wextra -Wpedantic -Werror` in `templates/clap` and `templates/lv2`** | Nothing today (verified clean) — it keeps it that way | template CMakeLists |
-| **`clang-tidy` in the `scaffold-clap` / `scaffold-lv2` jobs** (`bugprone-*`, `performance-*`, `readability-*`, `cppcoreguidelines-*`) with `compile_commands.json` (CMake can emit it) | S-14, S-15, S-16 class of issue, plus unused includes in `WebViewEditor.h` | `.github/workflows/publish.yml` |
-| **`lv2lint` / `sord_validate` on the generated bundle** | **S-13** — and it is the only validator for the LV2 metadata, which nothing currently checks (Turtle is copied into the bundle unvalidated) | `scaffold-lv2` job |
-| **`cmake --install` smoke (with `--prefix`)** | **S-4** — reproduced exactly this way | `scaffold-lv2` job |
-| **`cmake-lint` / `cmakelang`** | S-4 class, plus inconsistent `cmake_minimum_required` handling | `scripts/` |
-| **`shellcheck` + `actionlint`** | The CI bash (now multi-line `gh api`/`find` pipelines) and workflow syntax | CI |
-| **`eslint-plugin-n`** (`no-process-exit`, `node:` protocol, `no-deprecated-api`) | S-19 (`npm.cmd`), `process.exit` in scripts | `eslint.config.js` |
+All nine are now in place; the last column says what each one found when it was first
+run, because a gate that has never produced a finding has not been proved to work.
+Details of the wiring, and the two deliberate omissions, are in §8.
 
----
+| Add | Would have caught | Where | Status (evidence) |
+|---|---|---|---|
+| **`{ shell: true }` + binding-aware `child_process` rules** | S-1 | `eslint.config.js` | **Done in PR #37** — the rule is exercised by linting four violations through the real config (`tests/release.test.js`) |
+| **`tsc --noEmit --checkJs` over `index.js` + `scripts/`** | S-6, S-8, S-21, the `var`→`float` casts | `package.json`, `tsconfig.json` | **Done** — `npm run typecheck`, inside `npm run quality` and the CI `test` job. Found 4 real defects: `.error.code` read behind a type without `code` (4 sites); `audio_plugin_validate` rows mixing `reason`/`output` across statuses |
+| **`-Wall -Wextra -Wpedantic -Werror` in `templates/clap` and `templates/lv2`** | Nothing today — it keeps it that way | template CMakeLists | **Done** — `PRIVATE` on the generated target, `/W4 /WX` under MSVC, third-party headers `SYSTEM`. Both templates build with 0 warnings against real headers; `tests/templates.test.js` fails if a flag is dropped |
+| **`clang-tidy` in the `scaffold-clap` / `scaffold-lv2` jobs** | S-14, S-15, S-16 class | `.github/workflows/publish.yml`, `.clang-tidy` | **Done** — driven by `compile_commands.json` through `smoke-scaffold.mjs --clang-tidy`, with the config passed explicitly (`--config-file=`); findings are errors. Found `performance-trivially-destructible` on the CLAP template's out-of-line `= default` destructor. `readability-*`/`cppcoreguidelines-*` excluded on purpose (§8) |
+| **`lv2lint` / `sord_validate` on the generated bundle** | S-13 | `scaffold-lv2` job | **Done (lv2lint)** — `--lv2lint` fails when the tool is absent, and CI builds lv2lint from the pinned upstream mirror (no distribution packages it). `sord_validate` skipped: it needs the LV2 schemas staged on disk and `lv2lint` already validates through lilv against lv2core |
+| **`cmake --install` smoke (with `--prefix`)** | S-4 | `scaffold-lv2` job | **Done** — `--install` asserts the bundle lands under the prefix with binary + both `.ttl`, and fails if `/usr/local/lib/lv2/<name>.lv2` appeared anyway |
+| **`cmake-lint` / `cmakelang`** | S-4 class, inconsistent `cmake_minimum_required` | `scripts/`, CI | **Done** — `npm run cmake:lint` + the CI `lint-config` job, configured by `.cmake-format.py` that states the house style instead of disabling `C0301`/`C0307`. Found two 121-column `OUTPUT_DIRECTORY` lines in the LV2 template |
+| **`shellcheck` + `actionlint`** | The CI bash and workflow syntax | CI | **Done** — the `lint-config` job runs `actionlint` (which runs `shellcheck` over every `run:` block), pinned to a commit, and `publish` now needs it |
+| **`eslint-plugin-n`** | S-19, `process.exit` in scripts | `eslint.config.js` | **Done** — recommended module rules + `n/prefer-node-protocol`. Found 2 real defects: `import.meta.dirname` in `scripts/smoke-stdio.mjs` (crashes on Node 22.0–22.15, which `engines` allows) and four unprefixed `node:` imports |
 
 ## 6. Magic-number inventory (all intentional today; none configurable)
 
@@ -207,11 +209,58 @@ added here run against the merged code, not against either implementation in iso
 | **S-20** | **Deferred** | `outputSchema` / `structuredContent` is a feature, not a defect fix, and this pass is scoped to findings. The `format: "json"` modes keep working; a client can still parse them | — |
 | **S-21** | Fixed | `assertWithinProject` fails **closed** when `realpathSync` throws, with the underlying error attached as `cause`; the TOCTOU window remains and is documented as not reachable from the seven tools | existing path-guard tests |
 
-Still open from §5 (deliberately not done here — they are new CI machinery, not findings):
-`lv2lint` / `sord_validate`, `cmake --install --prefix` as a CI smoke job, `-Wall -Wextra -Wpedantic -Werror`
-inside the CLAP/LV2 template CMakeLists (a compiler-flag change in generated output deserves a
-real-toolchain matrix first), `clang-tidy`, `cmake-lint`, `shellcheck`/`actionlint`,
-`eslint-plugin-n`, and `tsc --noEmit --checkJs`.
+§5's backlog — `lv2lint`, `cmake --install --prefix`, `-Wall -Wextra -Wpedantic -Werror` in the
+CLAP/LV2 templates, `clang-tidy`, `cmake-lint`, `shellcheck`/`actionlint`, `eslint-plugin-n` and
+`tsc --noEmit --checkJs` — was left open here and closed on branch `arena/535a7c23-apc-mcp`. §5's
+table now carries the status of each gate and what it found; the wiring is:
+
+- **`npm run typecheck`** (`tsconfig.json`, `checkJs`, no emit) covers `index.js`, `scripts/**` and
+  `tests/helpers/**`; it is part of `npm run quality` and of the CI `test` job, so it cannot drift
+  from the suite it type-checks.
+- **`eslint-plugin-n`** adds its recommended module rules plus `n/prefer-node-protocol`.
+  `n/no-process-exit` and `n/hashbang` are off, with the reason written where they are configured:
+  these scripts are CLI entry points whose exit status is the interface, and they are not published
+  `bin` shims.
+- **The templates' compiler flags** apply `PRIVATE` to the generated target (`/W4 /WX` under MSVC)
+  and include the third-party CLAP/LV2 headers as `SYSTEM`, so `-Werror` judges generated code only.
+  Two proofs: both templates compile clean against real headers (CMake 4.4.5 + Ninja 1.13.2, gcc 12.2.0), and
+  `tests/templates.test.js` fails if a flag, the `MSVC` guard, or the `SYSTEM` include is dropped.
+- **`smoke-scaffold.mjs` grew `--install`, `--lv2lint` and `--clang-tidy`**, each of which *fails*
+  when its tool is missing. It also stopped reporting a pass for work it had not done: a `--build`
+  run with an unset SDK printed `skip <family>` and exited 0, so a misconfigured job looked green.
+  A build run now names its family (`--family=clap|juce|lv2`) and fails when that family has no
+  SDK, which is how each CI job passes exactly the one SDK it has.
+- **`clang-tidy`** runs through the compile database with `.clang-tidy` enabling the analyzers plus
+  `bugprone-*`/`performance-*`/`portability-*` and `WarningsAsErrors: '*'`. The style families
+  (`readability-*`, `cppcoreguidelines-*`, `modernize-*`) are excluded: they rewrite working code to
+  taste, and this review has no finding that they would have caught. The config is passed with
+  `--config-file=` because the generated project lives in a temp directory, out of reach of
+  clang-tidy's upward search — the first CI run showed exactly that (warnings reported, none
+  promoted). Three checks are excluded, each with its reason beside the setting; the first run
+  also found a real nit, `performance-trivially-destructible` on the CLAP template's out-of-line
+  `~Processor() = default;`, which is now defaulted on its first declaration.
+- **`cmake-lint`** runs with `.cmake-format.py` declaring the templates' actual style (4-space
+  indents, 100 columns) rather than disabling the two codes that complained, so `C0301` and `C0307`
+  still fire on a genuine violation. That is how the two 121-column `OUTPUT_DIRECTORY` lines were
+  found and replaced with `LV2_ARTEFACTS_DIR`/`LV2_BUNDLE_DIR`.
+- **`actionlint` + `shellcheck`** run in a new `lint-config` job, which `publish` now needs. The
+  action is pinned to a commit SHA like every other action in the repo, and `tests/release.test.js`
+  asserts each gate is actually invoked (a config file is not a gate).
+
+Deliberately not done: **`sord_validate`** (it needs the LV2 schema files staged on disk; `lv2lint`
+already validates each description through lilv against lv2core) and the `clang-tidy` style
+families (above).
+
+The gates also caught two of their own integration mistakes, which is the point of running
+them: `lv2lint` takes a plugin URI plus a *bundle* directory (`-I` goes straight to
+`lilv_world_load_bundle()`) and is packaged by no distribution, so CI builds it from the
+upstream mirror; `clang-tidy` needs `--config-file=` for a project outside this checkout.
+
+Verified after the gates were wired: `npm run check` exit 0 — `npm run lint`, `npm run typecheck`,
+**248 tests / 240 pass / 0 fail / 8 environment skips**, `npm run smoke` 10/10,
+`npm audit` 0 vulnerabilities, the license gate (179 packages), and `npm run docs:check`.
+`npm run cmake:lint` exits 0 on the five templates and non-zero on a file with an unterminated
+`add_library(`.
 
 Two things here were only findable by running the real thing: the `.cmd`/`timeout` defects in
 `ship.mjs` (no test executed the Windows path) and S-22, which the JUCE stub cannot see because

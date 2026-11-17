@@ -34,6 +34,11 @@ jobs:
       - name: Lint
         # `npm run lint` is ESLint over the whole repo plus a parse check.
         run: npm run lint
+      - name: Typecheck
+        # `tsc --checkJs` over index.js and scripts/. `npm run test` does not
+        # include it, and `npm run quality` (lint + typecheck + test) is the
+        # local equivalent of this job.
+        run: npm run typecheck
       - name: Documentation links
         run: npm run docs:check
       - name: Test
@@ -94,10 +99,40 @@ jobs:
       - run: npm ci
       - name: Clone lv2/lv2 for the headers
         run: git clone --depth 1 https://github.com/lv2/lv2.git "${RUNNER_TEMP}/lv2"
-      - name: Build and verify every scaffolded LV2 plugin
+      - name: Install clang-tidy and the lilv build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-tidy ninja-build meson pkg-config build-essential \
+            lv2-dev liblilv-dev libsord-dev libserd-dev libsratom-dev
+      - name: Build lv2lint from source
+        # No distribution packages lv2lint (not Debian, not Ubuntu, not Homebrew),
+        # so it is built from the upstream mirror at a pinned commit. The two
+        # meson subprojects it needs are vendored in the mirror, so this builds
+        # without fetching anything else.
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/lv2lint"
+          git clone --quiet https://github.com/amsynth/lv2lint.git "$dir"
+          git -C "$dir" checkout --quiet ec29cfed3193a89a8091a4c18e22bb36e6b43b24
+          # Install rather than copy the build-dir binary: upstream installs a
+          # small wrapper script that execs <prefix>/lib/<triplet>/lv2lint/lv2lint.bin,
+          # so copying the wrapper alone yields "not found".
+          meson setup "$dir/build" "$dir" --prefix "${RUNNER_TEMP}/lv2lint-prefix" --buildtype=release
+          meson compile -C "$dir/build"
+          meson install -C "$dir/build"
+          "${RUNNER_TEMP}/lv2lint-prefix/bin/lv2lint" -v || true
+          echo "${RUNNER_TEMP}/lv2lint-prefix/bin" >> "$GITHUB_PATH"
+      - name: Build, install and validate every scaffolded LV2 plugin
+        # --install  proves `cmake --install --prefix X` honours X (an absolute
+        #            DESTINATION silently ignores --prefix).
+        # --lv2lint  validates manifest.ttl/plugin.ttl for real.
+        # --clang-tidy runs static analysis over the generated C.
         env:
           APC_LV2_DIR: ${{ runner.temp }}/lv2/include
-        run: node scripts/smoke-scaffold.mjs --build
+        # --family=lv2 because this job has no JUCE or CLAP checkout, and a build
+        # run fails rather than silently skipping a family it was asked for.
+        run: node scripts/smoke-scaffold.mjs --build --family=lv2 --install --lv2lint --clang-tidy
 
   # Configures, compiles, and links the CLAP template against free-audio/clap.
   scaffold-clap:
@@ -113,10 +148,16 @@ jobs:
       - run: npm ci
       - name: Vendor free-audio/clap at _tools/clap
         run: git clone --depth 1 https://github.com/free-audio/clap.git "${RUNNER_TEMP}/clap"
-      - name: Build and verify every scaffolded CLAP plugin
+      - name: Install clang-tidy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-tidy ninja-build
+      - name: Build and statically analyse every scaffolded CLAP plugin
+        # --clang-tidy analyses the generated C++ against .clang-tidy (analyzers
+        # and bugprone/performance/portability checks, warnings as errors).
         env:
           APC_CLAP_DIR: ${{ runner.temp }}/clap
-        run: node scripts/smoke-scaffold.mjs --build
+        run: node scripts/smoke-scaffold.mjs --build --family=clap --clang-tidy
 
   # Configures, compiles, and links the JUCE, JUCE+WebView, and standalone
   # templates against a real JUCE 9 checkout on Ubuntu.
@@ -148,7 +189,7 @@ jobs:
       - name: Build and verify every scaffolded JUCE plugin & standalone app
         env:
           APC_JUCE_DIR: ${{ runner.temp }}/JUCE
-        run: xvfb-run -a node scripts/smoke-scaffold.mjs --build
+        run: xvfb-run -a node scripts/smoke-scaffold.mjs --build --family=juce
 
   # The rest of the suite drives PATH shims: it proves the argv shape and the
   # reporting logic, but not that the upstream binary accepts the invocation or
@@ -207,7 +248,7 @@ jobs:
           fi
           chmod +x "$BIN"
           "$BIN" --version || true
-          echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
+          dirname "$BIN" >> "$GITHUB_PATH"
       - name: Build a real CLAP plugin
         env:
           APC_CLAP_DIR: ${{ runner.temp }}/clap
@@ -266,7 +307,7 @@ jobs:
             exit 1
           fi
           chmod +x "$BIN"
-          echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
+          dirname "$BIN" >> "$GITHUB_PATH"
       - name: Build a real VST3 plugin
         env:
           APC_JUCE_DIR: ${{ runner.temp }}/JUCE
@@ -283,6 +324,33 @@ jobs:
             | tee "${RUNNER_TEMP}/validate.log" \
             || { echo "::error title=smoke-validate validate::$(sed 's/%/%25/g' "${RUNNER_TEMP}/validate.log" | tail -c 3000 | awk 'BEGIN{ORS=""}{printf "%s%%0A",$0}')"; exit 1; }
 
+  # Lints the things that are not JavaScript: the workflow files themselves and
+  # the CMake templates. Both were previously unchecked — a typo in a `run:`
+  # block only surfaced when that job ran, and nobody parsed the templates at all.
+  lint-config:
+    name: Workflow + CMake lint
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: actionlint — workflow schema, expressions, shellcheck over every run block
+        # Pinned by commit like every other action here. `shellcheck: true` runs
+        # shellcheck over each `run:` script; `pyflakes` is off because there is
+        # no inline python3 in these workflows.
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7
+        with:
+          shellcheck: true
+          pyflakes: false
+      - name: cmake-lint on the scaffold templates
+        # `.cmake-format.py` states the house style (4-space indent, 100 columns)
+        # rather than disabling C0301/C0307, so both checks still fire on a real
+        # violation, and a syntax error is a CRITICAL finding either way.
+        run: |
+          set -euo pipefail
+          python3 -m venv "${RUNNER_TEMP}/lint-venv"
+          "${RUNNER_TEMP}/lint-venv/bin/pip" install --quiet cmakelang
+          "${RUNNER_TEMP}/lint-venv/bin/cmake-lint" templates/*/CMakeLists.txt
+
   license:
     name: License check
     timeout-minutes: 10
@@ -297,8 +365,8 @@ jobs:
         run: node scripts/check-licenses.mjs
 
   publish:
-    needs: [test, license, compile-scaffold, scaffold-clap, scaffold-lv2, scaffold-juce,
-            scaffold-clap-validate, scaffold-juce-validate]
+    needs: [test, license, lint-config, compile-scaffold, scaffold-clap, scaffold-lv2,
+            scaffold-juce, scaffold-clap-validate, scaffold-juce-validate]
     if: startsWith(github.ref, 'refs/tags/v')
     timeout-minutes: 15
     runs-on: ubuntu-latest

@@ -71,7 +71,6 @@ const clap_plugin_descriptor_t *{{PLUGIN_ID}}_descriptor() { return &s_descripto
     m_plugin.on_main_thread   = &{{PLUGIN_CLASS_NAME}}::onMainThread;
 }
 
-{{PLUGIN_CLASS_NAME}}::~{{PLUGIN_CLASS_NAME}}() = default;
 
 const clap_plugin_descriptor_t *{{PLUGIN_CLASS_NAME}}::descriptor() const { return &s_descriptor; }
 

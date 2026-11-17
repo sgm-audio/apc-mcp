@@ -11,11 +11,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { spawnSync } from 'child_process';
-import path from 'path';
-import fs from 'fs';
-import os from 'os';
-import { fileURLToPath } from 'url';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 // ─── Paths ──────────────────────────────────────────────────────────
 const PKG_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -403,7 +403,12 @@ const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 // because every call site reads like the async API it replaces, and the ESLint
 // rules in eslint.config.js are written against that name.
 function spawn(cmd, args, opts = {}) {
-  return spawnSync(cmd, args, {
+  // `spawnSync` does honour `detached` (libuv's uv_spawn takes it, and the
+  // process-group kill below depends on it), but `@types/node` only declares the
+  // option on the async `spawn` overloads — hence the intersection. The
+  // annotation also pins the string encoding so `stdout` stays a `string`.
+  /** @type {import('node:child_process').SpawnSyncOptionsWithStringEncoding & { detached: boolean }} */
+  const spawnOptions = {
     timeout: (opts.timeout ?? 180) * 1000,
     encoding: 'utf-8',
     maxBuffer: MAX_OUTPUT_BYTES,
@@ -413,7 +418,8 @@ function spawn(cmd, args, opts = {}) {
     // the whole tree. `cmake --build --parallel` spawns make/ninja workers as
     // grandchildren that survive a SIGKILL aimed at the direct child alone.
     detached: process.platform !== 'win32',
-  });
+  };
+  return spawnSync(cmd, args, spawnOptions);
 }
 
 // spawnSync kills only the direct child on timeout. Kill the rest of the group
@@ -436,8 +442,13 @@ function trySpawn(cmd, args, opts = {}) {
   const output = result.stdout || '';
   const partialStderr = result.stderr ? `\n${result.stderr.trim()}` : '';
 
-  if (result.error) {
-    const code = result.error.code;
+  // `spawnSync` types its `error` as a plain Error, but at runtime it is an
+  // ErrnoException: `code` is how ENOENT/ENOBUFS/ETIMEDOUT arrive. Saying so once
+  // here is what lets `tsc --checkJs` see that the branches below are reachable.
+  /** @type {NodeJS.ErrnoException | undefined} */
+  const spawnError = result.error;
+  if (spawnError) {
+    const code = spawnError.code;
     if (code === 'ENOENT') {
       return { ok: false, output: '', stderr: installHint(cmd) };
     }
@@ -1739,6 +1750,14 @@ registerTool(
     //   not-checkable     no validator exists for this format in this server at
     //                     all (LV2/AudioUnit/Standalone) → nothing to install,
     //                     so it is reported and NOT treated as an error
+    /**
+     * `reason` only exists on a missing-validator row and `output` only on a fail
+     * row; typing the array stops a future edit from reading either one without
+     * checking the status first (which is what `tsc --checkJs` flagged here).
+     * @type {Array<{ plugin: string, format: string, path: string,
+     *   status: 'pass' | 'fail' | 'missing-validator' | 'not-checkable',
+     *   reason?: string, output?: string }>}
+     */
     const results = [];
     for (const b of binaries) {
       const bin = validatorFor[b.format];

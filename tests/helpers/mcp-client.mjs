@@ -14,6 +14,11 @@ const PKG_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..',
 export const INDEX = path.join(PKG_DIR, 'index.js');
 export const PROJECT_ROOT = PKG_DIR;
 
+/**
+ * @param {string} method
+ * @param {object} [params]
+ * @param {{ env?: Record<string, string>, cwd?: string, wantId?: number, timeoutMs?: number }} [options]
+ */
 export function rpc(method, params, { env, cwd, wantId = 2, timeoutMs = 20000 } = {}) {
   return new Promise((resolve, reject) => {
     const proc = spawn(process.execPath, [INDEX], {
@@ -95,6 +100,9 @@ export async function listTools(opts = {}) {
 // Returns the server's `initialize` result (serverInfo, protocolVersion,
 // capabilities). rpc() resolves on the *second* request, so this drives the
 // handshake separately and stops at the initialize response.
+/**
+ * @param {{ env?: Record<string, string>, cwd?: string, timeoutMs?: number }} [options]
+ */
 export function initializeInfo({ env, cwd, timeoutMs = 20000 } = {}) {
   return new Promise((resolve, reject) => {
     const proc = spawn(process.execPath, [INDEX], {
