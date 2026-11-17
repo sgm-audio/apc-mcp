@@ -41,6 +41,14 @@ npx -y github:sgm-audio/apc-mcp --help
 
 `npx` caches what it installs. If `--version` is stale, clear `~/.npm/_npx` (macOS/Linux) or `%LocalAppData%\npm-cache\_npx` (Windows) and restart your MCP client.
 
+`github:sgm-audio/apc-mcp` resolves `main` **at install time** and installs the runtime dependencies by semver range rather than by this repository's lockfile — you get whatever the branch and the registry hold that day. To pin what you run, name a commit or tag:
+
+```sh
+npx -y github:sgm-audio/apc-mcp#v2.0.0 --version
+```
+
+Once `@sgm-audio/apc-mcp` is published, prefer `npx -y @sgm-audio/apc-mcp@2.0.0`: registry installs are immutable and carry a provenance attestation from the release workflow.
+
 ## 2. Install the prerequisites
 
 Minimum for any build:

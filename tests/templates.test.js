@@ -1154,8 +1154,11 @@ describe('native LV2 template', () => {
 
     const html = read('MetaJuce', 'Source/UI/index.html');
     const vendorSpan = lineWith(html, 'class="vendor"');
-    assert.ok(vendorSpan.includes('ACME, Inc. &amp; "Sons"'),
-      `an HTML text node must escape & but leave quotes alone: ${vendorSpan}`);
+    // Quotes are escaped too, not because this use needs it (it is a text node),
+    // but so the helper stays safe if a template later interpolates the same
+    // value into an attribute (AUDIT SEC-NEW-09).
+    assert.ok(vendorSpan.includes('ACME, Inc. &amp; &quot;Sons&quot;'),
+      `HTML must escape & and quotes so the helper is attribute-safe: ${vendorSpan}`);
     assert.ok(!vendorSpan.includes('& Sons'), `raw & left in HTML: ${vendorSpan}`);
 
     const edLine = lineWith(read('MetaJuce', 'Source/WebViewEditor.cpp'), '"vendor"');

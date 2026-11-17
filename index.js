@@ -47,11 +47,31 @@ const SAFE_GENERATOR = /^[a-zA-Z][a-zA-Z0-9_ -]*$/;
 // against SAFE_CMAKE_OPTION_TOKEN, which has no `;` in any of its branches.
 const SAFE_OPTIONS = /^[a-zA-Z0-9_= /.\-\\+:@,;]+$/;
 // Allowed individual CMake configure option token (-DVAR[:TYPE]=VAL, -UVAR, -W[no-]dev/deprecated)
-// A space is legal inside a -D value (`-DCMAKE_PREFIX_PATH=/Users/me/My Plugins`):
-// each token is one argv entry, so a space cannot split an argument and no shell
-// ever sees it. Quotes and `$`/backticks remain banned — a quote implies a parser
-// that would interpret it, and there is none.
 const SAFE_CMAKE_OPTION_TOKEN = /^(?:-D[A-Za-z_][A-Za-z0-9_]*(?::[A-Z]+)?=[a-zA-Z0-9_=/.\-\\+:@, ]*|-U[A-Za-z_][A-Za-z0-9_]*|-W(?:no-)?(?:dev|error(?:=dev)?|deprecated|error=deprecated))$/;
+
+// CMake variables whose *value* is not data: CMake parses it as a script, loads
+// it as a toolchain, or hands it a command line. The character allowlist above
+// cannot help here — `/tmp/evil.cmake` is a perfectly well-formed value — so an
+// option that sets one of these is rejected outright. Without this, a single
+// tool argument chose which code ran at configure time (AUDIT SEC-NEW-06):
+//   -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=/tmp/evil.cmake  → file(WRITE …) ran
+//   -DCMAKE_C_COMPILER=/tmp/fakecc                      → arbitrary executable ran
+const CMAKE_VARS_THAT_EXECUTE = [
+  /^CMAKE_PROJECT_TOP_LEVEL_INCLUDES$/,
+  /^CMAKE_PROJECT_INCLUDE(_BEFORE)?$/,
+  /^CMAKE_(TOOLCHAIN_FILE|MODULE_PATH|USER_MAKE_RULES_OVERRIDE(_[A-Z]+)?)$/,
+  /^CMAKE_(MAKE_PROGRAM|COMMAND|CTEST_COMMAND|CPACK_COMMAND|LINKER|AR|RANLIB|OBJCOPY|STRIP)$/,
+  /^CMAKE_(C|CXX|ASM|OBJC|OBJCXX|CUDA|HIP|ISPC)_COMPILER$/,
+  /^CMAKE_(C|CXX|ASM|OBJC|OBJCXX|CUDA|HIP|ISPC|EXE|SHARED|MODULE|STATIC)_COMPILER_LAUNCHER$/,
+  /^CMAKE_(C|CXX|ASM|OBJC|OBJCXX|CUDA|HIP|ISPC)_FLAGS(_[A-Z0-9_]+)?$/,
+  /^CMAKE_(EXE|SHARED|MODULE|STATIC)_LINKER_FLAGS(_[A-Z0-9_]+)?$/,
+];
+
+// True when an option would set one of the variables above.
+function cmakeOptionSetsCode(flag) {
+  const m = flag.match(/^-D([A-Za-z_][A-Za-z0-9_]*)(?::[A-Z]+)?=/);
+  return Boolean(m) && CMAKE_VARS_THAT_EXECUTE.some(re => re.test(m[1]));
+}
 // Plugin names for creation: start with a letter, then alphanumeric, underscores, hyphens
 const SAFE_PLUGIN_NAME = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 // Built-in CMake targets that a plugin target name must never shadow.
@@ -92,8 +112,10 @@ const SAFE_REGEX = /^[\x20-\x7E]+$/;
 const SAFE_FORMATS = /^[a-zA-Z0-9_;-]+$/;
 // Charset for values pasted into *CMake source* (the project's pluginsDir /
 // buildDir are interpolated into add_subdirectory() lines). This is a genuine
-// code-injection surface and stays restricted.
-const SAFE_PATH = /^[a-zA-Z0-9_ /\\.\-:@~]+$/;
+// code-injection surface and stays restricted. `\` and `:` are excluded because
+// CMake reads `\` as the start of an escape sequence, so a value containing one
+// scaffolds a project that cannot be configured.
+const SAFE_PATH = /^[a-zA-Z0-9_ /.@~-]+$/;
 
 // User-supplied filesystem paths (projectPath, lint target) are deliberately NOT
 // charset-restricted. They reach path.resolve(), fs and spawnSync argv — never a
@@ -169,6 +191,139 @@ function assertWithinProject(projectRoot, candidate, label = 'path') {
   return resolved;
 }
 
+// ─── Containment at write time (SEC-NEW-05) ─────────────────────────
+// assertWithinProject() above is a *check-time* control: it proves the path is
+// inside the project at the moment it runs. Every write that follows re-traverses
+// the same string, so a concurrent process that replaces an ancestor directory
+// with a symlink between the check and the write redirects the write outside the
+// root. That is a real escape, not a theoretical one, and it cannot be closed by
+// checking harder — the path has to be re-proved at the point of use.
+//
+// These helpers therefore:
+//   * re-resolve the *real* path of the directory immediately before writing,
+//   * refuse to traverse a symlink on the way down,
+//   * create directories one level at a time and re-verify each level,
+//   * open files with O_NOFOLLOW (and O_EXCL for new files), so the file itself
+//     can never be a link that points elsewhere.
+//
+// Residual: Node exposes no openat(2), so the last check and the mkdir/open are
+// still two syscalls. A race there can create an empty directory outside the
+// project (removed again below) but cannot write file content outside it.
+
+// O_NOFOLLOW does not exist on Windows; 0 keeps the flag set valid there.
+const O_NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
+
+function realInside(projectRoot, dir, label) {
+  const realRoot = fs.realpathSync(projectRoot);
+  const real = fs.realpathSync(dir);
+  if (real !== realRoot && !real.startsWith(realRoot + path.sep)) {
+    throw new Error(`${label} escapes project root via symlink — rejected: ${dir}`);
+  }
+  return real;
+}
+
+// A directory that may be written into: a real directory, not a symlink, inside
+// the project once fully resolved.
+function assertRealDir(projectRoot, dir, label = 'Directory') {
+  let stat;
+  try {
+    stat = fs.lstatSync(dir);
+  } catch {
+    throw new Error(`${label} does not exist: ${dir}`);
+  }
+  if (stat.isSymbolicLink()) {
+    throw new Error(`${label} is a symlink — refusing to write through it: ${dir}`);
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(`${label} is not a directory: ${dir}`);
+  }
+  realInside(projectRoot, dir, label);
+  return dir;
+}
+
+// mkdir -p that never traverses a symlink and never leaves the project.
+function mkdirInside(projectRoot, dir) {
+  const root = path.resolve(projectRoot);
+  const target = path.resolve(dir);
+  if (target !== root && !target.startsWith(root + path.sep)) {
+    throw new Error(`Path escapes project root — rejected: ${dir}`);
+  }
+  // The project root itself may be reached through a symlink (~/current ->
+  // ~/src/proj is a normal layout), so resolve it once and build the missing
+  // tail under the real directory. Every level below that must be a real
+  // directory: that is what stops a swapped `plugins` symlink.
+  const realRoot = fs.realpathSync(root);
+
+  const components = path.relative(root, target).split(path.sep).filter(Boolean);
+  let current = realRoot;
+  let createdLeaf = false;
+  for (const part of components) {
+    current = path.join(current, part);
+    let created = false;
+    try {
+      fs.mkdirSync(current);
+      created = true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    try {
+      assertRealDir(projectRoot, current, 'Directory');
+    } catch (e) {
+      // The race window between the check above and mkdir() can leave an empty
+      // directory outside the project. Remove it (rmdir refuses non-empty
+      // directories, so this can never delete anything we did not create).
+      if (created) {
+        try { fs.rmdirSync(current); } catch { /* not empty or already gone */ }
+      }
+      throw e;
+    }
+    createdLeaf = created;
+  }
+  // Callers that create a project subdirectory use this to know whether a
+  // failure should remove the directory: only ever delete what we made.
+  return components.length > 0 && createdLeaf;
+}
+
+// Write a file inside the project without following a symlink at the leaf.
+//
+// The project root itself may be reached through a symlink (~/current -> ~/src),
+// so the root is resolved once and the *components below it* are the ones that
+// must be real directories.
+function writeFileInside(projectRoot, file, content, { exclusive = false } = {}) {
+  const realRoot = fs.realpathSync(projectRoot);
+  if (realRoot !== path.resolve(projectRoot)) {
+    // The caller's project path is (or goes through) a symlink; that is allowed,
+    // but the write target has to be expressed under the real root so the
+    // component walk below starts from a directory that cannot be replaced.
+    file = path.join(realRoot, path.relative(path.resolve(projectRoot), path.resolve(file)));
+  }
+  const dir = path.dirname(file);
+  let realDir;
+  try {
+    realDir = fs.realpathSync(dir);
+  } catch {
+    throw new Error(`Destination directory does not exist: ${dir}`);
+  }
+  if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) {
+    throw new Error(`Destination directory escapes project root — rejected: ${dir}`);
+  }
+  let walk = realRoot;
+  for (const part of path.relative(realRoot, realDir).split(path.sep).filter(Boolean)) {
+    walk = path.join(walk, part);
+    if (fs.lstatSync(walk).isSymbolicLink()) {
+      throw new Error(`Refusing to write through symlinked directory: ${walk}`);
+    }
+  }
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | O_NOFOLLOW |
+    (exclusive ? fs.constants.O_EXCL : 0);
+  const fd = fs.openSync(file, flags, 0o644);
+  try {
+    fs.writeFileSync(fd, content, 'utf-8');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 // ─── Prerequisite checking ─────────────────────────────────────────
 const REQUIREMENTS = [
   { bin: 'cmake', for: 'build/configure', install: 'brew install cmake / apt install cmake / https://cmake.org/download' },
@@ -239,17 +394,43 @@ function checkOptionalTool(binName) {
 // Uses spawnSync with argument arrays — NO shell, NO injection.
 // User-controlled values are passed as separate argv entries.
 
+// Bounded by design: a build that produces more than this is truncated rather
+// than allowed to grow the server's memory. Kept in sync with docs/security.md
+// (AUDIT SEC-NEW-07: the doc said 2 MB while the code used 16 MB).
+const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
+
 // Synchronous by construction (spawnSync) despite the name; `spawn` is kept
 // because every call site reads like the async API it replaces, and the ESLint
 // rules in eslint.config.js are written against that name.
 function spawn(cmd, args, opts = {}) {
-  return spawnSync(cmd, args, {
+  // `spawnSync` does honour `detached` (libuv's uv_spawn takes it, and the
+  // process-group kill below depends on it), but `@types/node` only declares the
+  // option on the async `spawn` overloads — hence the intersection. The
+  // annotation also pins the string encoding so `stdout` stays a `string`.
+  /** @type {import('node:child_process').SpawnSyncOptionsWithStringEncoding & { detached: boolean }} */
+  const spawnOptions = {
     timeout: (opts.timeout ?? 180) * 1000,
     encoding: 'utf-8',
-    maxBuffer: 16 * 1024 * 1024,
+    maxBuffer: MAX_OUTPUT_BYTES,
     cwd: opts.cwd,
     stdio: 'pipe',
-  });
+    // POSIX only: put the child in its own process group so a timeout can kill
+    // the whole tree. `cmake --build --parallel` spawns make/ninja workers as
+    // grandchildren that survive a SIGKILL aimed at the direct child alone.
+    detached: process.platform !== 'win32',
+  };
+  return spawnSync(cmd, args, spawnOptions);
+}
+
+// spawnSync kills only the direct child on timeout. Kill the rest of the group
+// too, or a timed-out `cmake --build` keeps compiling in the background.
+function killProcessTree(pid) {
+  if (!pid) return;
+  if (process.platform === 'win32') {
+    try { spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 10000 }); } catch { /* best effort */ }
+    return;
+  }
+  try { process.kill(-pid, 'SIGKILL'); } catch { /* group already gone */ }
 }
 
 // spawnSync reports failures on `result.error` / `result.signal` — it does NOT
@@ -278,11 +459,12 @@ function trySpawn(cmd, args, opts = {}) {
       return {
         ok: false,
         output,
-        stderr: `'${cmd}' exceeded the 16 MB output limit and was stopped.` +
-                ` Narrow the target (e.g. build one target instead of all) and retry.${partialStderr}`,
+        stderr: `'${cmd}' exceeded the maximum output buffer (${MAX_OUTPUT_BYTES / (1024 * 1024)} MB) and was terminated.` +
+                ` Narrow the target or build one plugin at a time.${partialStderr}`,
       };
     }
     if (code === 'ETIMEDOUT' || result.signal === 'SIGTERM' || result.signal === 'SIGKILL') {
+      killProcessTree(result.pid);
       return {
         ok: false,
         output,
@@ -342,7 +524,12 @@ const VALIDATOR_CONFIG_KEY = { VST3: 'validateCommand', CLAP: 'clapValidatorComm
 // "../x" escaped the project root (AUDIT SEC-03).
 const RELATIVE_DIR = z.string()
   .max(1024)
-  .regex(SAFE_PATH, 'may contain only letters, digits, spaces and _ / . \\ - : @ ~')
+  // No backslash and no colon: these values are pasted into CMake *source*
+  // (`add_subdirectory(${CMAKE_BINARY_DIR}/{{PLUGINS_DIR}}/...)`), where `\`
+  // begins an escape sequence — `pluginsDir: "pl\ugins"` produced a plugin that
+  // scaffolded successfully and then failed to configure with
+  // "Invalid character escape '\u'" (AUDIT SEC-NEW-10).
+  .regex(SAFE_PATH, 'may contain only letters, digits, spaces and _ / . @ ~ -')
   .refine(p => !hasDotDot(p), 'may not contain ".." segments')
   .refine(p => !path.isAbsolute(p), 'must be relative to the project root');
 
@@ -452,6 +639,28 @@ function stripAnsi(text) {
   return text.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
 }
 
+// Flatten untrusted project text to one short printable line. Applied to
+// anything read out of the project and echoed back to the model (directory
+// names, status.json, paths in errors): a newline, a backtick or a control
+// character in a plugin's own metadata must not be able to restructure the
+// tool's output or hand the model a fresh "### SYSTEM" section.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+
+function cleanScalar(value, maxLength = 200) {
+  return String(value)
+    .replace(CONTROL_CHARS, ' ')
+    .replace(/`/g, "'")
+    .slice(0, maxLength);
+}
+
+// status.json is project-authored metadata, not server state: bound what a
+// repository can make the server echo back.
+const STATUS_MAX_BYTES = 4096;
+
+// Longest single diagnostic line echoed back to the model.
+const DIAGNOSTIC_MAX_CHARS = 500;
+
 // Compiler/linker diagnostic shapes, in priority order. Each captures the
 // severity as group 1.
 //
@@ -503,8 +712,11 @@ function parseBuildOutput(text) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     const kind = classifyDiagnostic(trimmed);
-    if (kind === 'error') errors.push(trimmed);
-    else if (kind === 'warning') warnings.push(trimmed);
+    // A single generated line can be megabytes long (inlined templates,
+    // concatenated minified JS in a Unity build). Bound each item as well as
+    // the count, or "20 errors" is still an unbounded response.
+    if (kind === 'error') errors.push(trimmed.slice(0, DIAGNOSTIC_MAX_CHARS));
+    else if (kind === 'warning') warnings.push(trimmed.slice(0, DIAGNOSTIC_MAX_CHARS));
   }
 
   return {
@@ -664,11 +876,17 @@ function standaloneArtefacts(dir) {
 
 // Scans <buildDir>/<pluginsDir>/<target>/<target>_artefacts/<config>/ for built
 // artefacts of the requested formats.
-function findPluginBinaries(config, buildDir, formats, pluginsRelDir = 'plugins') {
+//
+// An artefact is not a passive file: the validator *loads* it, so it runs code.
+// A symlink inside the build tree therefore must never be followed — otherwise a
+// repository decides which library the validator executes, from a path outside
+// the project (AUDIT SEC-NEW-05). Skipped candidates are reported, not hidden.
+function findPluginBinaries(config, buildDir, formats, pluginsRelDir = 'plugins', projectRoot = null) {
+  const found = [];
+  const skipped = [];
   const outDir = path.join(buildDir, pluginsRelDir);
-  if (!fs.existsSync(outDir)) return [];
+  if (!fs.existsSync(outDir)) return { found, skipped };
 
-  const results = [];
   const plugins = fs.readdirSync(outDir, { withFileTypes: true })
     .filter(e => e.isDirectory())
     .map(e => e.name);
@@ -682,14 +900,30 @@ function findPluginBinaries(config, buildDir, formats, pluginsRelDir = 'plugins'
       if (!layout) continue;   // a format this server does not know how to locate
 
       const fmtDir = path.join(artDir, layout.dir);
-      const found = layout.suffix
+      const candidates = layout.suffix
         ? artefactsWithSuffix(fmtDir, layout.suffix)
         : standaloneArtefacts(fmtDir);
 
-      for (const p of found) results.push({ plugin, format: fmt, path: p });
+      for (const p of candidates) {
+        let stat;
+        try { stat = fs.lstatSync(p); } catch { continue; }
+        if (stat.isSymbolicLink()) {
+          skipped.push({ plugin, format: fmt, path: p, reason: 'symlink — not loaded' });
+          continue;
+        }
+        if (projectRoot) {
+          try {
+            realInside(projectRoot, p, 'Plugin artefact');
+          } catch {
+            skipped.push({ plugin, format: fmt, path: p, reason: 'outside the project root — not loaded' });
+            continue;
+          }
+        }
+        found.push({ plugin, format: fmt, path: p });
+      }
     }
   }
-  return results;
+  return { found, skipped };
 }
 
 // Single-pass placeholder substitution so values containing `{{OTHER_KEY}}`
@@ -783,13 +1017,16 @@ function escapeBackslashQuote(text) {
   return String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-// HTML *text* context (the scaffolded WebView UI). Quotes are harmless in a text
-// node; &, < and > are not.
+// HTML context (the scaffolded WebView UI). Today every use is a text node, where
+// quotes are harmless — but escaping them too costs nothing and makes the helper
+// safe if a template later puts the value in an attribute (AUDIT SEC-NEW-09).
 function htmlEscape(text) {
   return String(text)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // JUCE's JUCEUtils.cmake passes DESCRIPTION into target_compile_definitions as
@@ -801,7 +1038,13 @@ function juceDescriptionEscape(text) {
     .replace(/\\/g, '\\\\\\\\')
     .replace(/"/g, '\\\\\\"')
     .replace(/\$/g, '\\$')
-    .replace(/;/g, '\\;');
+    // '#' and ';' also have meaning in the *generated command line* (Makefile
+    // comment / shell separator / CMake list separator), which is one context
+    // further out than the quoted CMake argument this value is written into.
+    // Octal C escapes survive the whole chain and cannot run on into a
+    // following hex digit the way \x23 would.
+    .replace(/#/g, '\\\\043')
+    .replace(/;/g, '\\\\073');
 }
 
 // Strips hyphens and underscores from SAFE_PLUGIN_NAME to form a valid C/C++
@@ -928,6 +1171,52 @@ function registerTool(name, schema, handler) {
   });
 }
 
+// ─── CMake cache trust ──────────────────────────────────────────────
+// A CMakeCache.txt is project state that CMake reads before anything else, and it
+// can carry the same code-loading variables that configure's -D options are not
+// allowed to set. A repository that commits one therefore turned a plain
+// `configure` — or the auto-configure inside `build` — into code execution
+// (AUDIT SEC-NEW-06, reproduction 3). A cache that belongs to another source tree,
+// or that carries a code-loading mark, is not trusted: it is deleted and the
+// configure starts clean.
+const CACHE_CODE_MARK = new RegExp('^CMAKE_(?:' + [
+  'PROJECT_TOP_LEVEL_INCLUDES',
+  'PROJECT_INCLUDE(?:_BEFORE)?',
+  'TOOLCHAIN_FILE',
+  'MODULE_PATH',
+  'USER_MAKE_RULES_OVERRIDE[A-Z_]*',
+  '[A-Z_]*COMPILER_LAUNCHER',
+].join('|') + '):', 'm');
+
+function sanitizeCmakeCache(projectRoot, buildDir) {
+  const cachePath = path.join(buildDir, 'CMakeCache.txt');
+  if (!fs.existsSync(cachePath)) return null;
+
+  let text;
+  try {
+    text = fs.readFileSync(cachePath, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  // Compare *resolved* paths: CMake records whatever -S/cwd it was given, and on
+  // macOS /var/folders/... is the same tree as /private/var/folders/..., so a
+  // lexical comparison would call every ordinary cache foreign and delete it.
+  const resolveReal = p => {
+    try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+  };
+  const home = text.match(/^CMAKE_HOME_DIRECTORY:INTERNAL=(.*)$/m)?.[1]?.trim();
+  const foreign = Boolean(home) && resolveReal(home) !== resolveReal(projectRoot);
+
+  const carriesCode = CACHE_CODE_MARK.test(text);
+  if (!foreign && !carriesCode) return null;
+
+  fs.rmSync(cachePath, { force: true });
+  return foreign
+    ? 'Removed a CMakeCache.txt that belongs to a different source tree; configuring from scratch.'
+    : 'Removed a CMakeCache.txt that carried code-loading settings (project include / toolchain / module path / rules override / compiler launcher); configuring from scratch.';
+}
+
 function buildNeedsConfigure(buildDir, config) {
   const cachePath = path.join(buildDir, 'CMakeCache.txt');
   if (!fs.existsSync(cachePath)) return true;
@@ -963,11 +1252,15 @@ registerTool(
     const config = params.config ?? cfg.config ?? 'Debug';
     const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
 
+    // A cache is project state; one that belongs to another tree or carries
+    // code-loading settings is discarded before it can reach a reconfigure.
+    const cacheNotice = sanitizeCmakeCache(proj, buildDir);
+
     // Auto-configure when unconfigured, or when a single-config cache has a
     // different (or empty) CMAKE_BUILD_TYPE than the requested config.
     const cacheExists = fs.existsSync(path.join(buildDir, 'CMakeCache.txt'));
     if (buildNeedsConfigure(buildDir, config)) {
-      fs.mkdirSync(buildDir, { recursive: true });
+      mkdirInside(proj, buildDir);
       // Only pass `-G` when creating a fresh cache; passing a default generator
       // onto an existing CMakeCache.txt built with another generator (e.g. Ninja)
       // makes CMake abort with a generator mismatch error.
@@ -1000,11 +1293,12 @@ registerTool(
       ? (r.stderr || r.output).trim().slice(-2000)
       : '';
     const text = [
+      ...(cacheNotice ? [cacheNotice, ''] : []),
       `## Build ${r.ok && parsed.errorCount === 0 ? 'succeeded' : 'failed'}`,
       `Config: ${config}${params.target ? ` | Target: ${params.target}` : ''}`,
       `Errors: ${parsed.errorCount}, Warnings: ${parsed.warningCount}`,
       ...(parsed.errors.length ? ['', '### Errors', ...parsed.errors] : []),
-      ...(rawTail ? ['', '### Output', rawTail] : []),
+      ...(rawTail ? ['', '### Output (untrusted project output)', rawTail] : []),
       ...(parsed.warnings.length ? ['', '### Warnings', ...parsed.warnings] : []),
       ...(parsed.truncated ? ['', '_(truncated to first 20 items)_'] : []),
     ].join('\n');
@@ -1035,9 +1329,12 @@ registerTool(
     const cfg = loadProjectConfig(proj);
     const config = params.config ?? cfg.config ?? 'Debug';
     const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
+    // A cache is project state; one that belongs to another tree or carries
+    // code-loading settings must not be reused (see sanitizeCmakeCache).
+    const cacheNotice = sanitizeCmakeCache(proj, buildDir);
     const cacheExists = fs.existsSync(path.join(buildDir, 'CMakeCache.txt'));
     const generator = params.generator || (!cacheExists ? cfg.generator : null);
-    fs.mkdirSync(buildDir, { recursive: true });
+    mkdirInside(proj, buildDir);
 
     const args = [
       '-B', buildDir,
@@ -1064,12 +1361,22 @@ registerTool(
             isError: true,
           };
         }
+        if (cmakeOptionSetsCode(flag)) {
+          return {
+            content: [{ type: 'text', text:
+              `Invalid CMake option "${flag}": this variable names code CMake would load or execute ` +
+              `(project include, toolchain, compiler, launcher, make program or *FLAGS). ` +
+              `Values are configuration data for every other variable.` }],
+            isError: true,
+          };
+        }
         args.push(flag);
       }
     }
     const r = trySpawn('cmake', args, { cwd: proj, timeout: 120 });
-    const errMsg = (r.stderr || r.output || 'cmake exited non-zero with no output.').trim();
-    const text = r.ok ? 'Configure succeeded.' : `## Configure failed\n${errMsg}`;
+    const errMsg = (r.stderr || r.output || 'cmake exited non-zero with no output.').trim().slice(0, 4000);
+    const text = [cacheNotice, r.ok ? 'Configure succeeded.' : `## Configure failed\n${errMsg}`]
+      .filter(Boolean).join('\n\n');
     return { content: [{ type: 'text', text }], isError: !r.ok };
   }
 );
@@ -1207,6 +1514,8 @@ registerTool(
     }
 
     if (files.length === 0) {
+      // A directory walk that could not read part of the tree is a *read*
+      // failure, not an empty project: say which directories, and fail.
       if (skipped.length) {
         const text = [
           '## Lint could not read the project',
@@ -1218,7 +1527,15 @@ registerTool(
         ].join('\n');
         return { content: [{ type: 'text', text }], isError: true };
       }
-      return { content: [{ type: 'text', text: 'No C/C++ source files found to lint.' }] };
+      // Asking for a specific target and linting nothing is not a clean result
+      // either: the old message ("No C/C++ source files found to lint." with
+      // isError false) reads as success and lets a model report a clean file
+      // that was never opened (AUDIT SEC-NEW-08).
+      const text = params.target
+        ? `No C/C++ source files found under "${params.target}" — nothing was linted. ` +
+          'Check the path and that it contains .c/.cpp/.cc/.h/.hpp files.'
+        : 'No C/C++ source files found in the project — nothing was linted.';
+      return { content: [{ type: 'text', text }], isError: Boolean(params.target) };
     }
 
     // Run clang-format in bounded batches so large projects never hit OS E2BIG.
@@ -1327,7 +1644,7 @@ registerTool(
 
     const details = plugins.map(name => {
       const statusPath = path.join(pluginsDir, name, 'status.json');
-      let meta = { name };
+      const meta = { name: cleanScalar(name, 128) };
       let statusStat = null;
       try { statusStat = fs.lstatSync(statusPath); } catch { /* absent */ }
       if (statusStat) {
@@ -1336,14 +1653,22 @@ registerTool(
             throw new Error('refusing to read symlinked status.json');
           }
           assertWithinProject(proj, statusPath, 'Plugin status.json');
+          if (statusStat.size > STATUS_MAX_BYTES) {
+            throw new Error(`status.json is ${statusStat.size} bytes (limit ${STATUS_MAX_BYTES})`);
+          }
           const parsed = JSON.parse(fs.readFileSync(statusPath, 'utf-8'));
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            meta = { ...parsed, name };
+            // Whitelisted fields only, each flattened to one short line: the
+            // file is project-authored, so it may inform the listing but not
+            // choose which keys, how long, or on how many lines it appears.
+            for (const key of ['type', 'status', 'version']) {
+              if (typeof parsed[key] === 'string') meta[key] = cleanScalar(parsed[key], 200);
+            }
           }
         } catch (e) {
           // A malformed or symlinked status.json must not break the listing —
           // surface a warning instead of leaking external files or dropping silently.
-          meta = { ...meta, statusError: `status.json is unreadable: ${e.message}` };
+          meta.statusError = cleanScalar(`status.json is unreadable: ${e.message}`, 200);
         }
       }
       return meta;
@@ -1406,7 +1731,8 @@ registerTool(
       }
     }
 
-    const binaries = findPluginBinaries(config, buildDir, formats, cfg.pluginsDir);
+    const { found: binaries, skipped } = findPluginBinaries(
+      config, buildDir, formats, cfg.pluginsDir, proj);
     if (!binaries.length) {
       const hint = fs.existsSync(buildDir) ? '' : ' (build directory not found — run audio_plugin_build first)';
       return {
@@ -1479,7 +1805,7 @@ registerTool(
         'missing-validator': 'SKIPPED',
         'not-checkable': 'NOT CHECKABLE',
       }[r.status];
-      lines.push(`\n### ${r.plugin} [${r.format}] — ${status}`);
+      lines.push(`\n### ${cleanScalar(r.plugin, 128)} [${r.format}] — ${status}`);
       lines.push(`\`${r.path}\``);
       if (r.status === 'not-checkable') {
         lines.push(`_apc-mcp has no ${r.format} validator. The binary was found and is fine — ` +
@@ -1488,6 +1814,12 @@ registerTool(
         lines.push(`_${r.reason}_`);
       } else if (r.status === 'fail') {
         lines.push(`\`\`\`\n${r.output}\n\`\`\``);
+      }
+    }
+    if (skipped.length) {
+      lines.push('', '**Skipped** (an artefact that is a symlink, or resolves outside the project, is never loaded):');
+      for (const s of skipped) {
+        lines.push(`- ${cleanScalar(s.plugin, 128)} [${s.format}] ${cleanScalar(s.path, 200)} — ${s.reason}`);
       }
     }
     if (missing > 0) {
@@ -1615,15 +1947,21 @@ registerTool(
       PLUGIN_DESCRIPTION_TTL: escapeBackslashQuote(params.description),
     };
 
-    function copyDir(src, dest) {
-      fs.mkdirSync(dest, { recursive: true });
+    // SEC-NEW-05: every directory level is created and re-verified, and every
+    // file is opened with O_NOFOLLOW|O_EXCL. A `plugins` directory swapped for a
+    // symlink between checkPluginPath() and this write can no longer redirect the
+    // scaffold outside the project — reproduced before the fix with 313 creates
+    // and a flipping symlink, which wrote three plugin trees outside the root.
+    function copyDir(src, dest, depth = 0) {
+      const created = mkdirInside(proj, dest);
+      if (depth === 0) createdPluginDir = created;
       for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
         const srcPath = path.join(src, entry.name);
         const destPath = path.join(dest, entry.name);
-        if (entry.isDirectory()) copyDir(srcPath, destPath);
+        if (entry.isDirectory()) copyDir(srcPath, destPath, depth + 1);
         else if (entry.isFile()) {
           const content = replaceTemplateVars(fs.readFileSync(srcPath, 'utf-8'), vars);
-          fs.writeFileSync(destPath, content, 'utf-8');
+          writeFileInside(proj, destPath, content, { exclusive: true });
         }
       }
     }
@@ -1636,7 +1974,8 @@ registerTool(
         throw new Error('Root CMakeLists.txt is a symlink — refusing to modify it');
       }
 
-      createdPluginDir = true;
+      // copyDir() reports whether *this call* created the plugin directory, so a
+      // failure never deletes a directory that appeared concurrently.
       copyDir(templateDir, pluginDir);
 
       const relPluginDir = path.relative(proj, pluginDir).split(path.sep).join('/');
@@ -1644,10 +1983,11 @@ registerTool(
       const subLine = `add_subdirectory(${subArg})`;
 
       if (!lstatExists(rootCmakePath)) {
-        fs.writeFileSync(
+        writeFileInside(
+          proj,
           rootCmakePath,
           `cmake_minimum_required(VERSION 3.22)\nproject(AudioPlugins LANGUAGES C CXX)\n\n${subLine}\n`,
-          'utf-8'
+          { exclusive: true }
         );
         cmakeRegistration = `Created CMakeLists.txt with \`${subLine}\``;
       } else {
@@ -1660,7 +2000,7 @@ registerTool(
         ).test(uncommented);
         if (!alreadyWired) {
           const sep = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
-          fs.writeFileSync(rootCmakePath, `${existing}${sep}${subLine}\n`, 'utf-8');
+          writeFileInside(proj, rootCmakePath, `${existing}${sep}${subLine}\n`);
           cmakeRegistration = `Registered \`${subLine}\` in CMakeLists.txt`;
         } else {
           cmakeRegistration = `Already registered in CMakeLists.txt: \`${subLine}\``;
