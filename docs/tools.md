@@ -29,7 +29,7 @@ audio_plugin_configure(options="-DJUCE_DIR=/path/to/JUCE -DLV2_INCLUDE_DIR=/path
 | `projectPath` | string, optional | Auto-detected from CWD |
 | `config` | `Debug` \| `Release` | Falls back to `apc-mcp.json` → `Debug` |
 | `generator` | string, optional | CMake default on Windows, `Unix Makefiles` on POSIX. Common: `Ninja`, `Xcode` |
-| `options` | string, optional | Space-separated `-DNAME=VALUE` flags; each becomes its own argv entry |
+| `options` | string, optional | Space-separated CMake cache flags; each token becomes its own argv entry. Allowed grammar (anything else is rejected before `cmake` runs): `-D<NAME>[:<TYPE>]=<VALUE>` (NAME starts with a letter or `_`; VALUE may contain `A–z`, digits, `_ = / . \ - + : @ ,`), `-U<NAME>`, and `-Wdev` / `-Wno-dev` / `-Wdeprecated` / `-Wno-deprecated` / `-Werror=dev` / `-Werror=deprecated`. Neither a flag nor a `-D` value may contain a `..` path segment — use absolute paths for SDK locations (e.g. `-DJUCE_DIR=/opt/JUCE`). |
 
 Only pass `-G` when creating a fresh cache; an existing cache created with a different generator must not be re-issued a `-G` flag, so `audio_plugin_build` handles reconfiguration itself.
 

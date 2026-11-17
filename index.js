@@ -329,11 +329,38 @@ const CONFIG_SCHEMA = {
 
 // Validates each key independently so one bad value degrades to its default
 // instead of discarding the whole file. Unknown keys are ignored, keeping the
-// format forward-compatible.
+// format forward-compatible — including keys that collide with properties every
+// object inherits (`constructor`, `toString`, …): the lookup must use
+// Object.hasOwn so those resolve to "unknown key", not to
+// Object.prototype.constructor and a `safeParse is not a function` crash
+// (found by re-review; the prototype chain is not a schema registry).
 function loadProjectConfig(projectPath) {
   const cfg = { ...defaultConfig };
   const configPath = path.join(projectPath, CONFIG_FILE);
   if (!fs.existsSync(configPath)) return cfg;
+
+  // The config file reaches path.join() and spawnSync() argv just like tool
+  // arguments, so a symlinked apc-mcp.json is held to the same boundary as
+  // every other project file: one that resolves outside the project root is
+  // ignored (with a warning) rather than read — otherwise a project-directory
+  // writer could point the server at config they did not place inside it.
+  // A symlink that resolves INSIDE the project is fine and stays honoured.
+  try {
+    if (fs.lstatSync(configPath).isSymbolicLink()) {
+      const realTarget = fs.realpathSync(configPath);
+      const root = path.resolve(projectPath);
+      if (realTarget !== root && !realTarget.startsWith(root + path.sep)) {
+        console.error(
+          `[apc-mcp] Warning: ${CONFIG_FILE} is a symlink resolving outside the project root ` +
+          `(${realTarget}) — ignoring it and using defaults.`
+        );
+        return cfg;
+      }
+    }
+  } catch {
+    // Unreadable/dangling symlink: fall through and let the read below fail
+    // into the not-valid-JSON branch rather than inventing a new error shape.
+  }
 
   let raw;
   try {
@@ -348,7 +375,9 @@ function loadProjectConfig(projectPath) {
   }
 
   for (const [key, value] of Object.entries(raw)) {
-    const validator = CONFIG_SCHEMA[key];
+    // Own-property lookup only: `{"constructor": …}` must be treated as an
+    // unknown key, never as Object.prototype.constructor.
+    const validator = Object.hasOwn(CONFIG_SCHEMA, key) ? CONFIG_SCHEMA[key] : undefined;
     if (!validator) continue; // unknown key: tolerate for forward compatibility
     const result = validator.safeParse(value);
     if (result.success) {
@@ -433,10 +462,16 @@ function stripAnsi(text) {
 // rather than a trailing colon (AUDIT QA-03, QA-04).
 const DIAGNOSTIC_PATTERNS = [
   // clang / gcc:  /src/Foo.cpp:12:34: error: msg   (column optional)
-  /^(?:[A-Za-z]:[\\/])?\S+?:\d+(?::\d+)?:\s*(fatal error|error|warning|note|remark)\s*:/i,
-  // MSVC:         C:\src\Foo.cpp(12): error C2065: msg
+  // The path token tolerates spaces: projects legitimately live in directories
+  // like "My Plugins (2026)", and a diagnostic from such a path must still be
+  // counted. The `:<line>[:<col>]: <severity>:` anchor keeps prose from
+  // matching — a sentence shaped like that *is* a diagnostic.
+  /^(?:[A-Za-z]:[\\/])?.+?:\d+(?::\d+)?:\s*(fatal error|error|warning|note|remark)\s*:/i,
+  // MSVC:         C:\src\My Project\Foo.cpp(12): error C2065: msg
   //               Foo.cpp(12,34): warning C4244: msg
-  /^[^\s(]+\(\d+(?:,\d+)?\)\s*:\s*(fatal error|error|warning)\s+[A-Z]+\d*\s*:/i,
+  // Spaces allowed in the file token for the same reason; the `(line[,col]):`
+  // anchor does the discriminating.
+  /^[^(]+?\(\d+(?:,\d+)?\)\s*:\s*(fatal error|error|warning)\s+[A-Z]+\d*\s*:/i,
   // MSVC driver / linker without (line):
   //               LINK : fatal error LNK1181: cannot open input file 'x.lib'
   //               cl : Command line error D8003 : missing source filename
@@ -494,6 +529,12 @@ function parseBuildOutput(text) {
 // AND an extra fail — a genuinely clean 3/0/3 run was reported as 4/1/5. Its
 // total, `/^tests? (\d+)/im`, never matches ctest at all (AUDIT QA-02).
 //
+// `***Skipped` is counted separately from passed and failed: a skipped test
+// verified nothing, and a suite whose tests were all skipped must not read as a
+// green run of its tests. When the summary line matched, skipped stays 0 —
+// ctest's standard summary folds skips into "passed", and the per-test lines
+// are unavailable in that branch's contract.
+//
 // Returns `recognized: false` when neither the summary nor any per-test line is
 // found. Inventing numbers was the original bug; the caller reports the counts
 // as unknown and lets ctest's exit status drive isError.
@@ -505,28 +546,31 @@ function parseTestOutput(text) {
   if (summary) {
     const failed = parseInt(summary[2], 10);
     const total = parseInt(summary[3], 10);
-    return { total, passed: Math.max(total - failed, 0), failed, recognized: true };
+    return { total, passed: Math.max(total - failed, 0), failed, skipped: 0, recognized: true };
   }
 
   // Otherwise count the per-test result lines, e.g.
   //   1/3 Test #1: FooTest ..........   Passed    0.02 sec
   //   2/3 Test #2: BarTest ..........***Failed    0.01 sec
   //   3/3 Test #3: HangTest .........***Timeout   5.00 sec
+  //   4/4 Test #4: SkipTest .........***Skipped   0.00 sec
   let passed = 0;
   let failed = 0;
+  let skipped = 0;
   for (const line of clean.split('\n')) {
     const m = line.match(
-      /^\s*\d+\/\d+ Test #\d+:.*?(?:\*\*\*(Failed|Timeout|Not Run|Subprocess aborted|Exception|SegFault|Bad command|Numerical)|\b(Passed|Failed))\b/
+      /^\s*\d+\/\d+ Test #\d+:.*?(?:\*\*\*(Failed|Timeout|Not Run|Subprocess aborted|Exception|SegFault|Bad command|Numerical|Skipped)|\b(Passed|Failed|Skipped))\b/
     );
     if (!m) continue;
-    if (m[2] === 'Passed') passed++;
+    if (m[1] === 'Skipped' || m[2] === 'Skipped') skipped++;
+    else if (m[2] === 'Passed') passed++;
     else failed++;
   }
-  if (passed + failed > 0) {
-    return { total: passed + failed, passed, failed, recognized: true };
+  if (passed + failed + skipped > 0) {
+    return { total: passed + failed + skipped, passed, failed, skipped, recognized: true };
   }
 
-  return { total: 0, passed: 0, failed: 0, recognized: false };
+  return { total: 0, passed: 0, failed: 0, skipped: 0, recognized: false };
 }
 
 const LINT_EXTENSIONS = ['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx'];
@@ -1006,10 +1050,18 @@ registerTool(
       // Split space-separated flags safely — each token becomes its own argv entry
       for (const flag of params.options.split(/\s+/)) {
         if (!flag) continue;
-        if (hasDotDot(flag) || !SAFE_CMAKE_OPTION_TOKEN.test(flag)) {
+        // The `..` check must look INSIDE a -DVALUE too: hasDotDot() on the
+        // whole token sees the segment "-DX=..", never a bare "..", so a value
+        // like "../outside" slipped through while "../../outside" was caught
+        // (the second segment *is* a bare ".."). Re-checking the value after
+        // the first '=' closes that gap; exact `..` path segments are rejected
+        // wherever they appear. Use absolute paths for SDK locations.
+        const eq = flag.indexOf('=');
+        const value = eq >= 0 ? flag.slice(eq + 1) : flag;
+        if (hasDotDot(flag) || hasDotDot(value) || !SAFE_CMAKE_OPTION_TOKEN.test(flag)) {
           return {
             content: [{ type: 'text', text:
-              `Invalid CMake option "${flag}": only -D<VAR>[:<TYPE>]=<VALUE>, -U<GLOB>, or -W[no-]dev/deprecated flags without ".." are allowed.` }],
+              `Invalid CMake option "${flag}": only -D<VAR>[:<TYPE>]=<VALUE>, -U<GLOB>, or -W[no-]dev/deprecated flags are allowed, and neither the flag nor a -D value may contain ".." path segments (use absolute paths).` }],
             isError: true,
           };
         }
@@ -1068,11 +1120,22 @@ registerTool(
     }
 
     const text = [
-      `## Tests ${failedRun ? 'failed' : 'passed'}`,
+      // A run whose every test was skipped verified nothing: the header must
+      // not read as "passed" (ctest exits 0 for skips, so isError alone would).
+      // Mixed runs keep the passed/failed header with the skip count visible.
+      `## Tests ${
+        failedRun ? 'failed'
+        : (parsed.recognized && parsed.failed === 0 && parsed.passed === 0 && parsed.skipped > 0)
+          ? 'skipped (none ran to completion)'
+          : 'passed'
+      }`,
       // Reporting invented counts was the original bug (QA-02). When neither
       // ctest's summary nor its per-test lines are recognized, say so instead.
       parsed.recognized
-        ? `Passed: ${parsed.passed}, Failed: ${parsed.failed}, Total: ${parsed.total}`
+        ? `Passed: ${parsed.passed}, Failed: ${parsed.failed}`
+          + (parsed.skipped ? `, Skipped: ${parsed.skipped}` : '')
+          + `, Total: ${parsed.total}`
+          + (parsed.skipped ? ' — skipped tests did not run and verified nothing' : '')
         : 'Passed: unknown, Failed: unknown, Total: unknown _(ctest output was not in a recognized format)_',
       // Include the raw tail when tests failed, when the run failed, or when the
       // output could not be parsed — otherwise the model has nothing to act on.
@@ -1203,6 +1266,26 @@ registerTool(
         }
         return false;
       });
+
+      // clang-format failed without naming a single file: this is not a
+      // formatting verdict. The cause is a timeout, the output cap (ENOBUFS) or
+      // a crash, and trySpawn() wrote the human-readable explanation into
+      // r.stderr — surface it instead of discarding it. Advising fix=true here
+      // would be actively wrong: it re-runs the same failing binary with
+      // in-place write permissions.
+      if (badFiles.length === 0) {
+        const text = [
+          '## Lint failed',
+          `clang-format exited non-zero with no per-file diagnostics across ${files.length} file(s).`,
+          'This is not a formatting verdict — the run itself failed (timeout, output cap or crash).',
+          '',
+          '```',
+          (r.stderr || r.output || '(no output)').slice(0, 2000),
+          '```',
+        ].join('\n');
+        return { content: [{ type: 'text', text }], isError: true };
+      }
+
       const relative = badFiles.map(f => path.relative(proj, f));
       const text = [
         '## Lint found issues',
@@ -1324,15 +1407,47 @@ registerTool(
     }
 
     const binaries = findPluginBinaries(config, buildDir, formats, cfg.pluginsDir);
-    if (!binaries.length) {
+
+    // A symlink planted anywhere inside the build tree (the buildDir itself is
+    // already containment-checked, but its contents are not) can point a
+    // "discovered" artefact at a path outside the project root — redirecting
+    // what gets validated, and handing a validator (which loads the file as a
+    // plugin, i.e. executes it) an arbitrary path. Refuse those paths with a
+    // dedicated outcome instead of following them.
+    const binaries2 = [];
+    const escaped = [];
+    for (const b of binaries) {
+      try {
+        assertWithinProject(proj, b.path, 'Artefact path');
+        binaries2.push(b);
+      } catch {
+        escaped.push(b);
+      }
+    }
+    if (escaped.length && !binaries2.length) {
+      const lines = [
+        '## Validation refused',
+        `Every discovered artefact for format(s) ${formats.join(', ')} resolves outside the`,
+        'project root via a symlink — nothing will be handed to a validator.',
+        '',
+        ...escaped.map(b => `- ${b.plugin} [${b.format}]: \`${b.path}\``),
+        '',
+        'Check the build tree for symlinks pointing outside the project; a build',
+        'directory and its artefacts are expected to live entirely inside it.',
+      ];
+      return { content: [{ type: 'text', text: lines.join('\n') }], isError: true };
+    }
+
+    if (!binaries2.length) {
       const hint = fs.existsSync(buildDir) ? '' : ' (build directory not found — run audio_plugin_build first)';
       return {
         content: [{ type: 'text', text: `No plugin binaries found for format(s): ${formats.join(', ')}.${hint}` }],
         isError: true,
       };
     }
+    const binariesToValidate = binaries2;
 
-    // Four distinct outcomes, and only two of them are errors:
+    // Five distinct outcomes, and only three of them are errors:
     //
     //   pass              validated and the validator exited 0
     //   fail              validated and the validator exited non-zero
@@ -1341,8 +1456,13 @@ registerTool(
     //   not-checkable     no validator exists for this format in this server at
     //                     all (LV2/AudioUnit/Standalone) → nothing to install,
     //                     so it is reported and NOT treated as an error
-    const results = [];
-    for (const b of binaries) {
+    //   refused-escape    the artefact path resolves outside the project root
+    //                     via a symlink → isError; the run did not validate
+    //                     everything it found, and no install fixes this
+    const results = [
+      ...escaped.map(b => ({ ...b, status: 'refused-escape' })),
+    ];
+    for (const b of binariesToValidate) {
       const bin = validatorFor[b.format];
 
       if (!bin) {
@@ -1373,11 +1493,13 @@ registerTool(
     const failed = count('fail');
     const missing = count('missing-validator');
     const notCheckable = count('not-checkable');
+    const refused = count('refused-escape');
 
     const lines = [
       `## Validation results — ${passed} passed, ${failed} failed` +
         (missing ? `, ${missing} skipped` : '') +
-        (notCheckable ? `, ${notCheckable} not checkable` : ''),
+        (notCheckable ? `, ${notCheckable} not checkable` : '') +
+        (refused ? `, ${refused} refused` : ''),
     ];
     for (const r of results) {
       const status = {
@@ -1385,12 +1507,17 @@ registerTool(
         fail: 'FAIL',
         'missing-validator': 'SKIPPED',
         'not-checkable': 'NOT CHECKABLE',
+        'refused-escape': 'REFUSED',
       }[r.status];
       lines.push(`\n### ${r.plugin} [${r.format}] — ${status}`);
       lines.push(`\`${r.path}\``);
       if (r.status === 'not-checkable') {
         lines.push(`_apc-mcp has no ${r.format} validator. The binary was found and is fine — ` +
           `it simply cannot be checked here. Informational only, not a failure._`);
+      } else if (r.status === 'refused-escape') {
+        lines.push(`_This path resolves outside the project root via a symlink — refused. ` +
+          `A validator loads its argument as a plugin, so an uncontained path is not ` +
+          `handed to one. Check the build tree for symlinks._`);
       } else if (r.status === 'missing-validator') {
         lines.push(`_${r.reason}_`);
       } else if (r.status === 'fail') {
@@ -1403,10 +1530,12 @@ registerTool(
 
     // An incomplete validation must never read as a clean one. A format with no
     // validator in this server is not "incomplete": there is nothing the user
-    // could install, so it must not fail the tool.
+    // could install, so it must not fail the tool. A refused artefact IS a
+    // failure: the run found something it declined to validate, and silently
+    // dropping it would be validation theatre.
     return {
       content: [{ type: 'text', text: lines.join('\n') }],
-      isError: failed > 0 || missing > 0,
+      isError: failed > 0 || missing > 0 || refused > 0,
     };
   }
 );

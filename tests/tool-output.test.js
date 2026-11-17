@@ -600,3 +600,175 @@ describe('lint, build, and test edge cases', () => {
       `explicit params.generator should still pass -G: ${argsExplicit}`);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// SUBSTANTIATION-LOG fixes (2026-11). Each describe below is a regression
+// test for a defect confirmed live on the pre-fix tree: the assertion
+// fails on the old behaviour and passes on the new one.
+//
+//   F2    ctest ***Skipped was dropped: a run whose tests were all
+//         skipped reported "## Tests passed" with unknown counts.
+//   F3    diagnostics from paths containing spaces ("My Project/")
+//         matched neither compiler pattern, so exit-0 builds with real
+//         errors reported "Build succeeded / Errors: 0".
+//   DEF-1 lint(dry-run) with a crashed/timed-out clang-format reported
+//         "Lint found issues / 0 of N files / Run with fix=true" — a
+//         formatting verdict with the cause discarded and advice that
+//         re-runs a broken binary with write permissions.
+//   SUB-4 an artefact symlinked out of the build tree was handed to the
+//         validator (which loads it as a plugin) with no containment.
+//   SUB-5 validateCommand/clapValidatorCommand had no in-repo test: the
+//         config keys are honoured end-to-end, and values failing
+//         SAFE_TARGET degrade to the defaults instead of escaping.
+
+describe('F2 · ctest skips are counted, not silently dropped', () => {
+  it('counts ***Skipped as its own category in a mixed run', async () => {
+    const out = [
+      '1/3 Test #1: OkTest ..........   Passed    0.01 sec',
+      '2/3 Test #2: BadTest .........***Failed    0.01 sec',
+      '3/3 Test #3: SkipTest ........***Skipped   0.00 sec',
+    ].join('\n');
+    const r = await call('audio_plugin_test', { projectPath: PROJ },
+      { env: shimEnv(FAKE_BIN, { stdout: out, exit: 8 }) });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /Passed: 1, Failed: 1, Skipped: 1, Total: 3/,
+      `***Skipped was dropped or miscounted: ${r.text}`);
+  });
+
+  it('a run whose every test was skipped is not reported as "Tests passed"', async () => {
+    const out = '1/1 Test #1: SkipTest ........***Skipped   0.00 sec\n';
+    const r = await call('audio_plugin_test', { projectPath: PROJ },
+      { env: shimEnv(FAKE_BIN, { stdout: out, exit: 0 }) });
+    // ctest exits 0 for skips, so isError alone cannot carry this: the header
+    // must say what actually happened instead of claiming the tests passed.
+    assert.doesNotMatch(r.text, /## Tests passed/,
+      `an all-skipped run must not claim its tests passed: ${r.text}`);
+    assert.match(r.text, /Skipped: 1, Total: 1/, `got: ${r.text}`);
+    assert.match(r.text, /skipped tests did not run and verified nothing/i, `got: ${r.text}`);
+  });
+});
+
+describe('F3 · diagnostics from paths containing spaces are still errors', () => {
+  it('clang/gcc: exit-0 build with a space-in-path error is isError', async () => {
+    plantCache();
+    const r = await call('audio_plugin_build', { projectPath: PROJ }, {
+      env: shimEnv(FAKE_BIN, {
+        stdout: '/home/dev/My Project/plugins/Foo.cpp:12:3: error: use of undeclared identifier \'x\'\n[100%] Built target Foo\n',
+        exit: 0,
+      }) });
+    assert.equal(r.isError, true,
+      `a space in the source path hid a real error: ${r.text}`);
+    assert.match(r.text, /Errors: 1/);
+  });
+
+  it('MSVC: exit-0 build with a space-in-path error is isError', async () => {
+    plantCache();
+    const r = await call('audio_plugin_build', { projectPath: PROJ }, {
+      env: shimEnv(FAKE_BIN, {
+        stdout: 'C:\\My Plugins\\Foo\\Foo.cpp(12): error C2065: \'x\': undeclared identifier\nFoo.vcxproj -> Foo.dll\n',
+        exit: 0,
+      }) });
+    assert.equal(r.isError, true,
+      `MSVC diagnostic with spaces in the path was missed: ${r.text}`);
+    assert.match(r.text, /Errors: 1/);
+  });
+});
+
+describe('DEF-1 · a failed lint run is not a formatting verdict', () => {
+  it('reports the clang-format failure cause and never advises fix=true', async () => {
+    const r = await call('audio_plugin_lint', { projectPath: PROJ }, {
+      env: shimEnv(FAKE_BIN, {
+        stderr: 'clang-format: error while loading shared libraries: libclang-format.so.19: cannot open shared object file\n',
+        exit: 127,
+      }) });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /Lint failed/, `got: ${r.text}`);
+    assert.match(r.text, /not a formatting verdict/i, `got: ${r.text}`);
+    assert.match(r.text, /libclang-format\.so/, `the actual cause was discarded: ${r.text}`);
+    assert.doesNotMatch(r.text, /Lint found issues/,
+      `0-of-N "issues" is a crash, not a verdict: ${r.text}`);
+    assert.doesNotMatch(r.text, /Run with fix=true/,
+      `advising fix=true re-runs a broken binary with in-place write permissions: ${r.text}`);
+  });
+
+  it('still reports per-file issues when diagnostics ARE present', async () => {
+    const foo = path.join(PROJ, 'plugins', 'Foo', 'Source', 'Foo.cpp');
+    const r = await call('audio_plugin_lint', { projectPath: PROJ }, {
+      env: shimEnv(FAKE_BIN, { stderr: `${foo}:1:10: error: code should be clang-formatted\n`, exit: 1 }) });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /Lint found issues/);
+    assert.match(r.text, /Files with problems: 1\b/);
+    assert.match(r.text, /Run with fix=true/);
+  });
+});
+
+describe('SUB-5 · validator commands come from config and are schema-bound', () => {
+  it('clapValidatorCommand is honoured end-to-end', async () => {
+    writeShim(FAKE_BIN, 'my-clap-check');
+    writeProjectConfig({ validateFormats: ['CLAP'], clapValidatorCommand: 'my-clap-check' });
+    plantArtefacts('Debug', { vst3: false, clap: true });
+    const r = await call('audio_plugin_validate', { projectPath: PROJ }, { env: shimEnv() });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.text, /1 passed, 0 failed/);
+    const args = argvOf('my-clap-check')[0] ?? '';
+    assert.match(args, /^validate /,
+      `custom validator must receive clap-validator's CLI (validate subcommand): ${args}`);
+    assert.equal(argvOf('clap-validator').length, 0,
+      'the hardcoded name must not be spawned when config overrides it');
+  });
+
+  it('validateCommand values failing SAFE_TARGET degrade to the default, they do not escape', async () => {
+    for (const bad of ['/x/y', 'a b', '..']) {
+      writeProjectConfig({ validateCommand: bad, clapValidatorCommand: bad });
+      plantArtefacts('Debug');
+      fs.writeFileSync(LOG, ''); // one validate call per iteration
+      const r = await call('audio_plugin_validate', { projectPath: PROJ }, { env: shimEnv() });
+      assert.equal(r.isError, false, `config value "${bad}" broke validation: ${r.text}`);
+      assert.match(r.text, /2 passed, 0 failed/, `got: ${r.text}`);
+      assert.ok(argvOf('pluginval').length === 1 && argvOf('clap-validator').length === 1,
+        `"${bad}" must degrade to the default validator commands, got: ${log()}`);
+    }
+  });
+});
+
+describe('SUB-4 · artefact symlinks cannot redirect validation outside the project', () => {
+  it('refuses a format directory symlinked outside the project root', async () => {
+    const stolenDir = path.join(ROOT, 'stolen-artefacts');
+    fs.mkdirSync(stolenDir, { recursive: true });
+    fs.writeFileSync(path.join(stolenDir, 'Stolen.clap'), 'stub');
+
+    writeProjectConfig({ validateFormats: ['CLAP'] });
+    const artDir = path.join(BUILD, 'plugins', 'Foo', 'Foo_artefacts', 'Debug');
+    fs.mkdirSync(artDir, { recursive: true });
+    fs.symlinkSync(stolenDir, path.join(artDir, 'CLAP'), 'dir');
+
+    const r = await call('audio_plugin_validate', { projectPath: PROJ }, { env: shimEnv() });
+    assert.equal(r.isError, true,
+      `an artefact escaping via symlink must fail the run: ${r.text}`);
+    assert.match(r.text, /## Validation refused/, `got: ${r.text}`);
+    assert.match(r.text, /resolves outside/i, `got: ${r.text}`);
+    assert.match(r.text, /Stolen\.clap/, `the escaped artefact must be named: ${r.text}`);
+    assert.equal(argvOf('clap-validator').length, 0,
+      'a validator (which loads its argument as a plugin) must never see the escaped path');
+  });
+
+  it('mixed run: validates the contained artefact, refuses only the escaped one', async () => {
+    const stolenDir = path.join(ROOT, 'stolen-artefacts-2');
+    fs.mkdirSync(stolenDir, { recursive: true });
+    fs.writeFileSync(path.join(stolenDir, 'Stolen.clap'), 'stub');
+
+    writeProjectConfig({ validateFormats: ['VST3', 'CLAP'] });
+    const artDir = path.join(BUILD, 'plugins', 'Foo', 'Foo_artefacts', 'Debug');
+    fs.mkdirSync(path.join(artDir, 'VST3'), { recursive: true });
+    fs.writeFileSync(path.join(artDir, 'VST3', 'Foo.vst3'), 'stub');
+    fs.symlinkSync(stolenDir, path.join(artDir, 'CLAP'), 'dir');
+
+    const r = await call('audio_plugin_validate', { projectPath: PROJ }, { env: shimEnv() });
+    assert.equal(r.isError, true, `the refused artefact must fail the run: ${r.text}`);
+    assert.match(r.text, /1 passed, 0 failed, 1 refused/, `got: ${r.text}`);
+    assert.ok(argvOf('pluginval').length === 1,
+      `the contained VST3 artefact should still be validated: ${log()}`);
+    assert.equal(argvOf('clap-validator').length, 0,
+      'the escaped CLAP artefact must not reach its validator');
+  });
+});
