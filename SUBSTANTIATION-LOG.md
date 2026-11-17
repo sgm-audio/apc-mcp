@@ -210,5 +210,15 @@ Red phase re-verified after the merge against main's `index.js` (see
 `git diff origin/main -- index.js` for exactly the unique deltas): the F2, F3,
 F4, F7, config-symlink and refused-isError tests fail on main's code and pass
 on the merged tree. Full gate on the merged tree: lint PASS, typecheck PASS,
-**273 tests / 265 pass / 0 fail / 8 skipped**, smoke 10/10, audit 0
+**274 tests / 266 pass / 0 fail / 8 skipped**, smoke 10/10, audit 0
 vulnerabilities, licenses 179/179, docs:check PASS.
+
+Post-merge CI catch (macOS): the config-symlink guard originally compared the
+resolved symlink target against the *lexical* project root. On macOS the
+system tmpdir is `/var/folders/…` whose real path is `/private/var/folders/…`,
+so every inside-project config symlink was wrongly ignored on that platform —
+the same trap `sanitizeCmakeCache()` documents. Fixed by comparing
+`realpathSync(target)` against `realpathSync(project root)`, with a regression
+test that reproduces the lexical-vs-real divergence on any POSIX system by
+reaching the project through a symlinked directory (red on the pre-fix code,
+green after).

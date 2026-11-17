@@ -565,8 +565,13 @@ function loadProjectConfig(projectPath) {
   try {
     if (fs.lstatSync(configPath).isSymbolicLink()) {
       const realTarget = fs.realpathSync(configPath);
-      const root = path.resolve(projectPath);
-      if (realTarget !== root && !realTarget.startsWith(root + path.sep)) {
+      // Compare REAL path to REAL root. On macOS the system tmpdir is
+      // /var/folders/… whose real path is /private/var/folders/…, so comparing
+      // the resolved target against the *lexical* root rejected every
+      // legitimately-inside config symlink on that platform (CI caught it;
+      // the same trap is documented in sanitizeCMakeCache()).
+      const realRoot = fs.realpathSync(path.resolve(projectPath));
+      if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) {
         console.error(
           `[apc-mcp] Warning: ${CONFIG_FILE} is a symlink resolving outside the project root ` +
           `(${realTarget}) — ignoring it and using defaults.`

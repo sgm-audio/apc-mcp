@@ -375,6 +375,30 @@ describe('SUB-6 · apc-mcp.json symlink containment', () => {
     assert.doesNotMatch(r.stderr, /resolving outside the project root/,
       `an inside symlink must not be refused: ${r.stderr}`);
   });
+
+  // macOS CI caught the first version of the guard comparing the resolved
+  // target against the *lexical* project root: on macOS the tmpdir is
+  // /var/folders/… but its real path is /private/var/folders/…, so every
+  // inside-project config symlink was wrongly ignored. This reproduces the
+  // same lexical-vs-real divergence on any POSIX system by reaching the
+  // project through a symlinked directory.
+  it('a config symlink inside a project reached through a symlinked path is honoured', async () => {
+    const real = path.join(ROOT, 'cfg-sym-via-link-real');
+    fs.mkdirSync(path.join(real, 'plugins', 'Foo'), { recursive: true });
+    fs.writeFileSync(path.join(real, 'CMakeLists.txt'), 'project(x)\n');
+    fs.writeFileSync(path.join(real, 'plugins', 'Foo', 'CMakeLists.txt'), 'project(Foo)\n');
+    fs.writeFileSync(path.join(real, 'real-config.json'), JSON.stringify({ pluginsDir: 'custom-plugs' }));
+    fs.symlinkSync(path.join(real, 'real-config.json'), path.join(real, 'apc-mcp.json'));
+    const viaLink = path.join(ROOT, 'cfg-sym-via-link');
+    fs.symlinkSync(real, viaLink, 'dir');
+
+    const r = await call('audio_plugin_plugins', { projectPath: viaLink }, { env: { PATH: FAKE_PATH } });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.text, /custom-plugs/,
+      `realpath(projectPath) != path.resolve(projectPath) must not reject the config: ${r.text}`);
+    assert.doesNotMatch(r.stderr, /resolving outside the project root/,
+      `the guard must compare real-to-real, not real-to-lexical: ${r.stderr}`);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
