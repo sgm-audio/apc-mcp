@@ -996,6 +996,22 @@ after), and the CLAP template still compiles and links with `-Wall -Wextra
   `value_to_text`/`text_to_value` ("75 %"), consumes `CLAP_EVENT_PARAM_VALUE` in
   `process()` and `flush()` through one shared `applyParameterEvents()`, and
   saves/loads a version-tagged gain through `clap.state` streams.
+- **Two CLAP defects the real `clap-validator` caught in this PR's own CI.**
+  `param-set-wrong-namespace` failed: the template interpreted any event whose
+  type number was `CLAP_EVENT_PARAM_VALUE`, but type numbers only mean that
+  within the core event *space* — events with a foreign `space_id` must be
+  ignored, and the validator sends exactly such events to prove values do not
+  move. And `state-reproducibility-*` failed: after `state.load()` changed
+  parameter values, the plugin never told the host to rescan, so a host
+  reloading a project would keep displaying the pre-load values. The template
+  now checks `space_id == CLAP_CORE_EVENT_SPACE_ID` before interpreting an
+  event, requests `CLAP_PARAM_RESCAN_VALUES` through the host's params
+  extension when a loaded state actually changed a value, and reads/writes
+  state through short-read/short-write-tolerant loops — the CLAP stream
+  contract allows partial transfers (the validator exercises 17-byte-buffered
+  streams), and a single-shot `read() == sizeof(x)` comparison is not
+  contract-safe. Corrupted payloads with a non-finite gain are rejected rather
+  than silently clamped to the default.
 - **F5 closed: the WebView "Level" bar measures audio.** The processor tracks
   the peak absolute sample of the processed output (after gain — what the
   listener hears) in a `std::atomic<float>`; the editor's 30 Hz timer decays it

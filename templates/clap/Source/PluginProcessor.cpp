@@ -178,6 +178,34 @@ namespace
     // word followed by the gain as a raw float — deliberately not a
     // cross-platform serialisation; replace it when you add real state.
 
+    // CLAP streams may deliver fewer bytes than requested per call (like
+    // POSIX read()/write()) — clap-validator exercises this with streams that
+    // hand out 17 bytes at a time. Loop until the whole field moved.
+    bool writeFully(const clap_ostream_t *stream, const void *src, size_t size) {
+        auto *out = static_cast<const uint8_t *>(src);
+        while (size > 0) {
+            const int64_t n = stream->write(stream, out, size);
+            // n < 0 is an error; n == 0 without an error would spin forever.
+            if (n <= 0)
+                return false;
+            out += n;
+            size -= static_cast<size_t>(n);
+        }
+        return true;
+    }
+
+    bool readFully(const clap_istream_t *stream, void *dst, size_t size) {
+        auto *out = static_cast<uint8_t *>(dst);
+        while (size > 0) {
+            const int64_t n = stream->read(stream, out, size);
+            if (n <= 0)
+                return false;
+            out += n;
+            size -= static_cast<size_t>(n);
+        }
+        return true;
+    }
+
     bool CLAP_ABI stateSave(const clap_plugin_t *plugin, const clap_ostream_t *stream) {
         const auto *self = pluginInstance(plugin);
         if (self == nullptr || stream == nullptr || stream->write == nullptr)
@@ -186,8 +214,8 @@ namespace
         const uint32_t version = 1;
         const float gain = self->gain();
 
-        return stream->write(stream, &version, sizeof(version)) == sizeof(version)
-            && stream->write(stream, &gain, sizeof(gain)) == sizeof(gain);
+        return writeFully(stream, &version, sizeof(version))
+            && writeFully(stream, &gain, sizeof(gain));
     }
 
     bool CLAP_ABI stateLoad(const clap_plugin_t *plugin, const clap_istream_t *stream) {
@@ -197,14 +225,23 @@ namespace
 
         uint32_t version = 0;
         float gain = kGainParamDefault;
-        if (stream->read(stream, &version, sizeof(version)) != sizeof(version))
+        if (!readFully(stream, &version, sizeof(version)))
             return false;
         if (version != 1)
             return false; // unknown format: keep defaults rather than guess
-        if (stream->read(stream, &gain, sizeof(gain)) != sizeof(gain))
+        if (!readFully(stream, &gain, sizeof(gain)))
             return false;
+        if (!std::isfinite(gain))
+            return false; // corrupted payload must not silently become a default
 
+        const auto previousGain = self->gain();
         self->setGainValue(gain);
+        // Announce the change: a host that reloads a project would otherwise
+        // keep displaying the pre-load values. clap.params.md puts this burden
+        // on the plugin (clap_validator fails state-reproducibility without
+        // it). state load runs on the main thread, as rescan requires.
+        if (self->gain() != previousGain)
+            self->requestParamRescan();
         return true;
     }
 
@@ -362,6 +399,16 @@ void {{PLUGIN_CLASS_NAME}}::setGainValue(float value) {
     m_gain.store(clampGain(value), std::memory_order_relaxed);
 }
 
+void {{PLUGIN_CLASS_NAME}}::requestParamRescan() {
+    if (m_host == nullptr || m_host->get_extension == nullptr)
+        return;
+
+    const auto *hostParams = static_cast<const clap_host_params_t *>(
+        m_host->get_extension(m_host, CLAP_EXT_PARAMS));
+    if (hostParams != nullptr && hostParams->rescan != nullptr)
+        hostParams->rescan(m_host, CLAP_PARAM_RESCAN_VALUES);
+}
+
 void {{PLUGIN_CLASS_NAME}}::applyParameterEvents(const clap_input_events_t *events) {
     if (events == nullptr || events->size == nullptr || events->get == nullptr)
         return;
@@ -370,6 +417,14 @@ void {{PLUGIN_CLASS_NAME}}::applyParameterEvents(const clap_input_events_t *even
     for (uint32_t i = 0; i < count; ++i) {
         const auto *header = events->get(events, i);
         if (header == nullptr)
+            continue;
+
+        // The type number only means "parameter value" within the core event
+        // space. Another event registry (space_id != CLAP_CORE_EVENT_SPACE_ID)
+        // may reuse the number for something else entirely, so those events
+        // must be ignored — clap_validator's param-set-wrong-namespace test
+        // sends exactly such events and checks the values did not move.
+        if (header->space_id != CLAP_CORE_EVENT_SPACE_ID)
             continue;
 
         // Every CLAP event struct starts with its header, so casting the header

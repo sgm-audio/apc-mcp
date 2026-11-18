@@ -65,6 +65,11 @@ public:
     // same for parameter changes that arrive without audio.
     void applyParameterEvents(const clap_input_events_t *events);
 
+    // Asks the host to refresh parameter values, e.g. after state load changed
+    // them. The host would otherwise keep displaying the pre-load values.
+    // [main-thread]
+    void requestParamRescan();
+
 private:
     static {{PLUGIN_CLASS_NAME}} *from(const clap_plugin_t *plugin) {
         return plugin != nullptr

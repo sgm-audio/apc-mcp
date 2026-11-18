@@ -1455,10 +1455,30 @@ describe('clap.params and clap.state make the CLAP scaffold host-configurable', 
         `${s.name}: getExtension() must advertise clap.state — without it a host must not remember parameter values`);
       assert.match(cpp, /clap_plugin_state_t\s+\w+\s*=/,
         `${s.name}: a clap_plugin_state_t vtable must be defined`);
-      assert.match(cpp, /stream->write\s*\(\s*stream,\s*&version/,
+      assert.match(cpp, /writeFully\s*\(\s*stream,\s*&version/,
         `${s.name}: save() must write a versioned payload`);
       assert.match(cpp, /version\s*!=\s*1/,
         `${s.name}: load() must reject state it does not understand instead of guessing`);
+    }
+  });
+
+  it('ignores foreign-namespace events and announces state-loaded values to the host', () => {
+    // Constraints from real clap-validator runs (PR #45 CI): param-set-wrong-namespace
+    // sends CLAP_EVENT_PARAM_VALUE events with space_id=0xb33f and expects the values
+    // NOT to move; state-reproducibility-* loads a state and expects the plugin to
+    // request CLAP_PARAM_RESCAN_VALUES, or the host keeps showing stale values.
+    for (const s of [...scaffolded.values()].filter(x => x.type === 'clap')) {
+      const cpp = cppCode(s.files.get('Source/PluginProcessor.cpp'));
+      assert.match(cpp, /header->space_id\s*!=\s*CLAP_CORE_EVENT_SPACE_ID/,
+        `${s.name}: a type number from another event registry must not be interpreted as a param value`);
+      assert.match(cpp, /hostParams->rescan\s*\(\s*m_host,\s*CLAP_PARAM_RESCAN_VALUES\s*\)/,
+        `${s.name}: after state load changes values, the host must be told to rescan`);
+      assert.match(cpp, /requestParamRescan\s*\(\s*\)\s*;?\s*\n?\s*\/\/|requestParamRescan\(\);/,
+        `${s.name}: state load should only rescan when a value actually changed`);
+      // CLAP streams may deliver short reads/writes (clap-validator tests 17-byte
+      // buffers); single-shot read()/write() comparisons are not contract-safe.
+      assert.match(cpp, /bool\s+writeFully\s*\(/, `${s.name}: save must loop over short writes`);
+      assert.match(cpp, /bool\s+readFully\s*\(/, `${s.name}: load must loop over short reads`);
     }
   });
 });
