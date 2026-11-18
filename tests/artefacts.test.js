@@ -275,4 +275,42 @@ describe('artefact discovery (findPluginBinaries)', () => {
     assert.match(text, /No plugin binaries found/, text.slice(0, 300));
     assert.doesNotMatch(text, /Debug/, 'must not fall back to another configuration');
   });
+
+  // ── VERIFICATION-MATRIX round 2: the report must not overclaim ───
+  it('does not claim an unchecked format is "fine"', async () => {
+    const proj = plantProject('p-notcheckable-wording', {
+      'gain/gain_artefacts/Release/VST3/Gain.vst3': 'dir',
+      'gain/gain_artefacts/Release/LV2/gain.lv2/manifest.ttl': 'file',
+    });
+    const text = await validate(proj);
+    assert.match(text, /NOT CHECKABLE/);
+    assert.match(text, /no LV2 validator integrated in this server/,
+      'the note should say what is actually true: no validator is integrated here');
+    assert.match(text, /was not checked/);
+    assert.doesNotMatch(text, /is fine/,
+      '"found and is fine" overclaims correctness for a binary that was never checked');
+  });
+
+  it('names requested formats that produced no artefact instead of omitting them silently', async () => {
+    // Only VST3 was built, but validateFormats asks for all five.
+    const partial = plantProject('p-missing-formats', {
+      'one/one_artefacts/Release/VST3/One.vst3': 'dir',
+    });
+    const text = await validate(partial);
+    assert.match(text, /\*\*No artefact found\*\* for: CLAP, LV2, AudioUnit, Standalone/,
+      'the report must say which requested formats had nothing to validate');
+    assert.match(text, /nothing was discovered under `[^`]+` for those formats/);
+
+    // When every requested format IS present, the note must not appear.
+    const full = plantProject('p-missing-formats-full', {
+      'all/all_artefacts/Release/VST3/All.vst3': 'dir',
+      'all/all_artefacts/Release/CLAP/All.clap/manifest.ttl': 'file',
+      'all/all_artefacts/Release/LV2/All.lv2/manifest.ttl': 'file',
+      'all/all_artefacts/Release/AU/All.component/Info.plist': 'file',
+      'all/all_artefacts/Release/Standalone/All.app/Contents/Info.plist': 'file',
+    });
+    const fullText = await validate(full);
+    assert.doesNotMatch(fullText, /No artefact found/,
+      'every requested format was discovered; the absence note would be noise');
+  });
 });

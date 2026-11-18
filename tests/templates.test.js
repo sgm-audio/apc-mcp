@@ -1395,3 +1395,133 @@ describe('the native templates compile with warnings as errors', () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// VERIFICATION-MATRIX follow-ups (2026-11-17 round 2). Two scaffold
+// defects graded by the review are closed here:
+//
+//   * the CLAP template exposed no parameters — a host could load it but
+//     never adjust it, so "gain plugin" was a compile-time constant from
+//     the host's point of view (row: "CLAP scaffold is a host-configurable
+//     gain plugin"). It now implements clap.params (one automatable gain,
+//     0..1, default 0.75 — matching the JUCE templates) and clap.state.
+//   * F5: the WebView "Level" bar was driven by the gain slider, not by
+//     audio. The processor now measures the output peak and the editor
+//     pushes it to JS as `level`.
+
+describe('clap.params and clap.state make the CLAP scaffold host-configurable', () => {
+  it('advertises clap.params with one automatable gain parameter', () => {
+    for (const s of [...scaffolded.values()].filter(x => x.type === 'clap')) {
+      const h = s.files.get('Source/PluginProcessor.h');
+      assert.match(h, /kGainParamId/,
+        `${s.name}: the gain parameter needs a stable id constant`);
+      const cpp = cppCode(s.files.get('Source/PluginProcessor.cpp'));
+      assert.match(cpp, /CLAP_EXT_PARAMS/,
+        `${s.name}: getExtension() must advertise clap.params`);
+      assert.match(cpp, /clap_plugin_params_t\s+\w+\s*=/,
+        `${s.name}: a clap_plugin_params_t vtable must be defined`);
+      assert.match(cpp, /CLAP_PARAM_IS_AUTOMATABLE/,
+        `${s.name}: the gain parameter must be automatable, or a host will hide it`);
+      assert.match(cpp, /info->default_value\s*=\s*kGainParamDefault/,
+        `${s.name}: get_info() must publish the default value`);
+      assert.match(cpp, /kGainParamDefault\s*=\s*0\.75f/,
+        `${s.name}: the default must match the JUCE templates (75 %)`);
+      assert.match(cpp, /paramsTextToValue[\s\S]*?strtod/,
+        `${s.name}: text_to_value must parse the percent text value_to_text emits`);
+    }
+  });
+
+  it('applies CLAP_EVENT_PARAM_VALUE in process() and shares the code with flush()', () => {
+    for (const s of [...scaffolded.values()].filter(x => x.type === 'clap')) {
+      const h = s.files.get('Source/PluginProcessor.h');
+      assert.match(h, /applyParameterEvents\s*\(\s*const clap_input_events_t\s*\*\s*\w*\s*\)/,
+        `${s.name}: event application must be a member so process() and flush() share it`);
+      const cpp = cppCode(s.files.get('Source/PluginProcessor.cpp'));
+      assert.match(cpp, /header->type\s*!=\s*CLAP_EVENT_PARAM_VALUE/,
+        `${s.name}: parameter events must be recognised by event type`);
+      assert.match(cpp, /->applyParameterEvents\s*\(\s*process->in_events\s*\)/,
+        `${s.name}: process() must consume host automation events before applying gain`);
+      assert.match(cpp, /->applyParameterEvents\s*\(\s*in\s*\)/,
+        `${s.name}: paramsFlush() must apply events like process() does`);
+      assert.match(cpp, /m_gain\.store\s*\(/,
+        `${s.name}: the audio thread reads the gain through the atomic`);
+    }
+  });
+
+  it('persists the gain across sessions via clap.state', () => {
+    for (const s of [...scaffolded.values()].filter(x => x.type === 'clap')) {
+      const cpp = cppCode(s.files.get('Source/PluginProcessor.cpp'));
+      assert.match(cpp, /CLAP_EXT_STATE/,
+        `${s.name}: getExtension() must advertise clap.state — without it a host must not remember parameter values`);
+      assert.match(cpp, /clap_plugin_state_t\s+\w+\s*=/,
+        `${s.name}: a clap_plugin_state_t vtable must be defined`);
+      assert.match(cpp, /writeFully\s*\(\s*stream,\s*&version/,
+        `${s.name}: save() must write a versioned payload`);
+      assert.match(cpp, /version\s*!=\s*1/,
+        `${s.name}: load() must reject state it does not understand instead of guessing`);
+    }
+  });
+
+  it('ignores foreign-namespace events and announces state-loaded values to the host', () => {
+    // Constraints from real clap-validator runs (PR #45 CI): param-set-wrong-namespace
+    // sends CLAP_EVENT_PARAM_VALUE events with space_id=0xb33f and expects the values
+    // NOT to move; state-reproducibility-* loads a state and expects the plugin to
+    // request CLAP_PARAM_RESCAN_VALUES, or the host keeps showing stale values.
+    for (const s of [...scaffolded.values()].filter(x => x.type === 'clap')) {
+      const cpp = cppCode(s.files.get('Source/PluginProcessor.cpp'));
+      assert.match(cpp, /header->space_id\s*!=\s*CLAP_CORE_EVENT_SPACE_ID/,
+        `${s.name}: a type number from another event registry must not be interpreted as a param value`);
+      assert.match(cpp, /hostParams->rescan\s*\(\s*m_host,\s*CLAP_PARAM_RESCAN_VALUES\s*\)/,
+        `${s.name}: after state load changes values, the host must be told to rescan`);
+      assert.match(cpp, /requestParamRescan\s*\(\s*\)\s*;?\s*\n?\s*\/\/|requestParamRescan\(\);/,
+        `${s.name}: state load should only rescan when a value actually changed`);
+      // CLAP streams may deliver short reads/writes (clap-validator tests 17-byte
+      // buffers); single-shot read()/write() comparisons are not contract-safe.
+      assert.match(cpp, /bool\s+writeFully\s*\(/, `${s.name}: save must loop over short writes`);
+      assert.match(cpp, /bool\s+readFully\s*\(/, `${s.name}: load must loop over short reads`);
+    }
+  });
+});
+
+describe('F5 · the WebView meter shows measured audio level, not the gain knob', () => {
+  const webviewPlugins = () =>
+    [...scaffolded.values()].filter(x => (x.type === 'juce' || x.type === 'vst3') && x.ui === 'webview');
+
+  it('measures the output peak on the audio thread and shares it atomically', () => {
+    for (const s of webviewPlugins()) {
+      const h = s.files.get('Source/PluginProcessor.h');
+      assert.match(h, /std::atomic<\s*float\s*>\s*m_outputPeak/,
+        `${s.name}: the level crosses the audio/message thread boundary and must be atomic`);
+      assert.ok(h.includes('#include <atomic>'), `${s.name}: <atomic> is used but not included`);
+      const cpp = cppCode(s.files.get('Source/PluginProcessor.cpp'));
+      assert.match(cpp, /std::abs\s*\(/,
+        `${s.name}: a peak meter needs |sample|, not the raw value`);
+      assert.match(cpp, /m_outputPeak\.store\s*\(/,
+        `${s.name}: the measured peak must be published for the editor to read`);
+      // The measurement must happen AFTER the gain is applied, or the meter
+      // reports the input rather than what the listener hears.
+      const gainApply = cpp.search(/channels\[channel\]\[sample\]\s*\*=\s*gain/);
+      const peakStore = cpp.search(/m_outputPeak\.store\s*\(/);
+      assert.ok(gainApply >= 0 && peakStore > gainApply,
+        `${s.name}: the peak must be measured after the gain is applied`);
+    }
+  });
+
+  it('sends the measured level to JS and never derives the meter from the gain slider', () => {
+    for (const s of webviewPlugins()) {
+      const editorCpp = cppCode(s.files.get('Source/WebViewEditor.cpp'));
+      assert.match(editorCpp, /getOutputPeak\s*\(\s*\)/,
+        `${s.name}: the editor must read the measured peak from the processor`);
+      assert.match(editorCpp, /setProperty\s*\(\s*"level"/,
+        `${s.name}: the JS state must carry the level`);
+      assert.match(editorCpp, /m_displayLevel\s*\*\s*0\.85f/,
+        `${s.name}: the meter needs a decay or it snaps to zero between blocks`);
+
+      const appJs = s.files.get('Source/UI/app.js');
+      assert.doesNotMatch(appJs, /meterFill\.style\.width\s*=\s*pct/,
+        `${s.name}: the meter must not be driven by the gain slider position`);
+      assert.match(appJs, /state\.level/,
+        `${s.name}: the meter must be driven by the measured level from C++`);
+    }
+  });
+});

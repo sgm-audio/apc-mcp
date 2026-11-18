@@ -56,11 +56,26 @@ void {{PLUGIN_CLASS_NAME}}::processBlock(juce::AudioBuffer<float> &buffer, juce:
     // sample; a channel-outer loop would end block N with the ramp advanced N
     // times and give the channels different gains within the same block.
     m_gainSmoothed.setTargetValue(m_gain->get());
+    float blockPeak = 0.0f;
     for (int sample = 0; sample < numSamples; ++sample) {
         const float gain = m_gainSmoothed.getNextValue();
         for (int channel = 0; channel < channelsToProcess; ++channel)
             channels[channel][sample] *= gain;
     }
+
+    // Measure the level of the processed output — after the gain, so the meter
+    // shows what the listener hears. One atomic store per block; the editor's
+    // timer applies the decay, keeping the audio thread free of any timing or
+    // allocation work.
+    for (int channel = 0; channel < channelsToProcess; ++channel) {
+        const float *data = channels[channel];
+        for (int sample = 0; sample < numSamples; ++sample) {
+            const float magnitude = std::abs(data[sample]);
+            if (magnitude > blockPeak)
+                blockPeak = magnitude;
+        }
+    }
+    m_outputPeak.store(blockPeak, std::memory_order_relaxed);
 }
 
 juce::AudioProcessorEditor *{{PLUGIN_CLASS_NAME}}::createEditor() {

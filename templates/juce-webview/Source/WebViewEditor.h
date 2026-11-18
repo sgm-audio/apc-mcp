@@ -54,6 +54,10 @@ private:
     {{PLUGIN_CLASS_NAME}} &m_processor;
     PluginBrowser m_webView;
     float m_sentGain = -1.0f;
+    // Meter state: the measured peak, decayed every tick so the bar falls back
+    // gradually instead of snapping to zero the moment a quiet block arrives.
+    float m_displayLevel = 0.0f;
+    float m_sentLevel = -1.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WebViewEditor)
 };

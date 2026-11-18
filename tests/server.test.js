@@ -297,4 +297,52 @@ describe('apc-mcp MCP server', () => {
         'build must not create a build directory for a non-existent project');
     });
   });
+
+  // ── VERIFICATION-MATRIX round 2: schema/behaviour alignment ──────
+  describe('schema/behaviour alignment (VERIFICATION-MATRIX round 2)', () => {
+    it('rejects formats="CLAP" for type="clap" instead of accepting it as a silent no-op', async () => {
+      const dir = withProject('create-clap-formats');
+      const r = await call('audio_plugin_create',
+        { projectPath: dir, name: 'Loophole', type: 'clap', vendor: 'test', formats: 'CLAP' });
+      const text = textOf(r);
+      assert.equal(r.isError, true,
+        `the schema says formats is rejected for clap; formats="CLAP" must be no exception: ${text}`);
+      assert.match(text, /## audio_plugin_create failed/);
+      assert.match(text, /no\s+JUCE FORMATS list/,
+        'the rejection should tell the user why formats does not apply');
+      assert.equal(fs.existsSync(path.join(dir, 'plugins', 'Loophole')), false,
+        'a rejected create must not leave a scaffold behind');
+    });
+
+    it('documents the formats rejection for clap in the advertised schema', async () => {
+      const tools = await listTools();
+      const create = tools.find(t => t.name === 'audio_plugin_create');
+      const desc = create?.inputSchema?.properties?.formats?.description ?? '';
+      assert.match(desc, /clap/,
+        `the schema must mention that formats is rejected for clap: ${desc}`);
+    });
+
+    it('returns parseable JSON when format=json and the plugins directory is absent', async () => {
+      const dir = path.join(ROOT, 'json-missing-dir');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'apc-mcp.json'), '{}'); // no plugins/ directory
+
+      const r = await call('audio_plugin_plugins', { projectPath: dir, format: 'json' });
+      const text = textOf(r);
+      assert.equal(r.isError, false, text);
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch (e) {
+        assert.fail(`format=json must return JSON even with no plugins directory (${e.message}): ${text.slice(0, 200)}`);
+      }
+      assert.ok(Array.isArray(parsed), `expected an array, got: ${text.slice(0, 200)}`);
+      assert.equal(parsed.length, 0, 'a missing plugins directory means zero plugins, not a prose sentence');
+
+      // Text mode keeps the human-readable explanation.
+      const rText = await call('audio_plugin_plugins', { projectPath: dir });
+      assert.equal(rText.isError, false, textOf(rText));
+      assert.match(textOf(rText), /No plugins\/ directory found in project\./);
+    });
+  });
 });

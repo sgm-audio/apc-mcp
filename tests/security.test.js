@@ -842,3 +842,17 @@ describe('SEC-NEW-10 · config paths that break CMake source are rejected', () =
     assert.equal(fs.existsSync(path.join(p, 'pl\\ugins')), false, 'the rejected config value must not be used');
   });
 });
+
+// VERIFICATION-MATRIX round 2: a diagnostic that misstates the grammar it
+// enforces teaches the wrong thing. -U takes a variable NAME here, not a glob.
+describe('invalid-option diagnostics match the enforced grammar', () => {
+  it('says -U<NAME>, not -U<GLOB>', async () => {
+    const r = await call('audio_plugin_configure',
+      { projectPath: PROJ, options: '-Qbogus' }, { env: { PATH: FAKE_PATH } });
+    assert.equal(r.isError, true, 'the bogus flag must be rejected');
+    assert.match(r.text, /-U<NAME>/,
+      'the diagnostic must name what the grammar actually accepts');
+    assert.doesNotMatch(r.text, /-U<GLOB>/,
+      'CMake -U takes a variable NAME, not a glob — the old wording was wrong');
+  });
+});

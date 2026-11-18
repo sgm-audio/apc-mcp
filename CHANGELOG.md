@@ -447,13 +447,15 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
   builds one executable that owns its audio device through `juce::AudioAppComponent`.
   You get `Source/Main.cpp` (a `juce::JUCEApplication` plus its `DocumentWindow`, with
   `START_JUCE_APPLICATION()` generating `main()`), `Source/MainComponent.{h,cpp}` (a
-  440 Hz sine generator with a level slider), and a `CMakeLists.txt`. Two JUCE 9
-  details it gets right that older example code does not:
-  - **`AudioAppComponent` has no `start()` and no `stop()` any more.**
+  440 Hz sine generator with a level slider), and a `CMakeLists.txt`. Two details
+  it gets right that older example code does not:
+  - **`AudioAppComponent` has no `start()` and no `stop()` to call.**
     `setAudioChannels()` both initialises the device and starts the callback, and its
     counterpart `shutdownAudio()` *must* be called from the derived destructor — the
-    base class `jassert()`s otherwise. Most tutorials still in circulation will not
-    compile against JUCE 9.
+    base class `jassert()`s otherwise. (This bullet originally claimed JUCE 9 had
+    *removed* those methods and that most tutorials would not compile against
+    JUCE 9. Both claims were fabricated history — see the template-comments
+    correction below — the methods never existed in the JUCE versions checked.)
   - **An app target accepts no plugin keywords.** `juce_add_gui_app()` performs no
     `UNPARSED_ARGUMENTS` check, so `FORMATS`, `PLUGIN_CODE` and `IS_SYNTH` would be
     dropped silently. They are absent, and `audio_plugin_create(type="standalone",
@@ -577,8 +579,9 @@ acts on the report. 22 new tests; 13 of them fail against the pre-fix code.
   (`JUCEApplication`, `DocumentWindow`, `Slider`, `Label`, `Graphics`, `Colour`,
   `Justification`, `AudioSource`, `AudioSourceChannelInfo`, `AudioAppComponent`,
   `AudioDeviceManager`, `MathConstants`, `ProjectInfo`). The extension was checked
-  for teeth: a JUCE-8-style `start()`/`stop()` component and a typo'd
-  `setUseNativeTitleBar` both fail to compile against it.
+  for teeth: a component calling `start()`/`stop()` (methods `AudioAppComponent`
+  never had in any version checked) and a typo'd `setUseNativeTitleBar` both fail
+  to compile against it.
 - **Total 119 → 147 tests.** `scripts/smoke-scaffold.mjs` grew 5 → 7 cases and now
   derives the expected CMake command from `type` (`add_library` / `juce_add_plugin` /
   `juce_add_gui_app`) instead of a two-way branch.
@@ -976,6 +979,84 @@ coverage gaps:
   described root-first in `toolchain.md` and `project-status.md` (PR #36
   behaviour), and this file gained the missing PR #36 entry above. (The
   `maxBuffer` 2 MB → 16 MB doc fix was also carried by the security review.)
+### Verification-matrix follow-ups — 2026-11-18
+
+The second verification pass over the merged 2.0.0 tree left Failed/Partial rows
+that no earlier round had closed. The behaviour- and template-changing ones are
+closed here. Every fix lands with regression tests **proven to fail against the
+pre-fix tree** (5 template tests and 6 handler tests red on `95e3a49`, green
+after), and the CLAP template still compiles and links with `-Wall -Wextra
+-Werror` against real `free-audio/clap` headers.
+
+- **The CLAP scaffold is host-configurable now: `clap.params` + `clap.state`.**
+  The template implemented only audio ports, so a host could load it but never
+  adjust it — its gain was a constant from the host's point of view, and a host
+  had no way to persist anything. It now exposes one automatable parameter
+  (`Gain`, 0…1, default 0.75 — the same value the JUCE templates publish) with
+  `value_to_text`/`text_to_value` ("75 %"), consumes `CLAP_EVENT_PARAM_VALUE` in
+  `process()` and `flush()` through one shared `applyParameterEvents()`, and
+  saves/loads a version-tagged gain through `clap.state` streams.
+- **Two CLAP defects the real `clap-validator` caught in this PR's own CI.**
+  `param-set-wrong-namespace` failed: the template interpreted any event whose
+  type number was `CLAP_EVENT_PARAM_VALUE`, but type numbers only mean that
+  within the core event *space* — events with a foreign `space_id` must be
+  ignored, and the validator sends exactly such events to prove values do not
+  move. And `state-reproducibility-*` failed: after `state.load()` changed
+  parameter values, the plugin never told the host to rescan, so a host
+  reloading a project would keep displaying the pre-load values. The template
+  now checks `space_id == CLAP_CORE_EVENT_SPACE_ID` before interpreting an
+  event, requests `CLAP_PARAM_RESCAN_VALUES` through the host's params
+  extension when a loaded state actually changed a value, and reads/writes
+  state through short-read/short-write-tolerant loops — the CLAP stream
+  contract allows partial transfers (the validator exercises 17-byte-buffered
+  streams), and a single-shot `read() == sizeof(x)` comparison is not
+  contract-safe. Corrupted payloads with a non-finite gain are rejected rather
+  than silently clamped to the default.
+- **F5 closed: the WebView "Level" bar measures audio.** The processor tracks
+  the peak absolute sample of the processed output (after gain — what the
+  listener hears) in a `std::atomic<float>`; the editor's 30 Hz timer decays it
+  (~0.85 per tick) and pushes it to JS as `level`. The JS no longer drives the
+  meter from the slider position, in `updateState` or in the `input` handler:
+  a meter that tracks the knob tells a developer nothing about the audio.
+- **`formats` is now rejected for `type="clap"` outright.** `formats="CLAP"`
+  used to be silently accepted as a no-op even though the schema and docs
+  describe the argument as rejected for clap. It now fails with the same
+  explanation as any other value, and the advertised schema names clap in the
+  `formats` description.
+- **`audio_plugin_plugins(format="json")` returns JSON when there is nothing to
+  list.** A missing `plugins/` directory used to return the prose sentence
+  `No plugins/ directory found in project.` even in JSON mode, breaking every
+  caller that did `JSON.parse`. JSON mode now returns `[]`; the prose stays in
+  text mode.
+- **The validation report no longer overclaims.** An artefact with no validator
+  integrated used to be described as "found and is fine" — it was found, but
+  never checked, and "found" is not a correctness claim; the wording now says
+  exactly that. And a requested format that produced no artefact at all is no
+  longer silently omitted from the report: a `**No artefact found**` line names
+  those formats, because absence is not proof of a broken build, but silence is
+  not coverage either.
+- **Diagnostics tell the truth about the grammar they enforce.** The
+  invalid-option message advertised `-U<GLOB>`; the whitelist accepts a single
+  variable *name* (`-UOLD_VAR`). It now says `-U<NAME>`.
+- **Documentation drift.** `security.md` claimed CI runs
+  `npm audit --audit-level=high`; CI deliberately runs plain `npm audit` (via
+  `npm run audit`) so the gate matches the documented local baseline.
+  `security.md` also said `vendor`/`description` accept "any single line" —
+  they are capped at 128/512 characters, and now it says so. `tools.md` said
+  "no validator exists" for LV2/AU/Standalone (external validators do exist;
+  none is integrated here), hardcoded `plugins/` in the validate scan path
+  (`pluginsDir` is configurable), and its `-G` guidance contradicted the
+  tested behaviour (an explicitly passed generator *is* re-issued onto an
+  existing cache; only the default is suppressed). Two stale CHANGELOG
+  passages still taught the fabricated "JUCE 9 removed `start()`/`stop()`"
+  story; they are corrected in place above.
+- **Kept deliberately:** `NOT CHECKABLE` (no validator integrated for
+  LV2/AudioUnit/Standalone) does not set `isError`. The first review wanted
+  every skipped validation to fail, but there is nothing a user could install
+  to change it, and the qualified policy is documented and tested. The lint
+  unreadable-subtree reporting the matrix asked for had already landed in the
+  2026-11-17 round.
+
 ## [1.5.0] — 2026-06-17
 
 ### Added

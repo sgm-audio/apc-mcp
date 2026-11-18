@@ -1414,7 +1414,7 @@ registerTool(
         if (hasDotDot(flag) || hasDotDot(value) || !SAFE_CMAKE_OPTION_TOKEN.test(flag)) {
           return {
             content: [{ type: 'text', text:
-              `Invalid CMake option "${flag}": only -D<VAR>[:<TYPE>]=<VALUE>, -U<GLOB>, or -W[no-]dev/deprecated flags are allowed, and neither the flag nor a -D value may contain ".." path segments (use absolute paths).` }],
+              `Invalid CMake option "${flag}": only -D<VAR>[:<TYPE>]=<VALUE>, -U<NAME>, or -W[no-]dev/deprecated flags are allowed, and neither the flag nor a -D value may contain ".." path segments (use absolute paths).` }],
             isError: true,
           };
         }
@@ -1705,13 +1705,16 @@ registerTool(
     const proj = requireProjectPath(params.projectPath);
     const cfg = loadProjectConfig(proj);
     const pluginsDir = assertWithinProject(proj, cfg.pluginsDir, 'Plugins directory');
-    if (!fs.existsSync(pluginsDir)) {
-      return { content: [{ type: 'text', text: `No ${cfg.pluginsDir}/ directory found in project.` }] };
-    }
+    const dirExists = fs.existsSync(pluginsDir);
 
-    const plugins = fs.readdirSync(pluginsDir, { withFileTypes: true })
-      .filter(entry => entry.isDirectory() && fs.existsSync(path.join(pluginsDir, entry.name, 'CMakeLists.txt')))
-      .map(entry => entry.name);
+    // format=json promises structured data the caller can JSON.parse — a prose
+    // sentence for "directory absent" or "no plugins yet" breaks that contract,
+    // so those cases become an empty array here and prose only in text mode.
+    const plugins = dirExists
+      ? fs.readdirSync(pluginsDir, { withFileTypes: true })
+        .filter(entry => entry.isDirectory() && fs.existsSync(path.join(pluginsDir, entry.name, 'CMakeLists.txt')))
+        .map(entry => entry.name)
+      : [];
 
     const details = plugins.map(name => {
       const statusPath = path.join(pluginsDir, name, 'status.json');
@@ -1747,6 +1750,10 @@ registerTool(
 
     if (params.format === 'json') {
       return { content: [{ type: 'text', text: JSON.stringify(details, null, 2) }] };
+    }
+
+    if (!dirExists) {
+      return { content: [{ type: 'text', text: `No ${cfg.pluginsDir}/ directory found in project.` }] };
     }
 
     if (!details.length) {
@@ -1906,8 +1913,9 @@ registerTool(
       lines.push(`\n### ${cleanScalar(r.plugin, 128)} [${r.format}] — ${status}`);
       lines.push(`\`${r.path}\``);
       if (r.status === 'not-checkable') {
-        lines.push(`_apc-mcp has no ${r.format} validator. The binary was found and is fine — ` +
-          `it simply cannot be checked here. Informational only, not a failure._`);
+        lines.push(`_apc-mcp has no ${r.format} validator integrated in this server. The binary was ` +
+          `found — but it was not checked, and "found" is not a correctness claim. ` +
+          `Informational only, not a failure._`);
       } else if (r.status === 'missing-validator') {
         lines.push(`_${r.reason}_`);
       } else if (r.status === 'fail') {
@@ -1919,6 +1927,18 @@ registerTool(
       for (const s of skipped) {
         lines.push(`- ${cleanScalar(s.plugin, 128)} [${s.format}] ${cleanScalar(s.path, 200)} — ${s.reason}`);
       }
+    }
+
+    // A requested format that produced no artefact at all is not a failure —
+    // absence does not prove a build is broken (the plugin may not target that
+    // format) — but a report that simply omits the format reads as complete
+    // coverage. Say which requested formats had nothing to validate.
+    const missingFormats = binaries.length
+      ? formats.filter(fmt => !binaries.some(b => b.format === fmt))
+      : [];
+    if (missingFormats.length) {
+      lines.push('', '**No artefact found** for: ' + missingFormats.join(', ') +
+        ` — nothing was discovered under \`${buildDir}\` for ${missingFormats.length === 1 ? 'that format' : 'those formats'}, so it was not validated.`);
     }
     if (missing > 0) {
       lines.push('', 'Validation is **incomplete** — install the missing validator(s) above and re-run.');
@@ -1949,11 +1969,11 @@ registerTool(
     ui: z.enum(['generic', 'webview']).default('generic')
       .describe('UI style for the JUCE plugin types. "generic" (default) uses JUCE\'s GenericAudioProcessorEditor. "webview" uses an HTML/CSS/JS WebView with parameter controls embedded via BinaryData. Ignored for "clap", "standalone" and "lv2", which ship their own UI or none.'),
     vendor: z.string().min(1).max(128).regex(SAFE_TEXT, FREE_TEXT_MESSAGE).default('apc-mcp')
-      .describe('Vendor/company name embedded in plugin metadata. Any single line of text, including non-ASCII.'),
+      .describe('Vendor/company name embedded in plugin metadata. Any single line of text up to 128 characters, including non-ASCII.'),
     description: z.string().min(1).max(512).regex(SAFE_TEXT, FREE_TEXT_MESSAGE).default('An audio plugin')
-      .describe('Short description for plugin metadata. Any single line of text, including non-ASCII.'),
+      .describe('Short description for plugin metadata. Any single line of text up to 512 characters, including non-ASCII.'),
     formats: z.string().regex(SAFE_FORMATS).optional()
-      .describe('JUCE plugin formats override, semicolon-separated. Only for the juce/vst3 types. Default: "VST3;LV2;Standalone". Rejected for "standalone" and "lv2", neither of which has a JUCE FORMATS list.'),
+      .describe('JUCE plugin formats override, semicolon-separated. Only for the juce/vst3 types. Default: "VST3;LV2;Standalone". Rejected for "clap", "standalone" and "lv2" — none of which has a JUCE FORMATS list.'),
   },
   async (params) => {
     const proj = requireProjectPath(params.projectPath);
@@ -1997,7 +2017,10 @@ registerTool(
         `## audio_plugin_create failed\n${typeInfo.formatsRejection}` }],
         isError: true };
     }
-    if (typeInfo.template === 'clap' && params.formats && params.formats !== 'CLAP') {
+    if (typeInfo.template === 'clap' && params.formats) {
+      // `formats="CLAP"` used to be silently accepted as a no-op; the docs and
+      // the schema describe the argument as rejected for clap, so reject it
+      // (VERIFICATION-MATRIX: docs/behaviour mismatch).
       return { content: [{ type: 'text', text:
         `## audio_plugin_create failed\n${typeInfo.formatsRejection}` }],
         isError: true };

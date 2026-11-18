@@ -113,9 +113,18 @@ void WebViewEditor::timerCallback()
 
     const auto currentGain = gainParam->get();
 
-    if (std::abs (currentGain - m_sentGain) > 0.001f)
+    // The meter is driven by the measured output peak, never by the slider
+    // position: a meter that tracks the knob tells the developer nothing about
+    // the audio. The decay (about a half-second fall to zero at 30 Hz) keeps
+    // the movement readable between blocks.
+    const auto measuredPeak = m_processor.getOutputPeak();
+    m_displayLevel = juce::jmax (measuredPeak, m_displayLevel * 0.85f);
+
+    if (std::abs (currentGain - m_sentGain) > 0.001f
+        || std::abs (m_displayLevel - m_sentLevel) > 0.005f)
     {
         m_sentGain = currentGain;
+        m_sentLevel = m_displayLevel;
         sendStateToJS();
     }
 }
@@ -127,6 +136,9 @@ void WebViewEditor::sendStateToJS()
     auto *state = new juce::DynamicObject();
     state->setProperty ("type", "state");
     state->setProperty ("gain", static_cast<double> (m_sentGain));
+    // The measured output peak (0..1 linear amplitude; >1 means clipping, which
+    // app.js clamps to a full bar).
+    state->setProperty ("level", static_cast<double> (m_sentLevel));
     state->setProperty ("pluginName", juce::String ("{{PLUGIN_DISPLAY_NAME}}"));
     state->setProperty ("vendor", juce::String ("{{VENDOR_CXX}}"));
 
