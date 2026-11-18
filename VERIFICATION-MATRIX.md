@@ -152,3 +152,31 @@ The “Level” bar is set from the gain setting (`templates/juce-webview/Source
 3. Untrusted config prototype keys, symlinked `apc-mcp.json`, nested artefact symlinks and a concurrent-symlink threat-model review. Document that external tools are not confined.
 4. SDK-backed configure/build with default and nested/space-containing `pluginsDir`, custom `buildDir`, names, vendor/description escaping, Debug/Release and multi-config; actual LV2 tooling, pluginval and clap-validator; malformed and missing artefacts.
 5. DAW/host lifecycle: load, process audio, automate and restore state, UI handshake, repeated open/close, channel layouts, offline processing, metering and real-time behavior. Repeat on supported Windows/macOS/Linux combinations before claiming platform-wide support.
+
+
+## Remediation log — 2026-11-18 (round 2)
+
+Branch `arena/9ffb859f-apc-mcp` from `95e3a49`. Every fix below ships with a
+regression test proven red against `95e3a49` (template tests were run with the
+pre-fix templates restored via `git stash`; handler tests with pre-fix
+`index.js`), and the CLAP template compiles+links `-Wall -Wextra -Werror`
+against real free-audio/clap headers.
+
+| Matrix row / finding | Disposition | Evidence |
+|---|---|---|
+| F5 — WebView "Level" is not an audio meter | **Closed** | `PluginProcessor::processBlock` measures post-gain output peak into `std::atomic<float> m_outputPeak`; `WebViewEditor::timerCallback` decays and sends `level`; app.js meter driven only by `state.level`. Tests: `templates.test.js` "F5 · the WebView meter shows measured audio level, not the gain knob" (2 tests, red on pre-fix). |
+| CLAP scaffold not host-configurable (no params/state) | **Closed** | `clap.params` (1 automatable Gain, 0…1, default 0.75, value_to_text/text_to_value, flush shares `applyParameterEvents()` with process) + `clap.state` (versioned save/load). Tests: `templates.test.js` "clap.params and clap.state…" (3 tests, red on pre-fix); real-header compile+link green. |
+| `formats="CLAP"` silently accepted for clap | **Closed** | `index.js` rejects any `formats` for clap; zod describe names clap. Tests: `server.test.js` "rejects formats=\"CLAP\"…" + "documents the formats rejection…" (red on pre-fix). |
+| json + missing pluginsDir returns prose | **Closed** | JSON mode returns `[]`; prose only in text mode. Test: `server.test.js` "returns parseable JSON when format=json and the plugins directory is absent" (red on pre-fix). |
+| "found and is fine" overclaim (`:1909`) | **Closed** | Wording now "was not checked … 'found' is not a correctness claim". Test: `artefacts.test.js` "does not claim an unchecked format is 'fine'" (red on pre-fix). |
+| Format `all` omits absent requested formats (row: Partial) | **Closed** | Report gains `**No artefact found** for: …` line. Test: `artefacts.test.js` "names requested formats that produced no artefact…" (red on pre-fix; also asserts the line is absent when all requested formats exist). |
+| `-U<GLOB>` vs name-only grammar | **Closed** | Message says `-U<NAME>`. Test: `security.test.js` "says -U<NAME>, not -U<GLOB>" (red on pre-fix). |
+| `security:76` audit-level claim (row 108) | **Closed** | Doc now says plain `npm audit` via `npm run audit`, matching `publish.yml`. Doc-only. |
+| "any single line" vs 128/512 caps (row 99) | **Closed** | `security.md` states the caps. Doc-only. |
+| "No validator exists" wording (row 64) | **Closed** | `tools.md` now says "none integrated in this server". Doc-only. |
+| `tools:107` hardcoded `/plugins/` (row 66) | **Closed** | Scan path now names configurable `pluginsDir`. Doc-only. |
+| `tools:34/39` `-G` guidance vs NODE-02 (row 40) | **Closed** | Paragraph rewritten: explicit generator always forwarded; only the default is suppressed on an existing cache. Doc-only. |
+| CHANGELOG start()/stop() contradiction | **Closed** | Standalone-template bullet and stub-teeth sentence corrected in place; the fabricated-removal claim now references the existing correction entry. |
+| lint `readdirSync` silent skip (row 51) | **Already closed** in the 2026-11-17 round | `findFilesByExt` returns `skipped`; lint appends "N director(y|ies) were unreadable and not linted". Row's line refs predate #44. |
+| NOT CHECKABLE should be `isError` (row 63) | **Kept as documented** | Deliberate, documented, tested policy: nothing the user could install would change it; refusing to validate an artefact *does* fail the run. |
+| DAW lifecycle / Windows / real macOS CLAP packaging | **Out of scope** | Unverifiable in this environment, as the matrix already records. |

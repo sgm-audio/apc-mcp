@@ -19,6 +19,10 @@ const clap_plugin_descriptor_t *{{PLUGIN_ID}}_descriptor();
 // itself; that was the pre-1.0 layout.
 class {{PLUGIN_CLASS_NAME}} {
 public:
+    // Stable id of the one parameter this scaffold exposes: a linear 0..1 gain,
+    // matching the JUCE templates' "gain" parameter (default 0.75).
+    static constexpr uint32_t kGainParamId = 0;
+
     explicit {{PLUGIN_CLASS_NAME}}(const clap_host_t *host);
     // Defaulted here rather than defined out of line in the .cpp: every member
     // is a complete type, so an out-of-line `= default` only stops the compiler
@@ -48,6 +52,19 @@ public:
     static const void *getExtension(const clap_plugin_t *plugin, const char *id);
     static void onMainThread(const clap_plugin_t *plugin);
 
+    // ── parameter access (clap.params callbacks live in the .cpp) ───
+    float gain() const { return m_gain.load(std::memory_order_relaxed); }
+
+    // Clamps and stores a value coming from a host event, a preset load or
+    // text_to_value(). The atomic makes the audio thread's read safe without
+    // a lock.
+    void setGainValue(float value);
+
+    // Applies CLAP_EVENT_PARAM_VALUE events from an input event list. Shared
+    // by process() and the clap.params flush() callback, which must behave the
+    // same for parameter changes that arrive without audio.
+    void applyParameterEvents(const clap_input_events_t *events);
+
 private:
     static {{PLUGIN_CLASS_NAME}} *from(const clap_plugin_t *plugin) {
         return plugin != nullptr
@@ -58,7 +75,9 @@ private:
     clap_plugin_t m_plugin {};
     const clap_host_t *m_host = nullptr;
     double m_sampleRate = 48000.0;
-    std::atomic<float> m_gain { 1.0f };
+    // Default matches kGainParamDefault in the .cpp (0.75, i.e. 75 %) so the
+    // plugin processes audio at the value the host reads from get_info().
+    std::atomic<float> m_gain { 0.75f };
     bool m_isActive = false;
     bool m_isProcessing = false;
 };

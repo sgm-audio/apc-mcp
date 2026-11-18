@@ -22,11 +22,10 @@
         gainSlider.value = pct;
         gainValue.textContent = pct + '%';
       }
-      if (state.level === undefined) {
-        meterFill.style.width = pct + '%';
-      }
     }
 
+    // The meter shows the measured output level sent by C++ — never the slider
+    // position. A meter driven by the knob would tell you nothing about audio.
     if (state.level !== undefined) {
       const levelPct = Math.max(0, Math.min(100, Math.round(state.level * 100)));
       meterFill.style.width = levelPct + '%';
@@ -49,9 +48,9 @@
   gainSlider.addEventListener('input', function() {
     const pct = Number(this.value);
     gainValue.textContent = pct + '%';
-    meterFill.style.width = pct + '%';
 
-    // Send gain value as 0.0–1.0 float
+    // Send gain value as 0.0–1.0 float. The meter is NOT touched here: it is
+    // driven only by the measured level C++ pushes in state updates.
     sendAction('setGain', pct / 100);
   });
 

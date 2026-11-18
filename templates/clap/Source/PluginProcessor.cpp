@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace
@@ -25,6 +26,13 @@ namespace
         .description  = "{{PLUGIN_DESCRIPTION_CXX}}",
         .features     = s_features,
     };
+
+    // The one parameter this scaffold exposes. Kept in one place so
+    // get_info(), get_value(), value_to_text() and text_to_value() cannot
+    // drift apart.
+    constexpr float kGainParamMin = 0.0f;
+    constexpr float kGainParamMax = 1.0f;
+    constexpr float kGainParamDefault = 0.75f;
 
     uint32_t CLAP_ABI audioPortsCount(const clap_plugin_t *, bool) {
         return 1;
@@ -51,6 +59,158 @@ namespace
     const clap_plugin_audio_ports_t s_audioPorts = {
         .count = &audioPortsCount,
         .get   = &audioPortsGet,
+    };
+
+    // ── clap.params ─────────────────────────────────────────────────
+    // Without this extension a host can load the plugin but never adjust it:
+    // the scaffold's gain would be a compile-time constant from the host's
+    // point of view. One automatable gain parameter makes the scaffold a real
+    // (if minimal) audio effect.
+
+    {{PLUGIN_CLASS_NAME}} *pluginInstance(const clap_plugin_t *plugin) {
+        return plugin != nullptr && plugin->plugin_data != nullptr
+            ? static_cast<{{PLUGIN_CLASS_NAME}} *>(plugin->plugin_data)
+            : nullptr;
+    }
+
+    float clampGain(double value) {
+        if (!std::isfinite(value))
+            return kGainParamDefault;
+        return static_cast<float>(
+            value < kGainParamMin ? kGainParamMin
+            : value > kGainParamMax ? kGainParamMax
+            : value);
+    }
+
+    uint32_t CLAP_ABI paramsCount(const clap_plugin_t *) {
+        return 1;
+    }
+
+    bool CLAP_ABI paramsGetInfo(const clap_plugin_t *,
+                                uint32_t index,
+                                clap_param_info_t *info) {
+        if (index > 0 || info == nullptr)
+            return false;
+
+        *info = {};
+        info->id = {{PLUGIN_CLASS_NAME}}::kGainParamId;
+        info->flags = CLAP_PARAM_IS_AUTOMATABLE;
+        info->cookie = nullptr;
+        std::snprintf(info->name, sizeof(info->name), "%s", "Gain");
+        info->module[0] = '\0'; // top level: no module path
+        info->min_value = kGainParamMin;
+        info->max_value = kGainParamMax;
+        info->default_value = kGainParamDefault;
+        return true;
+    }
+
+    bool CLAP_ABI paramsGetValue(const clap_plugin_t *plugin,
+                                 clap_id param_id,
+                                 double *out_value) {
+        const auto *self = pluginInstance(plugin);
+        if (self == nullptr || param_id != {{PLUGIN_CLASS_NAME}}::kGainParamId || out_value == nullptr)
+            return false;
+
+        *out_value = self->gain();
+        return true;
+    }
+
+    bool CLAP_ABI paramsValueToText(const clap_plugin_t *,
+                                    clap_id param_id,
+                                    double value,
+                                    char *out_buffer,
+                                    uint32_t out_buffer_capacity) {
+        if (param_id != {{PLUGIN_CLASS_NAME}}::kGainParamId
+            || out_buffer == nullptr || out_buffer_capacity == 0)
+            return false;
+
+        const auto percent = clampGain(value) * 100.0;
+        const auto written = std::snprintf(out_buffer, out_buffer_capacity,
+                                           "%.0f %%", percent);
+        return written > 0 && static_cast<uint32_t>(written) < out_buffer_capacity;
+    }
+
+    bool CLAP_ABI paramsTextToValue(const clap_plugin_t *,
+                                    clap_id param_id,
+                                    const char *param_value_text,
+                                    double *out_value) {
+        if (param_id != {{PLUGIN_CLASS_NAME}}::kGainParamId
+            || param_value_text == nullptr || out_value == nullptr)
+            return false;
+
+        // Accept "75", "75 %" and "75%" — the number is a percentage, matching
+        // value_to_text(). Rejecting text that contains no number at all keeps
+        // the host's error reporting meaningful.
+        char *end = nullptr;
+        const auto percent = std::strtod(param_value_text, &end);
+        if (end == param_value_text)
+            return false;
+
+        *out_value = clampGain(percent / 100.0);
+        return true;
+    }
+
+    void CLAP_ABI paramsFlush(const clap_plugin_t *plugin,
+                              const clap_input_events_t *in,
+                              const clap_output_events_t *out) {
+        auto *self = pluginInstance(plugin);
+        if (self != nullptr)
+            self->applyParameterEvents(in);
+
+        // The host drives the gain; this plugin has no UI of its own and never
+        // emits parameter events, so there is nothing to push to `out`.
+        (void) out;
+    }
+
+    const clap_plugin_params_t s_params = {
+        .count         = &paramsCount,
+        .get_info      = &paramsGetInfo,
+        .get_value     = &paramsGetValue,
+        .value_to_text = &paramsValueToText,
+        .text_to_value = &paramsTextToValue,
+        .flush         = &paramsFlush,
+    };
+
+    // ── clap.state ──────────────────────────────────────────────────
+    // The params documentation is explicit: without the state extension a host
+    // must not try to remember parameter values itself, so the plugin would
+    // silently lose its settings between sessions. The format is a version
+    // word followed by the gain as a raw float — deliberately not a
+    // cross-platform serialisation; replace it when you add real state.
+
+    bool CLAP_ABI stateSave(const clap_plugin_t *plugin, const clap_ostream_t *stream) {
+        const auto *self = pluginInstance(plugin);
+        if (self == nullptr || stream == nullptr || stream->write == nullptr)
+            return false;
+
+        const uint32_t version = 1;
+        const float gain = self->gain();
+
+        return stream->write(stream, &version, sizeof(version)) == sizeof(version)
+            && stream->write(stream, &gain, sizeof(gain)) == sizeof(gain);
+    }
+
+    bool CLAP_ABI stateLoad(const clap_plugin_t *plugin, const clap_istream_t *stream) {
+        auto *self = pluginInstance(plugin);
+        if (self == nullptr || stream == nullptr || stream->read == nullptr)
+            return false;
+
+        uint32_t version = 0;
+        float gain = kGainParamDefault;
+        if (stream->read(stream, &version, sizeof(version)) != sizeof(version))
+            return false;
+        if (version != 1)
+            return false; // unknown format: keep defaults rather than guess
+        if (stream->read(stream, &gain, sizeof(gain)) != sizeof(gain))
+            return false;
+
+        self->setGainValue(gain);
+        return true;
+    }
+
+    const clap_plugin_state_t s_state = {
+        .save = &stateSave,
+        .load = &stateLoad,
     };
 }
 
@@ -130,6 +290,12 @@ clap_process_status {{PLUGIN_CLASS_NAME}}::process(const clap_plugin_t *plugin,
     if (self == nullptr || process == nullptr)
         return CLAP_PROCESS_ERROR;
 
+    // Host automation arrives as events. Apply them before touching audio so a
+    // block reflects the value the host sent with it; the event's sample offset
+    // is deliberately ignored — block-granular gain steps are what the smoothing
+    // in a real plugin would hide. flush() shares the same application code.
+    self->applyParameterEvents(process->in_events);
+
     const auto frames = process->frames_count;
     if (frames == 0)
         return CLAP_PROCESS_SLEEP;
@@ -183,7 +349,36 @@ const void *{{PLUGIN_CLASS_NAME}}::getExtension(const clap_plugin_t *plugin, con
         return nullptr;
     if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0)
         return &s_audioPorts;
+    if (std::strcmp(id, CLAP_EXT_PARAMS) == 0)
+        return &s_params;
+    if (std::strcmp(id, CLAP_EXT_STATE) == 0)
+        return &s_state;
     return nullptr;
 }
 
 void {{PLUGIN_CLASS_NAME}}::onMainThread(const clap_plugin_t *) {}
+
+void {{PLUGIN_CLASS_NAME}}::setGainValue(float value) {
+    m_gain.store(clampGain(value), std::memory_order_relaxed);
+}
+
+void {{PLUGIN_CLASS_NAME}}::applyParameterEvents(const clap_input_events_t *events) {
+    if (events == nullptr || events->size == nullptr || events->get == nullptr)
+        return;
+
+    const auto count = events->size(events);
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto *header = events->get(events, i);
+        if (header == nullptr)
+            continue;
+
+        // Every CLAP event struct starts with its header, so casting the header
+        // pointer is the documented way to recover the specific event.
+        if (header->type != CLAP_EVENT_PARAM_VALUE)
+            continue;
+
+        const auto &event = *reinterpret_cast<const clap_event_param_value_t *>(header);
+        if (event.param_id == kGainParamId)
+            setGainValue(static_cast<float>(event.value));
+    }
+}

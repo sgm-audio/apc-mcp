@@ -36,7 +36,7 @@ Separate flags with `;` when a value itself contains a space:
 string still works for the common case, but it cannot tell `-DNAME=a b` from
 two flags, so it splits there — use `;` whenever a value has a space in it.
 
-Only pass `-G` when creating a fresh cache; an existing cache created with a different generator must not be re-issued a `-G` flag, so `audio_plugin_build` handles reconfiguration itself.
+A `generator` you pass explicitly is always forwarded as `-G`, including onto an existing cache — that is how you switch generators on purpose. Only the *default* (`Unix Makefiles` on POSIX, CMake's platform default on Windows) is suppressed when `CMakeCache.txt` already exists, because re-issuing it onto a cache built with a different generator makes CMake abort with a generator mismatch. `audio_plugin_build` applies the same rule when it auto-configures.
 
 ### audio_plugin_build
 
@@ -93,7 +93,7 @@ audio_plugin_plugins()
 audio_plugin_plugins(format="json")
 ```
 
-Lists directories under the configured `pluginsDir` that contain a `CMakeLists.txt`, with optional `status.json` metadata. `format` is `text` (default) or `json`. Symlinked `status.json` files are refused.
+Lists directories under the configured `pluginsDir` that contain a `CMakeLists.txt`, with optional `status.json` metadata. `format` is `text` (default) or `json`. `json` always returns a parseable array — `[]` when the plugins directory does not exist or holds no plugins; the prose explanations (`No plugins/ directory found…`) are text-mode only. Symlinked `status.json` files are refused.
 
 `status.json` is **user-authored**: no tool creates or edits it, so a plugin without one simply has no metadata beyond what is on disk. See the layout note in [configuration](configuration.md).
 
@@ -111,13 +111,13 @@ audio_plugin_validate(format="CLAP")
 | `config` | `Debug` \| `Release` | Must match the build you ran |
 | `format` | `VST3` \| `CLAP` \| `all` (default) | `all` uses `validateFormats` from `apc-mcp.json` |
 
-Scans `<buildDir>/plugins/<Name>/<Name>_artefacts/<Config>/` and runs:
+Scans `<buildDir>/<pluginsDir>/<Name>/<Name>_artefacts/<Config>/` (`pluginsDir` from `apc-mcp.json`, default `plugins`) and runs:
 
 | Artefact | Validator | Result |
 |---|---|---|
 | VST3 | `validateCommand` (default `pluginval`) | Validated with `--strictness-level 10` |
 | CLAP | `clapValidatorCommand` (default `clap-validator`) | Validated with the `validate` subcommand |
-| LV2, AudioUnit, Standalone | no validator exists | **NOT CHECKABLE** — reported as such |
+| LV2, AudioUnit, Standalone | none integrated in this server | **NOT CHECKABLE** — reported as such |
 
 Three outcomes are distinguished, because they mean different things:
 
@@ -125,9 +125,9 @@ Three outcomes are distinguished, because they mean different things:
 |---|---|---|
 | `PASS` / `FAIL` | A validator ran and returned a verdict | `FAIL` ⇒ `true` |
 | `MISSING-VALIDATOR` | A validator *is* configured for this format but is not installed | `true` — the run is incomplete, and installing it would fix it |
-| `NOT CHECKABLE` | No validator exists for this format (LV2, AudioUnit, Standalone) | `false` — nothing was attempted, and no installation would change that |
+| `NOT CHECKABLE` | No validator is integrated in this server for this format (LV2, AudioUnit, Standalone) | `false` — nothing was attempted, and no installation would change that |
 
-The third row is the important one: telling a user to "install the missing validator" for an LV2 build is unactionable advice, so it is not treated as a failure. For LV2 Turtle/spec checks use external tools such as [sord_validate](https://gitlab.com/drobilla/sord) or [lv2lint](https://gitlab.com/OpenMusicKontrollers/lv2lint). `validateFormats` in `apc-mcp.json` may name LV2, AudioUnit or Standalone for artefact discovery, but no validator is run for them.
+The third row is the important one: telling a user to "install the missing validator" for an LV2 build is unactionable advice, so it is not treated as a failure. A requested format that produced no artefact at all is not silently omitted either: the report ends with a `**No artefact found**` line naming those formats, since absence is not proof of a broken build but also not coverage. For LV2 Turtle/spec checks use external tools such as [sord_validate](https://gitlab.com/drobilla/sord) or [lv2lint](https://gitlab.com/OpenMusicKontrollers/lv2lint). `validateFormats` in `apc-mcp.json` may name LV2, AudioUnit or Standalone for artefact discovery, but no validator is run for them.
 
 `format` accepts every member of the artefact enum — `VST3`, `CLAP`, `LV2`, `AudioUnit`, `Standalone`, `all` — even where no validator exists, so asking about a format is never itself an error.
 
@@ -147,8 +147,8 @@ audio_plugin_create(name="ToneGen", type="standalone", vendor="MyCompany")
 | `name` | **required**, `[A-Za-z][A-Za-z0-9_-]*` | Also the CMake target name; reserved names (`all`, `test`, `install`, …) are rejected |
 | `type` | `clap` (default), `vst3`, `juce`, `lv2`, `standalone` | See the table below |
 | `ui` | `generic` (default), `webview` | JUCE plugin types only; ignored elsewhere |
-| `vendor` | `apc-mcp` | Embedded in plugin metadata. Any single line of text, non-ASCII included ("ACME, Inc." and "Café Audio" both work); quotes, backslashes and `&` are escaped per output grammar. Used in sanitized form for bundle IDs, four-character codes and the LV2 URN — which is also the `LV2URI` of the JUCE plugin templates, so a `type="juce"` LV2 build and a `type="lv2"` build name the plugin's identity the same way |
-| `description` | `An audio plugin` | Any single line of text, non-ASCII included. Escaped separately for C++, CMake and LV2 Turtle |
+| `vendor` | `apc-mcp` | Embedded in plugin metadata. Any single line of text up to 128 characters, non-ASCII included ("ACME, Inc." and "Café Audio" both work); quotes, backslashes and `&` are escaped per output grammar. Used in sanitized form for bundle IDs, four-character codes and the LV2 URN — which is also the `LV2URI` of the JUCE plugin templates, so a `type="juce"` LV2 build and a `type="lv2"` build name the plugin's identity the same way |
+| `description` | `An audio plugin` | Any single line of text up to 512 characters, non-ASCII included. Escaped separately for C++, CMake and LV2 Turtle |
 
 Control characters (newlines included) are rejected in `vendor` and `description` with an explanatory message: they would terminate the C++, CMake or Turtle construct the value is pasted into, and no amount of escaping makes a newline safe in all three.
 | `formats` | JUCE default `VST3;LV2;Standalone` | Semicolon-separated override for `juce` / `vst3`; rejected for `clap`, `lv2`, `standalone` |
