@@ -151,25 +151,36 @@ try {
     }
     ok(`CMakeCache.txt confirmed APC_USE_JIVE:BOOL=ON (${config})`);
 
+    const osName = process.platform === 'darwin'
+      ? 'macOS'
+      : (process.platform === 'win32' ? 'Windows' : 'Linux');
+
     const buildRes = run('cmake', [
       '--build', buildDir,
       '--config', config,
+      '--target', 'package',
       '--parallel', jobs,
     ], { timeout: 1800000 });
     if (buildRes.status !== 0) {
       fail(`cmake build (${config})`, `exit ${buildRes.status}`);
       continue;
     }
-    ok(`cmake build (${config})`);
+    ok(`cmake build --target package (${config})`);
 
     for (const c of cases) {
       const displayName = c.name;
-      const distVst3 = path.join(buildDir, 'dist', config, `${displayName}.vst3`);
+      const pkgDir = path.join(buildDir, 'dist', `${c.name}-1.0.0-${osName}`);
+      const distVst3 = path.join(pkgDir, `${displayName}.vst3`);
+      const installTxt = path.join(pkgDir, 'INSTALL.txt');
       if (!fs.existsSync(distVst3)) {
-        fail(`${c.name} dist/ (${config})`, `missing staged VST3 bundle at ${distVst3}`);
+        fail(`${c.name} dist/ (${config})`, `missing packaged VST3 bundle at ${distVst3}`);
         continue;
       }
-      ok(`${c.name} staged in dist/${config}/${displayName}.vst3`);
+      if (!fs.existsSync(installTxt)) {
+        fail(`${c.name} INSTALL.txt (${config})`, `missing INSTALL.txt at ${installTxt}`);
+        continue;
+      }
+      ok(`${c.name} packaged in dist/${c.name}-1.0.0-${osName}/ (VST3 + INSTALL.txt)`);
 
       if (c.ui === 'jive') {
         const soFiles = [];
@@ -189,17 +200,33 @@ try {
         }
       }
 
-      // pluginval runs GUI editor creation/destruction tests by default.
-      const valArgs = [
-        '--strictness-level', STRICTNESS,
-        '--validate-in-process',
-        '--validate', distVst3,
-      ];
-      const pvRes = run(pluginvalBin, valArgs, { timeout: 300000 });
-      if (pvRes.status !== 0) {
-        fail(`pluginval ${c.name} (${config})`, `exited ${pvRes.status}`);
-      } else {
-        ok(`pluginval --strictness-level ${STRICTNESS} PASS: ${c.name} (${config})`);
+      // Copy bundle to an isolated directory before pluginval to prove zero
+      // dependency on build tree or local Source/UI paths.
+      const isoDir = fs.mkdtempSync(path.join(os.tmpdir(), `apc-iso-${c.name}-`));
+      const isoVst3 = path.join(isoDir, `${displayName}.vst3`);
+      (function copyDirSync(src, dst) {
+        fs.mkdirSync(dst, { recursive: true });
+        for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+          const s = path.join(src, e.name);
+          const d = path.join(dst, e.name);
+          if (e.isDirectory()) copyDirSync(s, d);
+          else fs.copyFileSync(s, d);
+        }
+      })(distVst3, isoVst3);
+      try {
+        const valArgs = [
+          '--strictness-level', STRICTNESS,
+          '--validate-in-process',
+          '--validate', isoVst3,
+        ];
+        const pvRes = run(pluginvalBin, valArgs, { timeout: 300000 });
+        if (pvRes.status !== 0) {
+          fail(`pluginval ${c.name} (${config})`, `exited ${pvRes.status}`);
+        } else {
+          ok(`pluginval --strictness-level ${STRICTNESS} PASS (isolated): ${c.name} (${config})`);
+        }
+      } finally {
+        fs.rmSync(isoDir, { recursive: true, force: true });
       }
     }
   }
