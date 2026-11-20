@@ -1,30 +1,34 @@
 ---
 name: juce-midi-plugin-buses
-description: "Correct bus layouts so pure MIDI or MIDI-generating JUCE plugins load in Ableton Live and other hosts that reject empty audio buses."
-type: workflow
-lifecycle: active
+description: "Declare correct audio buses so pure MIDI or MIDI-generating JUCE plugins load in Ableton Live and other hosts that reject empty buses. Use when a MIDI-only VST3 or CLAP fails to instantiate."
 ---
 
-# MIDI Plugin Bus Layouts for Ableton
+# MIDI Plugin Bus Layouts
 
-Ableton Live refuses VST3 plugins that have no audio buses. Pure MIDI plugins must declare at least one audio output.
+## When to use
+- A pure MIDI plugin or arpeggiator will not load in Ableton Live.
+- You see “could not be opened” or empty-bus rejection.
+- Scaffolding a synth or MIDI utility.
 
-## Standard fix
+## Fix
+Declare at least one stereo output when running in Live:
+
 ```cpp
 MyProcessor()
     : AudioProcessor(BusesProperties()
-          .withOutput("Output", AudioChannelSet::stereo()))
+          .withOutput("Output", juce::AudioChannelSet::stereo()))
 {}
 ```
 
-## Host-conditional (cleaner)
+Or conditionally:
+
 ```cpp
-static BusesProperties getBuses()
-{
-    if (PluginHostType().isAbletonLive())
-        return BusesProperties().withOutput("Output", AudioChannelSet::stereo());
-    return BusesProperties(); // or your normal MIDI-only layout
-}
+if (juce::PluginHostType().isAbletonLive())
+    return BusesProperties().withOutput("Output", juce::AudioChannelSet::stereo());
 ```
 
-Do not mark the plugin as "MIDI Effect Plugin" if you also need it to load as a regular instrument/effect in Live. Test instantiation in a fresh Live set after changing buses.
+Do not set the “MIDI Effect Plugin” flag if the plugin must also appear as a normal instrument or effect.
+
+## Verification
+- Plugin instantiates in a fresh Ableton Live set and in Reaper.
+- No empty-bus assertion or load failure.

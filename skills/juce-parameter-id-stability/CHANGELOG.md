@@ -1,4 +1,4 @@
 # Changelog
 
 ## 2026-11-20
-- Initial skill for parameter ID stability and Ableton automation survival
+- Rewritten to Agent Skills standard (trigger-rich description, imperative instructions, examples)
