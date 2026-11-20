@@ -1,0 +1,9 @@
+{
+  "skill": "juce-dsp-safety",
+  "test_cases": [
+    {"input": "is this processBlock realtime safe", "should_trigger": true},
+    {"input": "review my JUCE plugin for audio thread allocations", "should_trigger": true},
+    {"input": "how do I update parameters without locking in JUCE", "should_trigger": true},
+    {"input": "write a React component", "should_trigger": false}
+  ]
+}
