@@ -17,5 +17,7 @@ description: "Host-specific rules for setLatencySamples in JUCE. Use when Ableto
 - Never change latency from inside `processBlock`.
 
 ## Verification
-- Project loads in Live 10/11/12 without crash.
-- Offline render completes without dropouts.
+1. Project containing the plugin loads in Ableton Live 10, 11, and 12 without crash.
+2. Offline render (Export Audio) completes with no dropped blocks or truncated tails.
+3. Grep confirms `setLatencySamples` is never called from `processBlock`.
+4. pluginval latency tests pass; reported latency matches the actual delay measured with a impulse.

@@ -20,6 +20,8 @@ Inspect the live repository (README.md, package.json, CHANGELOG.md, index.js, do
 4. Verification Checklist.
 
 ## Verification
-- Version in package.json matches the tag.
-- CHANGELOG entry exists.
-- Badges and README claims match the actual tool list and behavior.
+1. `package.json` `"version"` exactly matches the intended tag.
+2. CHANGELOG.md contains an entry for the new version with the correct date and bullet list of changes.
+3. README badges and tool-count claims match the live `index.js` / `docs/tools.md` (count registered tools).
+4. `npm run check` (or equivalent CI gate) passes on the release commit.
+5. GitHub Release notes match the CHANGELOG entry and do not claim features absent from the live tree.

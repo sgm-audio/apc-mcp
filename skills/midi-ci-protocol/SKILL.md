@@ -17,5 +17,7 @@ description: "MIDI-CI and MIDI 2.0 protocol implementation guidance for Rust or 
 - Test against real hardware or a known-good reference implementation.
 
 ## Verification
-- Discovery completes and properties can be read/written with a reference device.
-- No malformed messages on the wire.
+1. Capture MIDI traffic (e.g. MIDI Monitor or Wireshark) and confirm discovery request/reply sequence matches the official MIDI-CI spec byte-for-byte.
+2. Property exchange read and write succeeds against a reference device or test harness.
+3. Timeout and error cases are handled without hanging the MIDI thread.
+4. No malformed or truncated messages appear in the capture log.
