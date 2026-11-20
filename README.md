@@ -48,10 +48,10 @@ MCP clients automatically expose `apc-mcp`'s registered MCP Prompts as native `/
 
 | Slash Command | Arguments | What It Executes |
 |---|---|---|
-| `/apc:doctor` | *(none)* | Runs `audio_plugin_doctor`, initializes `~/.apc-mcp/deps/`, and outputs a toolchain & SDK readiness matrix. |
-| `/apc:new` | `name` *(required)*, `style` *(optional: `fx` \| `synth` \| `utility`)* | Runs `audio_plugin_doctor` if the cache is cold, scaffolds a JUCE + JIVE plugin (`type="juce"`, `ui="jive"`), and summarizes APVTS parameters and live hot-reload paths. |
-| `/apc:ui` | `design` *(required)* | Reads `Source/UI/MainView.xml`, `Source/UI/Styles.json`, and `Source/PluginProcessor.cpp`, adds new parameters atomically via `audio_plugin_add_param`, updates JIVE Flexbox/Grid layout & styles using `Source/UI/Presets/` primitives, and runs a `Debug` compile check. |
-| `/apc:ship` | `version` *(optional, default `"0.1.0"`)* | Runs `audio_plugin_ship(installLocal=true)` (`Release Build → Lint → pluginval Strictness 5 → dist/ Package → Local VST3 Install`), self-healing up to 3 times on any compiler/validator error. |
+| `/apc:doctor` | *(none)* | Runs `apc-doctor`, initializes `~/.apc-mcp/deps/`, and outputs a toolchain & SDK readiness matrix. |
+| `/apc:new` | `name` *(required)*, `style` *(optional: `fx` \| `synth` \| `utility`)* | Runs `apc-doctor` if the cache is cold, then `apc` scaffolds a JUCE + JIVE plugin (`type="juce"`, `ui="jive"`), and summarizes APVTS parameters and live hot-reload paths. |
+| `/apc:ui` | `design` *(required)* | Reads `Source/UI/MainView.xml`, `Source/UI/Styles.json`, and `Source/PluginProcessor.cpp`, adds new parameters atomically via `apc-add-param`, updates JIVE Flexbox/Grid layout & styles using `Source/UI/Presets/` primitives, and runs a `Debug` compile check. |
+| `/apc:ship` | `version` *(optional, default `"0.1.0"`)* | Runs `apc-ship(installLocal=true)` (`Release Build → Lint → pluginval Strictness 5 → dist/ Package → Local VST3 Install`), self-healing up to 3 times on any compiler/validator error. |
 
 ```text
 /apc:new name="TapeEcho" style="fx"
@@ -63,7 +63,7 @@ MCP clients automatically expose `apc-mcp`'s registered MCP Prompts as native `/
 
 ## Creating and Shipping a JUCE + JIVE Plugin
 
-`audio_plugin_create` defaults to `type="juce"` and `ui="jive"` when omitted, generating a deterministic CMake 3.22+ project powered by [JUCE 9.0.3](https://github.com/juce-framework/JUCE) and [JIVE v2.0.1](https://github.com/ImJimmi/JIVE) (declarative XML layouts + JSON stylesheets).
+`apc` defaults to `type="juce"` and `ui="jive"` when omitted, generating a deterministic CMake 3.22+ project powered by [JUCE 9.0.3](https://github.com/juce-framework/JUCE) and [JIVE v2.0.1](https://github.com/ImJimmi/JIVE) (declarative XML layouts + JSON stylesheets).
 
 ### 1. Architecture & Hot-Reload (`Debug` vs. `Release`)
 
@@ -88,9 +88,9 @@ Generated `CMakeLists.txt` files never fetch unpinned `main`/`master` branches. 
 
 ## Manual Tool Reference
 
-See the full [Tool reference](docs/tools.md) for all 10 tools (`audio_plugin_create`, `audio_plugin_add_param`, `audio_plugin_ship`, `audio_plugin_doctor`, `audio_plugin_configure`, `audio_plugin_build`, `audio_plugin_test`, `audio_plugin_lint`, `audio_plugin_validate`, `audio_plugin_plugins`).
+See the full [Tool reference](docs/tools.md) for all 10 tools (`apc`, `apc-add-param`, `apc-ship`, `apc-doctor`, `apc-cfg`, `apc-build`, `apc-test`, `apc-lint`, `apc-val`, `apc-list`).
 
-### `audio_plugin_create`
+### `apc`
 
 Scaffolds a new plugin or application into `<pluginsDir>/<name>`, registers `add_subdirectory(...)` in the root `CMakeLists.txt`, initializes `~/.apc-mcp/deps/`, and verifies the CMake configuration.
 
@@ -107,7 +107,7 @@ Scaffolds a new plugin or application into `<pluginsDir>/<name>`, registers `add
 
 **Return payload:** Markdown summary containing the created plugin directory, template and style preset used, root `CMakeLists.txt` registration status, `~/.apc-mcp/deps/` cache initialization status, and the scaffolded file tree.
 
-### `audio_plugin_add_param`
+### `apc-add-param`
 
 Atomically synchronizes a new automatable parameter across C++ APVTS, JIVE XML layout, and JSON stylesheet.
 
@@ -125,7 +125,7 @@ Atomically synchronizes a new automatable parameter across C++ APVTS, JIVE XML l
 
 **Return payload:** Confirmation listing the updated `Source/PluginProcessor.cpp` (`createParameterLayout`), `Source/UI/MainView.xml` binding, `Source/UI/Styles.json` (`#<id>`) rule, and XML well-formedness / JSON validity verification.
 
-### `audio_plugin_ship`
+### `apc-ship`
 
 Executes the end-to-end commercial shipping pipeline in a single call: **Stage 1 (`Release` Configure & Build) → Stage 2 (`clang-format` Source Lint) → Stage 3 (`pluginval --strictness-level 5 --validate-in-process`) → Stage 4 (`dist/<Name>-<Version>-<OS>/` Packaging + `INSTALL.txt` + macOS ad-hoc `codesign --force --deep -s -`) → Stage 5 (Local OS VST3 Install)**.
 
@@ -137,7 +137,7 @@ Executes the end-to-end commercial shipping pipeline in a single call: **Stage 1
 
 **Return payload:** Stage-by-stage pass summary with exact `dist/` package paths and local VST3 install paths, or structured compiler/linter/validator diagnostic lines (`isError: true`) when any gate fails so the calling agent can self-heal immediately.
 
-### `audio_plugin_doctor`
+### `apc-doctor`
 
 Inspects the local build environment and initializes the global dependency cache.
 
@@ -153,7 +153,7 @@ Inspects the local build environment and initializes the global dependency cache
 
 ### Packaging Output (`dist/`)
 
-Running `audio_plugin_ship` or `cmake --build build --config Release --target package` produces a self-contained distribution folder:
+Running `apc-ship` or `cmake --build build --config Release --target package` produces a self-contained distribution folder:
 
 ```text
 dist/<PluginName>-<Version>-<macOS|Windows|Linux>/
@@ -174,7 +174,7 @@ dist/<PluginName>-<Version>-<macOS|Windows|Linux>/
 
 ### Known Limitations
 
-- **macOS Ad-Hoc Signing vs. Public Notarization:** `audio_plugin_ship` and the CMake `package` target run `codesign --force --deep --sign -` on macOS bundles so they load locally without Gatekeeper quarantine failures. Public commercial distribution on macOS requires an Apple **Developer ID Application** certificate, hardened runtime signing, and `notarytool` notarization; Windows public installers should be signed with an **Authenticode** certificate.
+- **macOS Ad-Hoc Signing vs. Public Notarization:** `apc-ship` and the CMake `package` target run `codesign --force --deep --sign -` on macOS bundles so they load locally without Gatekeeper quarantine failures. Public commercial distribution on macOS requires an Apple **Developer ID Application** certificate, hardened runtime signing, and `notarytool` notarization; Windows public installers should be signed with an **Authenticode** certificate.
 - **ARA2 Stub Status:** `type="ara"` is not offered yet (removed in 2.0.0 because ARA2 in JUCE requires `IS_ARA_EFFECT` and dedicated `AudioProcessorARAExtension` / `ARADocumentControllerSpecialisation` subclasses rather than a format string). See the [roadmap](docs/roadmap.md).
 - **Headless Linux Display:** `pluginval` instantiates the plugin GUI editor and requires an X11 display on Linux (wrap headless CI runs in `xvfb-run -a`). Generated JUCE `CMakeLists.txt` files automatically define `JUCE_ALSA=0` when `libasound2-dev` is absent on headless Linux containers.
 

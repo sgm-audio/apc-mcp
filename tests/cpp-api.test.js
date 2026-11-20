@@ -141,7 +141,7 @@ before(async () => {
     'cmake_minimum_required(VERSION 3.22)\nproject(host)\n');
 
   for (const c of CASES) {
-    const r = await call('audio_plugin_create', {
+    const r = await call('apc', {
       projectPath: PROJ, name: c.name, type: c.type, ui: c.ui, vendor: 'acme',
       description: c.description ?? 'compile check',
     });

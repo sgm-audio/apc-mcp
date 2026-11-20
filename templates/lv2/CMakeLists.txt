@@ -94,7 +94,7 @@ set_target_properties({{PLUGIN_NAME}} PROPERTIES
     PREFIX ""
     SUFFIX ".so"
     # Emit into the same <build>/<pluginsDir>/<name>/<name>_artefacts/<config>/LV2
-    # layout that audio_plugin_validate scans, so a scaffolded plugin can be
+    # layout that apc-val scans, so a scaffolded plugin can be
     # validated without the layout being hand-edited. LIBRARY_OUTPUT_DIRECTORY
     # is what applies to a MODULE library.
     LIBRARY_OUTPUT_DIRECTORY "${LV2_BUNDLE_DIR}"

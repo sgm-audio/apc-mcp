@@ -22,13 +22,16 @@ const timeoutMs = Number(process.argv.find(a => a.startsWith('--timeout='))?.sli
 const serverPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.js');
 
 const EXPECTED = [
-  'audio_plugin_build',
-  'audio_plugin_configure',
-  'audio_plugin_create',
-  'audio_plugin_lint',
-  'audio_plugin_plugins',
-  'audio_plugin_test',
-  'audio_plugin_validate',
+  'apc',
+  'apc-add-param',
+  'apc-build',
+  'apc-cfg',
+  'apc-doctor',
+  'apc-lint',
+  'apc-list',
+  'apc-ship',
+  'apc-test',
+  'apc-val',
 ];
 
 const messages = [

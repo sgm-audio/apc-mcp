@@ -60,7 +60,7 @@ target_link_libraries({{PLUGIN_NAME}} PRIVATE clap)
 target_include_directories({{PLUGIN_NAME}} PRIVATE Source)
 
 # Emit into <build>/<pluginsDir>/<name>/<name>_artefacts/<config>/CLAP/<name>.clap,
-# matching the layout audio_plugin_validate scans:
+# matching the layout apc-val scans:
 #   - macOS: a CFBundle directory (<name>.clap/Contents/MacOS/<name>)
 #   - Linux & Windows: a single shared object renamed <name>.clap
 # ── Warning flags ────────────────────────────────────────────────────

@@ -201,7 +201,7 @@ jobs:
   # *annotation* on the check run, which is readable over the API even when the
   # job log is not.
   scaffold-clap-validate:
-    name: audio_plugin_validate against real clap-validator
+    name: apc-val against real clap-validator
     timeout-minutes: 25
     runs-on: ubuntu-latest
     permissions:
@@ -265,7 +265,7 @@ jobs:
             || { echo "::error title=smoke-validate validate::$(sed 's/%/%25/g' "${RUNNER_TEMP}/validate.log" | tail -c 3000 | awk 'BEGIN{ORS=""}{printf "%s%%0A",$0}')"; exit 1; }
 
   scaffold-juce-validate:
-    name: audio_plugin_validate against real pluginval
+    name: apc-val against real pluginval
     timeout-minutes: 45
     runs-on: ubuntu-latest
     permissions:

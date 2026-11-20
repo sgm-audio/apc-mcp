@@ -122,7 +122,7 @@ try {
     console.log(`smoke-jive e2e project: ${proj} (deps: ${JUCE_DIR || CACHED_JUCE_DIR}, ${JIVE_DIR || CACHED_JIVE_DIR})`);
 
     for (const c of cases) {
-      const r = await call('audio_plugin_create', {
+      const r = await call('apc', {
         projectPath: proj,
         name: c.name,
         type: 'juce',

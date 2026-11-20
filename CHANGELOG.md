@@ -8,7 +8,7 @@
 
 ## [Unreleased] — 2.0.0
 
-> **Release note — two breaking changes**, so this ships as **2.0.0**, not 1.5.1:
+> **Release note — three breaking changes**, so this ships as **2.0.0**, not 1.5.1:
 >
 > 1. `ara` was removed from the `audio_plugin_create` `type` enum. It scaffolded
 >    `FORMATS ARA`, which `juce_add_plugin` rejects, from a plain
@@ -16,6 +16,11 @@
 > 2. `engines.node` is now `>=22`. Node 18 ended 2025-04-30 and Node 20 ended
 >    2026-04-30, so neither receives security patches. Installations still on
 >    Node 20 must upgrade.
+> 3. MCP tool names now use short canonical names: `apc`, `apc-add-param`,
+>    `apc-ship`, `apc-doctor`, `apc-cfg`, `apc-build`, `apc-test`, `apc-lint`,
+>    `apc-val`, and `apc-list`. The former `audio_plugin_*` tool names are not
+>    registered as aliases; clients and prompts that call them must use the new
+>    names.
 >
 > The version now lives **only** in `package.json`; `index.js` reads it at startup
 > (OPS-03), so the two cannot drift. Several tools also now return `isError` in
@@ -24,6 +29,17 @@
 >
 > `audio_plugin_create` also **gains** `type: "standalone"` and `type: "lv2"` —
 > additive enum values, not breaking ones.
+
+### Breaking Changes
+
+- **MCP tool names shortened.** The ten registered tools now use the canonical
+  names listed above. The former `audio_plugin_create`, `audio_plugin_add_param`,
+  `audio_plugin_ship`, `audio_plugin_doctor`, `audio_plugin_configure`,
+  `audio_plugin_build`, `audio_plugin_test`, `audio_plugin_lint`,
+  `audio_plugin_validate`, and `audio_plugin_plugins` names were removed rather
+  than retained as aliases. Update MCP clients, saved workflows, and prompts to
+  call `apc`, `apc-add-param`, `apc-ship`, `apc-doctor`, `apc-cfg`,
+  `apc-build`, `apc-test`, `apc-lint`, `apc-val`, and `apc-list` respectively.
 
 ### Security
 

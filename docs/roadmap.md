@@ -7,14 +7,14 @@ Everything documented here used to live in a root `TODO.md` dominated by complet
 | Feature | Where it lives now |
 |---|---|
 | WebView UI template (`ui="webview"`) with a JS↔C++ bridge and embedded BinaryData UI | `templates/juce-webview/` |
-| `ui` parameter on `audio_plugin_create` | [Tool reference](tools.md#audio_plugin_create) |
+| `ui` parameter on `apc` | [Tool reference](tools.md#apc) |
 | Standalone application template (`type="standalone"`, `juce_add_gui_app`) | `templates/standalone/` |
 | Native LV2 template (`type="lv2"`, pure C11 + Turtle metadata) | `templates/lv2/` |
 | CLAP and JUCE/VST3 scaffolds, security fixes, honest failure reporting, CI and release gates | [Project status](project-status.md), [CHANGELOG.md](../CHANGELOG.md) |
 
 ## Remaining: ARA template
 
-**Goal:** `audio_plugin_create(name="X", type="ara")` scaffolds a JUCE ARA plugin.
+**Goal:** `apc(name="X", type="ara")` scaffolds a JUCE ARA plugin.
 
 `type="ara"` was **removed in 2.0.0** because it emitted `FORMATS ARA` — not a valid `juce_add_plugin` format — from a plain `juce::AudioProcessor`, so it reported success while scaffolding a plugin that could never configure. Do not restore the enum value until the template below exists.
 
