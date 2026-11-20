@@ -375,7 +375,7 @@ try {
 
   console.log('scaffolding:');
   for (const c of CASES) {
-    const r = await call('audio_plugin_create', {
+    const r = await call('apc', {
       projectPath: PROJ, name: c.name, type: c.type, ui: c.ui,
       vendor: 'smokeco', description: 'smoke "quoted" test',
     });
@@ -397,7 +397,7 @@ try {
       if (left) fail(`${c.name}/${rel}`, `unsubstituted placeholders: ${left.join(', ')}`);
     }
     if (!rootCmakeAfterCreate.includes(`add_subdirectory(plugins/${c.name})`)) {
-      fail(`${c.name}`, 'audio_plugin_create did not register add_subdirectory() in root CMakeLists.txt');
+      fail(`${c.name}`, 'apc did not register add_subdirectory() in root CMakeLists.txt');
     }
     const cm = c.files.get('CMakeLists.txt');
     const cmd = CMAKE_COMMAND_FOR_TYPE[c.type];

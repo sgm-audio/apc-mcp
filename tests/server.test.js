@@ -19,18 +19,24 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { call, listTools, PROJECT_ROOT } from './helpers/mcp-client.mjs';
 
-const TOOL_NAMES = [
-  'audio_plugin_add_param',
-  'audio_plugin_build',
-  'audio_plugin_configure',
-  'audio_plugin_create',
-  'audio_plugin_doctor',
-  'audio_plugin_lint',
-  'audio_plugin_plugins',
-  'audio_plugin_ship',
-  'audio_plugin_test',
-  'audio_plugin_validate',
+const LEGACY_ALIASES = [
+  ['audio_plugin_create', 'apc'],
+  ['audio_plugin_add_param', 'apc-add-param'],
+  ['audio_plugin_ship', 'apc-ship'],
+  ['audio_plugin_doctor', 'apc-doctor'],
+  ['audio_plugin_configure', 'apc-cfg'],
+  ['audio_plugin_build', 'apc-build'],
+  ['audio_plugin_test', 'apc-test'],
+  ['audio_plugin_lint', 'apc-lint'],
+  ['audio_plugin_validate', 'apc-val'],
+  ['audio_plugin_plugins', 'apc-list'],
 ];
+
+const TOOL_NAMES = [
+  'apc', 'apc-add-param', 'apc-build', 'apc-cfg', 'apc-doctor',
+  'apc-lint', 'apc-list', 'apc-ship', 'apc-test', 'apc-val',
+  ...LEGACY_ALIASES.map(([alias]) => alias),
+].sort();
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'apc-server-'));
 
@@ -53,7 +59,7 @@ after(() => { fs.rmSync(ROOT, { recursive: true, force: true }); });
 
 describe('apc-mcp MCP server', () => {
   describe('tools/list', () => {
-    it('advertises all 10 tools', async () => {
+    it('advertises all 10 canonical tools and their 10 legacy aliases', async () => {
       const tools = await listTools();
       assert.ok(Array.isArray(tools) && tools.length > 0,
         `expected a tools array, got: ${JSON.stringify(tools)?.slice(0, 200)}`);
@@ -64,29 +70,29 @@ describe('apc-mcp MCP server', () => {
       const tools = await listTools();
       const byName = Object.fromEntries((tools ?? []).map(t => [t.name, t]));
       for (const { name } of tools ?? []) {
-        assert.ok(byName[name].title, `${name} has no title; clients show a bare snake_case name`);
+        assert.ok(byName[name].title, `${name} has no title; clients show a bare hyphenated tool name`);
         const a = byName[name].annotations;
         assert.ok(a, `${name} has no annotations`);
         for (const key of ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint']) {
           assert.equal(typeof a[key], 'boolean', `${name}.annotations.${key} must be a boolean`);
         }
       }
-      // Only audio_plugin_plugins is pure inspection: it lists a directory and
+      // Only apc-list is pure inspection: it lists a directory and
       // nothing else. The rest either execute a toolchain or write files.
-      assert.equal(byName.audio_plugin_plugins.annotations.readOnlyHint, true,
-        'audio_plugin_plugins only reads the plugin tree and must declare readOnlyHint');
-      assert.equal(byName.audio_plugin_plugins.annotations.destructiveHint, false,
-        'audio_plugin_plugins must not claim to be destructive');
+      assert.equal(byName['apc-list'].annotations.readOnlyHint, true,
+        'apc-list only reads the plugin tree and must declare readOnlyHint');
+      assert.equal(byName['apc-list'].annotations.destructiveHint, false,
+        'apc-list must not claim to be destructive');
 
       // Anything that writes into the project must say so. `test` runs ctest, and
       // `validate` runs third-party binaries, so neither may claim read-only
       // either — a client that trusts readOnlyHint may auto-approve them.
-      for (const n of ['audio_plugin_create', 'audio_plugin_configure', 'audio_plugin_build', 'audio_plugin_lint', 'audio_plugin_add_param', 'audio_plugin_ship']) {
+      for (const n of ['apc', 'apc-cfg', 'apc-build', 'apc-lint', 'apc-add-param', 'apc-ship']) {
         assert.equal(byName[n].annotations.destructiveHint, true,
           `${n} writes into the project and must declare destructiveHint`);
       }
-      for (const n of ['audio_plugin_create', 'audio_plugin_configure', 'audio_plugin_build',
-        'audio_plugin_lint', 'audio_plugin_test', 'audio_plugin_validate', 'audio_plugin_add_param', 'audio_plugin_ship', 'audio_plugin_doctor']) {
+      for (const n of ['apc', 'apc-cfg', 'apc-build',
+        'apc-lint', 'apc-test', 'apc-val', 'apc-add-param', 'apc-ship', 'apc-doctor']) {
         assert.equal(byName[n].annotations.readOnlyHint, false,
           `${n} executes a command or writes files and must not claim readOnlyHint`);
       }
@@ -100,11 +106,58 @@ describe('apc-mcp MCP server', () => {
         assert.ok(tool?.inputSchema?.properties, `${tool?.name} is missing inputSchema.properties`);
       }
     });
+
+    it('registers each legacy alias with its canonical schema, title, and annotations', async () => {
+      const tools = Object.fromEntries((await listTools()).map(tool => [tool.name, tool]));
+      for (const [alias, canonical] of LEGACY_ALIASES) {
+        assert.deepEqual(tools[alias].inputSchema, tools[canonical].inputSchema,
+          `${alias} must share ${canonical}'s input schema`);
+        assert.equal(tools[alias].title, tools[canonical].title,
+          `${alias} must share ${canonical}'s title`);
+        assert.deepEqual(tools[alias].annotations, tools[canonical].annotations,
+          `${alias} must share ${canonical}'s safety annotations`);
+      }
+    });
+
+    it('delegates every legacy alias to the same canonical handler and error path', async () => {
+      const missingProject = path.join(ROOT, 'missing-alias-project');
+      const argsByCanonical = {
+        apc: { projectPath: missingProject, name: 'AliasSmoke' },
+        'apc-add-param': { projectPath: missingProject, id: 'aliasParam', name: 'Alias Param' },
+        'apc-ship': { projectPath: missingProject },
+        'apc-doctor': { projectPath: missingProject },
+        'apc-cfg': { projectPath: missingProject },
+        'apc-build': { projectPath: missingProject },
+        'apc-test': { projectPath: missingProject },
+        'apc-lint': { projectPath: missingProject },
+        'apc-val': { projectPath: missingProject },
+        'apc-list': { projectPath: missingProject },
+      };
+      for (const [alias, canonical] of LEGACY_ALIASES) {
+        const args = argsByCanonical[canonical];
+        const canonicalResult = await call(canonical, args);
+        const aliasResult = await call(alias, args);
+        assert.deepEqual(aliasResult, canonicalResult,
+          `${alias} must produce the same result and isError status as ${canonical}`);
+        assert.equal(aliasResult.isError, canonicalResult.isError,
+          `${alias} must preserve ${canonical}'s isError status`);
+      }
+    });
+
+    it('applies canonical path-traversal validation through the legacy lint alias', async () => {
+      const projectPath = withProject('alias-path-guard');
+      const args = { projectPath, target: '../outside' };
+      const canonicalResult = await call('apc-lint', args);
+      const aliasResult = await call('audio_plugin_lint', args);
+      assert.deepEqual(aliasResult, canonicalResult);
+      assert.equal(aliasResult.isError, true);
+      assert.match(aliasResult.text, /\\.\\.|within the project root/i);
+    });
   });
 
-  describe('audio_plugin_plugins', () => {
+  describe('apc-list', () => {
     it('reports not-found for a non-existent project', async () => {
-      const r = await call('audio_plugin_plugins',
+      const r = await call('apc-list',
         { projectPath: path.join(ROOT, 'does-not-exist') });
       const text = textOf(r);
       assert.equal(r.isError, true, `expected isError, got: ${text}`);
@@ -113,7 +166,7 @@ describe('apc-mcp MCP server', () => {
 
     it('detects an empty plugins dir', async () => {
       const dir = withProject('empty-test');
-      const r = await call('audio_plugin_plugins', { projectPath: dir });
+      const r = await call('apc-list', { projectPath: dir });
       const text = textOf(r);
       assert.equal(r.isError, false, text);
       assert.match(text, /plugins/i, `unexpected text: ${text}`);
@@ -127,7 +180,7 @@ describe('apc-mcp MCP server', () => {
       fs.writeFileSync(path.join(pluginDir, 'CMakeLists.txt'), '');
       fs.writeFileSync(path.join(pluginDir, 'status.json'), JSON.stringify({ type: 'VST3' }));
 
-      const r = await call('audio_plugin_plugins', { projectPath: dir });
+      const r = await call('apc-list', { projectPath: dir });
       const text = textOf(r);
       assert.equal(r.isError, false, text);
       assert.match(text, /MyPlugin/, `plugin not listed: ${text}`);
@@ -141,7 +194,7 @@ describe('apc-mcp MCP server', () => {
       fs.writeFileSync(path.join(pluginDir, 'CMakeLists.txt'), '');
       fs.writeFileSync(path.join(pluginDir, 'status.json'), '{ this is not json');
 
-      const r = await call('audio_plugin_plugins', { projectPath: dir, format: 'json' });
+      const r = await call('apc-list', { projectPath: dir, format: 'json' });
       const text = textOf(r);
       assert.equal(r.isError, false, `a malformed status.json must not break the listing: ${text}`);
 
@@ -160,7 +213,7 @@ describe('apc-mcp MCP server', () => {
       fs.writeFileSync(path.join(pluginDir, 'status.json'),
         JSON.stringify({ type: 'CLAP', status: 'stable' }));
 
-      const r = await call('audio_plugin_plugins', { projectPath: dir, format: 'json' });
+      const r = await call('apc-list', { projectPath: dir, format: 'json' });
       const text = textOf(r);
       assert.equal(r.isError, false, text);
 
@@ -183,13 +236,13 @@ describe('apc-mcp MCP server', () => {
       fs.writeFileSync(path.join(pluginDir, 'status.json'), JSON.stringify({ name: 'SpoofedName', type: 'VST3' }));
       fs.symlinkSync(path.join(dir, 'nonexistent-target'), path.join(dir, 'plugins', 'DanglingLink'));
 
-      const rJson = await call('audio_plugin_plugins', { projectPath: dir, format: 'json' });
+      const rJson = await call('apc-list', { projectPath: dir, format: 'json' });
       assert.equal(rJson.isError, false, textOf(rJson));
       const parsed = JSON.parse(textOf(rJson));
       assert.equal(parsed[0]?.name, 'RealName', 'status.json overwrote canonical directory name');
 
       fs.writeFileSync(path.join(pluginDir, 'status.json'), '{ broken json');
-      const rText = await call('audio_plugin_plugins', { projectPath: dir, format: 'text' });
+      const rText = await call('apc-list', { projectPath: dir, format: 'text' });
       assert.equal(rText.isError, false, textOf(rText));
       assert.match(textOf(rText), /status\.json is unreadable/, 'text mode hid statusError');
     });
@@ -210,9 +263,9 @@ describe('apc-mcp MCP server', () => {
     });
   });
 
-  describe('audio_plugin_create', () => {
+  describe('apc', () => {
     it('rejects a call with no name', async () => {
-      const r = await call('audio_plugin_create', { projectPath: ROOT });
+      const r = await call('apc', { projectPath: ROOT });
       assert.equal(r.isError, true,
         `expected rejection, got: ${JSON.stringify(r)?.slice(0, 300)}`);
       // A zod schema failure surfaces as a JSON-RPC protocol error with empty
@@ -227,7 +280,7 @@ describe('apc-mcp MCP server', () => {
 
     it('scaffolds a CLAP plugin with placeholders substituted', async () => {
       const dir = withProject('create-test');
-      const r = await call('audio_plugin_create',
+      const r = await call('apc',
         { projectPath: dir, name: 'DemoPlugin', type: 'clap', vendor: 'test' });
       const text = textOf(r);
       assert.equal(r.isError, false, text);
@@ -245,7 +298,7 @@ describe('apc-mcp MCP server', () => {
 
     it('scaffolds a JUCE plugin with the requested formats', async () => {
       const dir = withProject('create-juce');
-      const r = await call('audio_plugin_create',
+      const r = await call('apc',
         { projectPath: dir, name: 'JuceVerb', type: 'juce', vendor: 'test', formats: 'VST3;AU' });
       const text = textOf(r);
       assert.equal(r.isError, false, text);
@@ -266,7 +319,7 @@ describe('apc-mcp MCP server', () => {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'apc-mcp.json'), JSON.stringify({ config: 'Debug' }));
 
-      const r = await call('audio_plugin_create',
+      const r = await call('apc',
         { projectPath: dir, name: 'BootPlug', type: 'juce', vendor: 'test' });
       assert.equal(r.isError, false, textOf(r));
       const rootCmake = fs.readFileSync(path.join(dir, 'CMakeLists.txt'), 'utf8');
@@ -280,7 +333,7 @@ describe('apc-mcp MCP server', () => {
       const dir = withProject('cwd-test');
       fs.writeFileSync(path.join(dir, 'apc-mcp.json'), JSON.stringify({ buildDir: 'build' }));
       // No projectPath argument — the server must discover the root from its CWD.
-      const r = await call('audio_plugin_plugins', {}, { cwd: dir });
+      const r = await call('apc-list', {}, { cwd: dir });
       const text = textOf(r);
       assert.equal(r.isError, false,
         `CWD resolution failed: ${text || JSON.stringify(r)?.slice(0, 300)}`);
@@ -288,10 +341,10 @@ describe('apc-mcp MCP server', () => {
     });
   });
 
-  describe('audio_plugin_build', () => {
+  describe('apc-build', () => {
     it('rejects a missing project without creating directories', async () => {
       const missing = path.join(ROOT, 'missing-' + Date.now());
-      const r = await call('audio_plugin_build', { projectPath: missing });
+      const r = await call('apc-build', { projectPath: missing });
       const text = textOf(r);
       assert.equal(r.isError, true, `expected failure, got: ${text}`);
       assert.equal(fs.existsSync(missing), false,
@@ -305,12 +358,12 @@ describe('apc-mcp MCP server', () => {
   describe('schema/behaviour alignment (VERIFICATION-MATRIX round 2)', () => {
     it('rejects formats="CLAP" for type="clap" instead of accepting it as a silent no-op', async () => {
       const dir = withProject('create-clap-formats');
-      const r = await call('audio_plugin_create',
+      const r = await call('apc',
         { projectPath: dir, name: 'Loophole', type: 'clap', vendor: 'test', formats: 'CLAP' });
       const text = textOf(r);
       assert.equal(r.isError, true,
         `the schema says formats is rejected for clap; formats="CLAP" must be no exception: ${text}`);
-      assert.match(text, /## audio_plugin_create failed/);
+      assert.match(text, /## apc failed/);
       assert.match(text, /no\s+JUCE FORMATS list/,
         'the rejection should tell the user why formats does not apply');
       assert.equal(fs.existsSync(path.join(dir, 'plugins', 'Loophole')), false,
@@ -319,7 +372,7 @@ describe('apc-mcp MCP server', () => {
 
     it('documents the formats rejection for clap in the advertised schema', async () => {
       const tools = await listTools();
-      const create = tools.find(t => t.name === 'audio_plugin_create');
+      const create = tools.find(t => t.name === 'apc');
       const desc = create?.inputSchema?.properties?.formats?.description ?? '';
       assert.match(desc, /clap/,
         `the schema must mention that formats is rejected for clap: ${desc}`);
@@ -330,7 +383,7 @@ describe('apc-mcp MCP server', () => {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'apc-mcp.json'), '{}'); // no plugins/ directory
 
-      const r = await call('audio_plugin_plugins', { projectPath: dir, format: 'json' });
+      const r = await call('apc-list', { projectPath: dir, format: 'json' });
       const text = textOf(r);
       assert.equal(r.isError, false, text);
       let parsed;
@@ -343,7 +396,7 @@ describe('apc-mcp MCP server', () => {
       assert.equal(parsed.length, 0, 'a missing plugins directory means zero plugins, not a prose sentence');
 
       // Text mode keeps the human-readable explanation.
-      const rText = await call('audio_plugin_plugins', { projectPath: dir });
+      const rText = await call('apc-list', { projectPath: dir });
       assert.equal(rText.isError, false, textOf(rText));
       assert.match(textOf(rText), /No plugins\/ directory found in project\./);
     });

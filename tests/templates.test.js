@@ -105,7 +105,7 @@ before(async () => {
     'cmake_minimum_required(VERSION 3.22)\nproject(host)\n');
 
   for (const p of PERMUTATIONS) {
-    const r = await call('audio_plugin_create', { projectPath: PROJ, ...p, vendor: 'acme' });
+    const r = await call('apc', { projectPath: PROJ, ...p, vendor: 'acme' });
     assert.equal(r.isError, false, `scaffold ${p.name} (${p.type}/${p.ui}) failed: ${r.text}`);
     const dir = path.join(PLUGINS, p.name);
     assert.ok(fs.existsSync(dir), `scaffold did not create ${dir}`);
@@ -247,7 +247,7 @@ describe('FUNC-02/08/11/12 · JUCE templates use the real JUCE 9 CMake API', () 
     // no scheme and trips the static_assert in
     // juce_audio_plugin_client_LV2.cpp: "Your configured LV2 URI must include a
     // leading scheme specifier." That is what turned the "Scaffolded JUCE
-    // builds" and "audio_plugin_validate against real pluginval" CI jobs red:
+    // builds" and "apc-val against real pluginval" CI jobs red:
     // the LV2 target is compiled even when only the VST3 artefact is validated.
     //
     // startsWithValidScheme() accepts exactly this set of prefixes.
@@ -530,7 +530,7 @@ describe('FUNC-13/20 · CLAP template targets the modern CLAP API', () => {
     }
   });
 
-  it('emits a MODULE .clap binary/bundle into the artefacts layout audio_plugin_validate scans', () => {
+  it('emits a MODULE .clap binary/bundle into the artefacts layout apc-val scans', () => {
     for (const s of claps()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       assert.match(cm, new RegExp(`add_library\\(\\s*${s.name}\\s+MODULE\\b`),
@@ -562,7 +562,7 @@ describe('FUNC-13/20 · CLAP template targets the modern CLAP API', () => {
 // ═══════════════════════════════════════════════════════════════════
 describe('schema rejects format values JUCE cannot build', () => {
   it('rejects formats="ARA"', async () => {
-    const r = await call('audio_plugin_create',
+    const r = await call('apc',
       { projectPath: PROJ, name: 'AraNope', type: 'juce', formats: 'ARA' });
     assert.equal(r.isError, true, 'ARA is not a juce_add_plugin format');
     assert.match(r.text, /ARA/);
@@ -571,14 +571,14 @@ describe('schema rejects format values JUCE cannot build', () => {
   });
 
   it('rejects an invented format', async () => {
-    const r = await call('audio_plugin_create',
+    const r = await call('apc',
       { projectPath: PROJ, name: 'BogusFmt', type: 'juce', formats: 'VST3;NotAFormat' });
     assert.equal(r.isError, true);
     assert.match(r.text, /NotAFormat/);
   });
 
   it('accepts a valid multi-format list', async () => {
-    const r = await call('audio_plugin_create',
+    const r = await call('apc',
       { projectPath: PROJ, name: 'OkFormats', type: 'juce', formats: 'VST3;AU;Standalone' });
     assert.equal(r.isError, false, `valid formats were rejected: ${r.text}`);
     assert.ok(fs.existsSync(path.join(PLUGINS, 'OkFormats', 'CMakeLists.txt')));
@@ -586,7 +586,7 @@ describe('schema rejects format values JUCE cannot build', () => {
 
   it('type "ara" is not offered at all', async () => {
     const tools = await listTools();
-    const create = tools.find(t => t.name === 'audio_plugin_create');
+    const create = tools.find(t => t.name === 'apc');
     const allowed = create.inputSchema.properties.type.enum ?? [];
     assert.ok(!allowed.includes('ara'), `"ara" is still advertised: ${allowed.join(', ')}`);
     // Exact list on purpose: this is a snapshot of the tool's advertised schema,
@@ -764,7 +764,7 @@ describe('standalone application template (juce_add_gui_app)', () => {
 
   it('rejects a formats argument instead of silently ignoring it', async () => {
     const name = 'AppWithFormats' + Date.now().toString(36).slice(-4);
-    const r = await call('audio_plugin_create',
+    const r = await call('apc',
       { projectPath: PROJ, name, type: 'standalone', formats: 'VST3' });
     assert.equal(r.isError, true,
       'an app has no FORMATS, so the argument must be rejected rather than dropped');
@@ -1013,7 +1013,7 @@ describe('native LV2 template', () => {
     }
   });
 
-  it('emits the bundle where audio_plugin_validate scans for LV2 artefacts', () => {
+  it('emits the bundle where apc-val scans for LV2 artefacts', () => {
     for (const s of lv2Only()) {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       const expected = `plugins/${s.name}/${s.name}_artefacts/$<CONFIG>/LV2/${s.name}.lv2`;
@@ -1090,7 +1090,7 @@ describe('native LV2 template', () => {
 
   it('escapes a description that would otherwise break the Turtle literal', async () => {
     const name = 'Lv2Quote' + Date.now().toString(36).slice(-4);
-    const r = await call('audio_plugin_create', {
+    const r = await call('apc', {
       projectPath: PROJ, name, type: 'lv2', vendor: 'acme',
       description: 'A "quoted" and \\backslashed\\ description',
     });
@@ -1106,7 +1106,7 @@ describe('native LV2 template', () => {
 
   it('escapes quotes, backslashes, dollar signs, and avoids cross-variable expansion in CLAP and JUCE descriptions', async () => {
     const desc = 'A "warm" \\delay\\ with ${CMAKE_VAR} and {{VENDOR}}';
-    const rClap = await call('audio_plugin_create', {
+    const rClap = await call('apc', {
       projectPath: PROJ, name: 'ClapEscaped', type: 'clap', vendor: 'acme', description: desc,
     });
     assert.equal(rClap.isError, false, rClap.text);
@@ -1117,7 +1117,7 @@ describe('native LV2 template', () => {
     assert.ok(descLine.includes('{{VENDOR}}') && !descLine.includes('acme'),
       `replaceTemplateVars cross-expanded {{VENDOR}} inside description: ${descLine}`);
 
-    const rJuce = await call('audio_plugin_create', {
+    const rJuce = await call('apc', {
       projectPath: PROJ, name: 'JuceEscaped', type: 'juce', vendor: 'acme', description: desc,
     });
     assert.equal(rJuce.isError, false, rJuce.text);
@@ -1142,7 +1142,7 @@ describe('native LV2 template', () => {
     const read = (name, rel) => fs.readFileSync(path.join(PLUGINS, name, rel), 'utf8');
     const lineWith = (text, needle) => text.split('\n').find(l => l.includes(needle)) ?? '';
 
-    const rJuce = await call('audio_plugin_create', {
+    const rJuce = await call('apc', {
       projectPath: PROJ, name: 'MetaJuce', type: 'juce', ui: 'webview', vendor, description,
     });
     assert.equal(rJuce.isError, false, rJuce.text);
@@ -1170,7 +1170,7 @@ describe('native LV2 template', () => {
 
     // The other two grammars need their own scaffold: CLAP holds a C++ literal,
     // LV2 a Turtle one. Same input, different encodings, both must parse.
-    const rClap = await call('audio_plugin_create', {
+    const rClap = await call('apc', {
       projectPath: PROJ, name: 'MetaClap', type: 'clap', vendor, description,
     });
     assert.equal(rClap.isError, false, rClap.text);
@@ -1178,7 +1178,7 @@ describe('native LV2 template', () => {
     assert.ok(clapVendor.includes(`"ACME, Inc. & ${cxxQuote}Sons${cxxQuote}"`),
       `CLAP descriptor vendor literal was not escaped: ${clapVendor}`);
 
-    const rLv2 = await call('audio_plugin_create', {
+    const rLv2 = await call('apc', {
       projectPath: PROJ, name: 'MetaLv2', type: 'lv2', vendor, description,
     });
     assert.equal(rLv2.isError, false, rLv2.text);
@@ -1189,7 +1189,7 @@ describe('native LV2 template', () => {
 
     // Control characters stay rejected: a newline ends every one of those
     // constructs, and no amount of escaping fixes that.
-    const bad = await call('audio_plugin_create', {
+    const bad = await call('apc', {
       projectPath: PROJ, name: 'MetaBad', type: 'clap', description: 'two\nlines',
     });
     assert.equal(bad.isError, true, 'a multi-line description must be rejected');
@@ -1208,7 +1208,7 @@ describe('native LV2 template', () => {
         `${s.name}: LV2 instantiate/connect_port/run must all guard self == NULL`);
     }
 
-    const rVendor = await call('audio_plugin_create', {
+    const rVendor = await call('apc', {
       projectPath: PROJ, name: 'VendorSan', type: 'juce', vendor: 'my_vendor',
     });
     assert.equal(rVendor.isError, false, rVendor.text);
@@ -1216,7 +1216,7 @@ describe('native LV2 template', () => {
     assert.match(vendorCm, /BUNDLE_ID\s+"com\.my-vendor\.VendorSan"/,
       `CFBundleIdentifier must not contain underscores: ${vendorCm}`);
 
-    const rLv2Short = await call('audio_plugin_create', {
+    const rLv2Short = await call('apc', {
       projectPath: PROJ, name: 'ShortNid', type: 'lv2', vendor: 'x',
     });
     assert.equal(rLv2Short.isError, false, rLv2Short.text);
@@ -1224,7 +1224,7 @@ describe('native LV2 template', () => {
     const nid = ttl.match(/^<urn:([a-z0-9]+):ShortNid>$/m)?.[1] ?? '';
     assert.ok(nid.length >= 2, `RFC 8141 requires URN NID length >= 2, got "${nid}"`);
 
-    const rClapFmt = await call('audio_plugin_create', {
+    const rClapFmt = await call('apc', {
       projectPath: PROJ, name: 'ClapBadFmt', type: 'clap', formats: 'VST3',
     });
     assert.equal(rClapFmt.isError, true, 'type="clap" must reject non-CLAP formats');
@@ -1246,7 +1246,7 @@ describe('native LV2 template', () => {
       'ui changed the file set for a native LV2 plugin');
 
     const name = 'Lv2WithFormats' + Date.now().toString(36).slice(-4);
-    const r = await call('audio_plugin_create',
+    const r = await call('apc',
       { projectPath: PROJ, name, type: 'lv2', formats: 'VST3' });
     assert.equal(r.isError, true, 'a native LV2 plugin has no JUCE FORMATS list');
     assert.match(r.text, /lv2/i, r.text);
@@ -1257,10 +1257,10 @@ describe('native LV2 template', () => {
   });
 
   it('NODE-03: fourCharCode guarantees >=1 uppercase letter for digit-leading vendors and distinct PLUGIN_CODEs for shared prefixes', async () => {
-    const rLead = await call('audio_plugin_create', {
+    const rLead = await call('apc', {
       projectPath: PROJ, name: 'MySynthLead', type: 'juce', vendor: '112dB',
     });
-    const rPad = await call('audio_plugin_create', {
+    const rPad = await call('apc', {
       projectPath: PROJ, name: 'MySynthPad', type: 'juce', vendor: '1010',
     });
     assert.equal(rLead.isError, false, rLead.text);
@@ -1336,7 +1336,7 @@ describe('native LV2 template', () => {
     const customProj = fs.mkdtempSync(path.join(os.tmpdir(), 'apc-custom-pluginsdir-'));
     try {
       fs.writeFileSync(path.join(customProj, 'apc-mcp.json'), JSON.stringify({ pluginsDir: 'modules/audio' }));
-      const rClap = await call('audio_plugin_create', {
+      const rClap = await call('apc', {
         projectPath: customProj, name: 'CustomClap', type: 'clap',
       });
       assert.equal(rClap.isError, false, rClap.text);

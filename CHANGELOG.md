@@ -16,7 +16,6 @@
 > 2. `engines.node` is now `>=22`. Node 18 ended 2025-04-30 and Node 20 ended
 >    2026-04-30, so neither receives security patches. Installations still on
 >    Node 20 must upgrade.
->
 > The version now lives **only** in `package.json`; `index.js` reads it at startup
 > (OPS-03), so the two cannot drift. Several tools also now return `isError` in
 > cases where they previously reported success — see *Tool output & failure
@@ -24,6 +23,13 @@
 >
 > `audio_plugin_create` also **gains** `type: "standalone"` and `type: "lv2"` —
 > additive enum values, not breaking ones.
+
+### Tool names
+
+- The short names are canonical and preferred: `apc`, `apc-add-param`, `apc-ship`,
+  `apc-doctor`, `apc-cfg`, `apc-build`, `apc-test`, `apc-lint`, `apc-val`, and
+  `apc-list`. The previous `audio_plugin_*` names are registered as deprecated
+  compatibility aliases and share the canonical handlers.
 
 ### Security
 

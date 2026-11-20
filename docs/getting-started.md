@@ -82,12 +82,12 @@ Installed SDKs work too: CLAP via `clap-config.cmake` on `CMAKE_PREFIX_PATH`, JU
 Ask your agent, or call the tools directly:
 
 ```text
-audio_plugin_create(projectPath="/path/to/my-plugins", name="MyGain", type="clap", vendor="Acme")
-audio_plugin_build(projectPath="/path/to/my-plugins", config="Release")
-audio_plugin_validate(projectPath="/path/to/my-plugins", format="CLAP")
+apc(projectPath="/path/to/my-plugins", name="MyGain", type="clap", vendor="Acme")
+apc-build(projectPath="/path/to/my-plugins", config="Release")
+apc-val(projectPath="/path/to/my-plugins", format="CLAP")
 ```
 
-`audio_plugin_create` writes `plugins/MyGain/` and registers `add_subdirectory(plugins/MyGain)` in the root `CMakeLists.txt` (creating a minimal one if you started from `apc-mcp.json` alone). `audio_plugin_build` auto-configures `build/` on first use.
+`apc` writes `plugins/MyGain/` and registers `add_subdirectory(plugins/MyGain)` in the root `CMakeLists.txt` (creating a minimal one if you started from `apc-mcp.json` alone). `apc-build` auto-configures `build/` on first use.
 
 Artefacts land under `build/plugins/<Name>/<Name>_artefacts/<Config>/`:
 
@@ -100,7 +100,7 @@ Artefacts land under `build/plugins/<Name>/<Name>_artefacts/<Config>/`:
 
 Builds never copy into your system plug-in folders (`COPY_PLUGIN_AFTER_BUILD FALSE`); copy or symlink the artefact into your DAW's scan path when you are ready.
 
-`audio_plugin_validate` needs `clap-validator` for CLAP and `pluginval` for VST3. LV2, AudioUnit and Standalone artefacts are found but reported as **`NOT CHECKABLE`**: no validator exists for them, so they are not silently counted as passing, and they do not fail the run. See [Tool reference](tools.md#audio_plugin_validate).
+`apc-val` needs `clap-validator` for CLAP and `pluginval` for VST3. LV2, AudioUnit and Standalone artefacts are found but reported as **`NOT CHECKABLE`**: no validator exists for them, so they are not silently counted as passing, and they do not fail the run. See [Tool reference](tools.md#apc-val).
 
 ## Where to go next
 

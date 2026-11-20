@@ -30,26 +30,30 @@ describe('MCP Prompts (`prompts/list` & `prompts/get` native slash commands)', (
 
     // 1. apc:new — name (required), style (optional)
     const pNew = byName['apc:new'];
-    assert.ok(pNew.description, 'apc:new must have a description');
+    assert.match(pNew.description, /apc-doctor.*\bapc\b/,
+      'apc:new description must map to apc-doctor and apc');
     const newArgs = Object.fromEntries((pNew.arguments ?? []).map(a => [a.name, a]));
     assert.equal(newArgs.name?.required, true, 'apc:new argument "name" must be required');
     assert.equal(newArgs.style?.required, false, 'apc:new argument "style" must be optional');
 
     // 2. apc:ui — design (required)
     const pUi = byName['apc:ui'];
-    assert.ok(pUi.description, 'apc:ui must have a description');
+    assert.match(pUi.description, /apc-add-param/,
+      'apc:ui description must map to apc-add-param');
     const uiArgs = Object.fromEntries((pUi.arguments ?? []).map(a => [a.name, a]));
     assert.equal(uiArgs.design?.required, true, 'apc:ui argument "design" must be required');
 
     // 3. apc:ship — version (optional)
     const pShip = byName['apc:ship'];
-    assert.ok(pShip.description, 'apc:ship must have a description');
+    assert.match(pShip.description, /apc-ship/,
+      'apc:ship description must map to apc-ship');
     const shipArgs = Object.fromEntries((pShip.arguments ?? []).map(a => [a.name, a]));
     assert.equal(shipArgs.version?.required, false, 'apc:ship argument "version" must be optional');
 
     // 4. apc:doctor — no required arguments
     const pDoc = byName['apc:doctor'];
-    assert.ok(pDoc.description, 'apc:doctor must have a description');
+    assert.match(pDoc.description, /apc-doctor/,
+      'apc:doctor description must map to apc-doctor');
     assert.equal((pDoc.arguments ?? []).filter(a => a.required).length, 0,
       'apc:doctor must have zero required arguments');
   });
@@ -61,8 +65,8 @@ describe('MCP Prompts (`prompts/list` & `prompts/get` native slash commands)', (
     assert.equal(r.messages[0].role, 'user');
     assert.equal(r.messages[0].content?.type, 'text');
 
-    assert.match(r.text, /audio_plugin_doctor/, 'apc:new must instruct calling audio_plugin_doctor if cache is cold');
-    assert.match(r.text, /audio_plugin_create/, 'apc:new must instruct calling audio_plugin_create');
+    assert.match(r.text, /apc-doctor/, 'apc:new must instruct calling apc-doctor if cache is cold');
+    assert.match(r.text, /apc/, 'apc:new must instruct calling apc');
     assert.match(r.text, /TapeSaturation/, 'apc:new must embed the requested plugin name');
     assert.match(r.text, /type="juce"/, 'apc:new must specify type="juce"');
     assert.match(r.text, /ui="jive"/, 'apc:new must specify ui="jive"');
@@ -74,7 +78,7 @@ describe('MCP Prompts (`prompts/list` & `prompts/get` native slash commands)', (
     assert.equal(r.text, r2.text, 'apc:new rendering must be deterministic');
   });
 
-  it('prompts/get("apc:ui") renders instructions for MainView.xml, Styles.json, PluginProcessor.cpp, audio_plugin_add_param, Source/UI/Presets/, and Debug compile check', async () => {
+  it('prompts/get("apc:ui") renders instructions for MainView.xml, Styles.json, PluginProcessor.cpp, apc-add-param, Source/UI/Presets/, and Debug compile check', async () => {
     const design = 'Add a vintage drive knob (0 to 24 dB) and output trim slider';
     const r = await getPrompt('apc:ui', { design });
     assert.equal(r.isError, false, `prompts/get apc:ui failed: ${JSON.stringify(r.protocolError)}`);
@@ -85,7 +89,7 @@ describe('MCP Prompts (`prompts/list` & `prompts/get` native slash commands)', (
     assert.match(r.text, /Source\/UI\/MainView\.xml/, 'apc:ui must reference Source/UI/MainView.xml');
     assert.match(r.text, /Source\/UI\/Styles\.json/, 'apc:ui must reference Source/UI/Styles.json');
     assert.match(r.text, /Source\/PluginProcessor\.cpp/, 'apc:ui must reference Source/PluginProcessor.cpp');
-    assert.match(r.text, /audio_plugin_add_param/, 'apc:ui must instruct using audio_plugin_add_param');
+    assert.match(r.text, /apc-add-param/, 'apc:ui must instruct using apc-add-param');
     assert.match(r.text, /Source\/UI\/Presets\//, 'apc:ui must reference Source/UI/Presets/ primitives');
     assert.match(r.text, /Debug/i, 'apc:ui must instruct running a Debug compile check for hot-reload readiness');
   });
@@ -94,7 +98,7 @@ describe('MCP Prompts (`prompts/list` & `prompts/get` native slash commands)', (
     const rDefault = await getPrompt('apc:ship', {});
     assert.equal(rDefault.isError, false, `prompts/get apc:ship failed: ${JSON.stringify(rDefault.protocolError)}`);
     assert.match(rDefault.text, /0\.1\.0/, 'apc:ship must default version to "0.1.0" when omitted');
-    assert.match(rDefault.text, /audio_plugin_ship/, 'apc:ship must instruct calling audio_plugin_ship');
+    assert.match(rDefault.text, /apc-ship/, 'apc:ship must instruct calling apc-ship');
     assert.match(rDefault.text, /installLocal\s*[:=]\s*true/i, 'apc:ship must pass installLocal=true');
     assert.match(rDefault.text, /3 times/i, 'apc:ship must instruct retrying/self-healing up to 3 times');
     assert.match(rDefault.text, /dist\//, 'apc:ship must mention reporting the final dist/ path');
@@ -105,12 +109,12 @@ describe('MCP Prompts (`prompts/list` & `prompts/get` native slash commands)', (
     assert.match(rCustom.text, /2\.4\.0/, 'apc:ship must use explicit version when provided');
   });
 
-  it('prompts/get("apc:doctor") renders instructions to run audio_plugin_doctor and output a readiness matrix', async () => {
+  it('prompts/get("apc:doctor") renders instructions to run apc-doctor and output a readiness matrix', async () => {
     const r = await getPrompt('apc:doctor');
     assert.equal(r.isError, false, `prompts/get apc:doctor failed: ${JSON.stringify(r.protocolError)}`);
     assert.equal(r.messages[0]?.role, 'user');
     assert.equal(r.messages[0]?.content?.type, 'text');
-    assert.match(r.text, /audio_plugin_doctor/, 'apc:doctor must instruct calling audio_plugin_doctor');
+    assert.match(r.text, /apc-doctor/, 'apc:doctor must instruct calling apc-doctor');
     assert.match(r.text, /\.apc-mcp\/deps|cache/i, 'apc:doctor must mention resolving missing cache directories');
     assert.match(r.text, /readiness matrix/i, 'apc:doctor must instruct outputting a concise readiness matrix');
   });

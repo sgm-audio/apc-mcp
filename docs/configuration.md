@@ -19,14 +19,14 @@ Drop this file in your project root to set defaults. Every key is optional; unkn
 
 | Key | Default | Allowed values | Used by |
 |---|---|---|---|
-| `generator` | `Unix Makefiles` on POSIX, CMake's platform default on Windows | CMake generator name | `configure` |
-| `config` | `Debug` | `Debug`, `Release` | `configure`, `build`, `test`, `validate` |
-| `buildDir` | `build` | Relative path, no `..` | `configure`, `build`, `test`, `validate` |
-| `pluginsDir` | `plugins` | Relative path, no `..` | `create`, `plugins`, `validate` |
-| `validateFormats` | `["VST3", "CLAP"]` | Non-empty array of `VST3`, `CLAP`, `LV2`, `AudioUnit`, `Standalone` | `validate(format="all")` |
-| `validateCommand` | `pluginval` | Binary name (no path separators) | `validate` on VST3 |
-| `clapValidatorCommand` | `clap-validator` | Binary name (no path separators) | `validate` on CLAP |
-| `strictnessLevel` | `10` | Integer 1-10 (pluginval's own scale) | `validate` on VST3 |
+| `generator` | `Unix Makefiles` on POSIX, CMake's platform default on Windows | CMake generator name | `apc-cfg` |
+| `config` | `Debug` | `Debug`, `Release` | `apc-cfg`, `apc-build`, `apc-test`, `apc-val` |
+| `buildDir` | `build` | Relative path, no `..` | `apc-cfg`, `apc-build`, `apc-test`, `apc-val` |
+| `pluginsDir` | `plugins` | Relative path, no `..` | `apc`, `apc-list`, `apc-val` |
+| `validateFormats` | `["VST3", "CLAP"]` | Non-empty array of `VST3`, `CLAP`, `LV2`, `AudioUnit`, `Standalone` | `apc-val(format="all")` |
+| `validateCommand` | `pluginval` | Binary name (no path separators) | `apc-val` on VST3 |
+| `clapValidatorCommand` | `clap-validator` | Binary name (no path separators) | `apc-val` on CLAP |
+| `strictnessLevel` | `10` | Integer 1-10 (pluginval's own scale) | `apc-val` on VST3 |
 
 Precedence for `config` and `generator`: explicit tool argument → `apc-mcp.json` → built-in default. Binary names are resolved via `PATH`, never executed as paths — see [Security](security.md#residual-risk).
 
@@ -45,7 +45,7 @@ This is why an empty folder is refused rather than created: a typo'd or attacker
 ```text
 my-plugin/
 ├── apc-mcp.json             # Optional per-project config AND a root marker
-├── CMakeLists.txt           # Root CMake project (created by audio_plugin_create if absent)
+├── CMakeLists.txt           # Root CMake project (created by apc if absent)
 ├── _tools/                  # Optional vendored SDKs: JUCE/, clap/, lv2/
 ├── plugins/
 │   ├── MyPlugin/
@@ -57,12 +57,12 @@ my-plugin/
 └── build/                   # Auto-created build tree
 ```
 
-`status.json` is read by `audio_plugin_plugins` and written by **no tool** — there
-is no `audio_plugin_*` call that creates or edits it. Write it yourself (keys:
+`status.json` is read by `apc-list` and written by **no tool** — there
+is no `apc` / `apc-*` call that creates or edits it. Write it yourself (keys:
 `name`, `version`, `description`, `formats`, `status`, `notes`) when you want the
 listing to show metadata that the CMake targets do not carry.
 
-With `apc-mcp.json` present, `projectPath` is optional for every tool — useful when the MCP client starts the server inside the project. `audio_plugin_create` appends `add_subdirectory(plugins/<Name>)` to the root `CMakeLists.txt` (creating it with `cmake_minimum_required(VERSION 3.22)` and `project(AudioPlugins LANGUAGES C CXX)` when it is missing). It will not touch a symlinked root `CMakeLists.txt`.
+With `apc-mcp.json` present, `projectPath` is optional for every tool — useful when the MCP client starts the server inside the project. `apc` appends `add_subdirectory(plugins/<Name>)` to the root `CMakeLists.txt` (creating it with `cmake_minimum_required(VERSION 3.22)` and `project(AudioPlugins LANGUAGES C CXX)` when it is missing). It will not touch a symlinked root `CMakeLists.txt`.
 
 ## SDK-related CMake variables and environment variables
 

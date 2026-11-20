@@ -7,7 +7,7 @@
 | Category | Requirement | Used by |
 |---|---|---|
 | Runtime | [Node.js 22+](https://nodejs.org/) | The MCP server itself (Node 18 and 20 are EOL) |
-| Build | [CMake 3.22+](https://cmake.org/download/) (`cmake`, `ctest`) | `configure`, `build`, `test` — templates require `cmake_minimum_required(VERSION 3.22)` |
+| Build | [CMake 3.22+](https://cmake.org/download/) (`cmake`, `ctest`) | `apc-cfg`, `apc-build`, `apc-test` — templates require `cmake_minimum_required(VERSION 3.22)` |
 | Build | Optional [Ninja](https://ninja-build.org/) | Faster parallel builds via `generator="Ninja"` |
 | Compiler | C11 / C++20 toolchain — Xcode Command Line Tools (macOS), Visual Studio Build Tools (Windows), GCC or [Clang](https://llvm.org/) (Linux) | Compiling scaffolded plugins |
 
@@ -15,14 +15,14 @@ Optional tools, needed only for the matching tool call:
 
 | Binary | Needed for | Install hint |
 |---|---|---|
-| [clang-format](https://clang.llvm.org/docs/ClangFormat.html) | `audio_plugin_lint` | `brew install clang-format` / `apt install clang-format` |
-| [pluginval](https://github.com/Tracktion/pluginval/releases) | `audio_plugin_validate` on VST3 | Tracktion releases |
-| [clap-validator](https://github.com/free-audio/clap-validator/releases) | `audio_plugin_validate` on CLAP | free-audio releases |
+| [clang-format](https://clang.llvm.org/docs/ClangFormat.html) | `apc-lint` | `brew install clang-format` / `apt install clang-format` |
+| [pluginval](https://github.com/Tracktion/pluginval/releases) | `apc-val` on VST3 | Tracktion releases |
+| [clap-validator](https://github.com/free-audio/clap-validator/releases) | `apc-val` on CLAP | free-audio releases |
 
 If a binary is missing, the tool names it, explains what it is for and prints an install hint instead of failing with an opaque exit code:
 
 ```text
-## audio_plugin_configure failed
+## apc-cfg failed
 'cmake' not found on PATH (needed for build/configure).
   Install: brew install cmake / apt install cmake / https://cmake.org/download
 ```
@@ -47,10 +47,10 @@ git clone --depth 1 https://github.com/free-audio/clap.git _tools/clap
 # git clone --depth 1 https://github.com/lv2/lv2.git _tools/lv2
 ```
 
-Or pass flags to `audio_plugin_configure`:
+Or pass flags to `apc-cfg`:
 
 ```text
-audio_plugin_configure(options="-DJUCE_DIR=/path/to/JUCE -DJIVE_DIR=/path/to/JIVE -DLV2_INCLUDE_DIR=/path/to/lv2/include")
+apc-cfg(options="-DJUCE_DIR=/path/to/JUCE -DJIVE_DIR=/path/to/JIVE -DLV2_INCLUDE_DIR=/path/to/lv2/include")
 ```
 
 ## Platform notes
@@ -65,11 +65,11 @@ audio_plugin_configure(options="-DJUCE_DIR=/path/to/JUCE -DJIVE_DIR=/path/to/JIV
 
 ## Good-to-know quirks
 
-- **Empty folders are rejected on purpose.** Every tool needs `<project>/apc-mcp.json` or `<project>/CMakeLists.txt` first, so a typo'd `projectPath` cannot write outside a real project. `audio_plugin_create` creates a minimal root `CMakeLists.txt` when only `apc-mcp.json` exists.
+- **Empty folders are rejected on purpose.** Every tool needs `<project>/apc-mcp.json` or `<project>/CMakeLists.txt` first, so a typo'd `projectPath` cannot write outside a real project. `apc` creates a minimal root `CMakeLists.txt` when only `apc-mcp.json` exists.
 - **`_tools/` is looked up from the project root first.** Each template checks `${CMAKE_SOURCE_DIR}/_tools/…` before its legacy two-directories-up fallback, so a custom or deeper `pluginsDir` in `apc-mcp.json` no longer breaks SDK discovery. If you keep SDKs somewhere else entirely, pass `-DJUCE_DIR=…` / `-DLV2_INCLUDE_DIR=…` or `add_subdirectory()` them from your root `CMakeLists.txt`.
 - **System plug-in folders are never modified.** JUCE templates set `COPY_PLUGIN_AFTER_BUILD FALSE`, so builds cannot silently overwrite `~/Library/Audio/Plug-Ins` or fail on CI permissions. Copy from `<build>/plugins/<Name>/<Name>_artefacts/<Config>/` when ready.
 - **Two different LV2 paths.** `type="lv2"` scaffolds a zero-dependency **pure C11** plugin (`<Name>.so` inside `<Name>.lv2/`, matching `manifest.ttl` on every platform). `type="juce"` builds a **C++ JUCE** plugin through JUCE's LV2 wrapper. They are unrelated implementations, but they share one identity rule: for the same `vendor` and `name`, both use the sanitized `urn:<vendor>:<plugin>` URI, and the JUCE templates pass it as `LV2URI` explicitly rather than letting JUCE derive one from a `COMPANY_WEBSITE` the templates deliberately do not invent. Treat that URI as permanent — hosts store it with saved sessions.
 - **`type="standalone"` ≠ `formats="Standalone"`.** The former scaffolds a standalone GUI audio *application* via `juce_add_gui_app` and rejects a `formats` argument. For a DAW plugin plus a standalone wrapper, use `type="juce"` with `formats="VST3;Standalone"`.
-- **Validator coverage.** `pluginval` runs on VST3 and `clap-validator` on CLAP. LV2, AudioUnit and Standalone artefacts are discovered and reported **`NOT CHECKABLE`** — no validator exists for them, so nothing is attempted and the run is not marked as failed. A configured-but-missing validator (e.g. `clap-validator` not on `PATH`) is a different thing: that is a real `isError: true`. See [`audio_plugin_validate`](tools.md#audio_plugin_validate).
-- **Single- vs multi-config CMake trees.** `audio_plugin_build` auto-configures `build/` on first run and regenerates single-config caches when the requested `config` differs from `CMAKE_BUILD_TYPE`; multi-config generators receive `--config` at build time.
-- **Scaffolding is not installing.** `audio_plugin_create` reports success as soon as the files and root CMake registration exist. Building still needs the matching SDK; the generated `CMakeLists.txt` fails early with a readable message if it cannot find it.
+- **Validator coverage.** `pluginval` runs on VST3 and `clap-validator` on CLAP. LV2, AudioUnit and Standalone artefacts are discovered and reported **`NOT CHECKABLE`** — no validator exists for them, so nothing is attempted and the run is not marked as failed. A configured-but-missing validator (e.g. `clap-validator` not on `PATH`) is a different thing: that is a real `isError: true`. See [`apc-val`](tools.md#apc-val).
+- **Single- vs multi-config CMake trees.** `apc-build` auto-configures `build/` on first run and regenerates single-config caches when the requested `config` differs from `CMAKE_BUILD_TYPE`; multi-config generators receive `--config` at build time.
+- **Scaffolding is not installing.** `apc` reports success as soon as the files and root CMake registration exist. Building still needs the matching SDK; the generated `CMakeLists.txt` fails early with a readable message if it cannot find it.

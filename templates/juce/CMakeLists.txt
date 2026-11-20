@@ -118,7 +118,7 @@ juce_add_plugin({{PLUGIN_NAME}}
     # website, that default is "/plugins/{{PLUGIN_ID}}" — no scheme — and JUCE's LV2
     # wrapper refuses to compile it: "Your configured LV2 URI must include a
     # leading scheme specifier". Set it explicitly, using the same `urn:` identity
-    # the native LV2 template uses (`audio_plugin_create type="lv2"`), so both LV2
+    # the native LV2 template uses (`apc type="lv2"`), so both LV2
     # outputs of the scaffolder share one naming scheme.
     #
     # Treat this as permanent: hosts store the URI in saved sessions, and changing

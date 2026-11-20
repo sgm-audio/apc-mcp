@@ -1,39 +1,39 @@
 # Tool reference
 
-apc-mcp registers **ten** MCP tools and **four** native MCP Prompts (`prompts/list` & `prompts/get` slash commands). All tools accept an optional `projectPath`; when omitted, the server walks up from its working directory (max 20 levels) looking for `apc-mcp.json` or `CMakeLists.txt`. A project root must exist and carry one of those markers — see [Configuration](configuration.md#project-root-detection).
+apc-mcp registers **ten** canonical MCP tools plus deprecated `audio_plugin_*` compatibility aliases, and **four** native MCP Prompts (`prompts/list` & `prompts/get` slash commands). Use the short names in new clients and workflows; aliases delegate to the same schemas and handlers. All tools accept an optional `projectPath`; when omitted, the server walks up from its working directory (max 20 levels) looking for `apc-mcp.json` or `CMakeLists.txt`. A project root must exist and carry one of those markers — see [Configuration](configuration.md#project-root-detection).
 
-Tools fail **honestly**: if the underlying command failed, emitted compiler errors, had failing tests, or a build/test step had to be skipped, the result carries `isError: true` and says why. A skipped validation is never reported as a clean one, and a check that was never attempted is reported as `NOT CHECKABLE` rather than passed off as success (see [`audio_plugin_validate`](#audio_plugin_validate)).
+Tools fail **honestly**: if the underlying command failed, emitted compiler errors, had failing tests, or a build/test step had to be skipped, the result carries `isError: true` and says why. A skipped validation is never reported as a clean one, and a check that was never attempted is reported as `NOT CHECKABLE` rather than passed off as success (see [`apc-val`](#apc-val)).
 
 | Tool | What it runs | Key arguments |
 |---|---|---|
-| [`audio_plugin_create`](#audio_plugin_create) | Copies a scaffold from `templates/` (defaults to `type="juce"`, `ui="jive"`, `style="fx"`) | `name`, `type`, `ui`, `style`, `formats`, `vendor`, `description` |
-| [`audio_plugin_add_param`](#audio_plugin_add_param) | Atomically updates C++ APVTS + `MainView.xml` + `Styles.json` | `pluginName`, `id`, `name`, `min`, `max`, `default`, `unit`, `controlType` |
-| [`audio_plugin_ship`](#audio_plugin_ship) | `Release Build → Lint → pluginval (strictness 5) → dist/ Package → Local Install` | `version`, `installLocal` |
-| [`audio_plugin_doctor`](#audio_plugin_doctor) | Diagnoses CMake, C++20 compiler, JUCE, JIVE, `pluginval`, `~/.apc-mcp/deps/`, and OS plugin directories | `projectPath` |
-| [`audio_plugin_configure`](#audio_plugin_configure) | `cmake -B …` | `generator`, `options`, `config` |
-| [`audio_plugin_build`](#audio_plugin_build) | `cmake --build …` (auto-configures first) | `config`, `target`, `clean` |
-| [`audio_plugin_test`](#audio_plugin_test) | `ctest` | `config`, `testName` |
-| [`audio_plugin_lint`](#audio_plugin_lint) | `clang-format` (dry-run by default) | `fix`, `target` |
-| [`audio_plugin_plugins`](#audio_plugin_plugins) | Reads the `plugins/` tree | `format` |
-| [`audio_plugin_validate`](#audio_plugin_validate) | `pluginval` / `clap-validator` | `config`, `format` |
+| [`apc`](#apc) | Copies a scaffold from `templates/` (defaults to `type="juce"`, `ui="jive"`, `style="fx"`) | `name`, `type`, `ui`, `style`, `formats`, `vendor`, `description` |
+| [`apc-add-param`](#apc-add-param) | Atomically updates C++ APVTS + `MainView.xml` + `Styles.json` | `pluginName`, `id`, `name`, `min`, `max`, `default`, `unit`, `controlType` |
+| [`apc-ship`](#apc-ship) | `Release Build → Lint → pluginval (strictness 5) → dist/ Package → Local Install` | `version`, `installLocal` |
+| [`apc-doctor`](#apc-doctor) | Diagnoses CMake, C++20 compiler, JUCE, JIVE, `pluginval`, `~/.apc-mcp/deps/`, and OS plugin directories | `projectPath` |
+| [`apc-cfg`](#apc-cfg) | `cmake -B …` | `generator`, `options`, `config` |
+| [`apc-build`](#apc-build) | `cmake --build …` (auto-configures first) | `config`, `target`, `clean` |
+| [`apc-test`](#apc-test) | `ctest` | `config`, `testName` |
+| [`apc-lint`](#apc-lint) | `clang-format` (dry-run by default) | `fix`, `target` |
+| [`apc-list`](#apc-list) | Reads the `plugins/` tree | `format` |
+| [`apc-val`](#apc-val) | `pluginval` / `clap-validator` | `config`, `format` |
 
-`configure`, `build`, `test` and `lint` work with **any CMake-based C/C++ project**, not just the scaffolds this server generates. Only `create`, `add_param`, `ship`, and `validate` are plugin-format-specific.
+`apc-cfg`, `apc-build`, `apc-test` and `apc-lint` work with **any CMake-based C/C++ project**, not just the scaffolds this server generates. Only `apc`, `apc-add-param`, `apc-ship`, and `apc-val` are plugin-format-specific.
 
 ### Native MCP Slash Commands (`prompts/list` & `prompts/get`)
 
 | Prompt | Arguments | Workflow |
 |---|---|---|
-| `apc:new` | `name` *(required)*, `style` *(optional: `fx` \| `synth` \| `utility`)* | Runs `audio_plugin_doctor` if cache is cold, scaffolds `type="juce", ui="jive"`, and summarizes APVTS parameters and Debug hot-reload paths. |
-| `apc:ui` | `design` *(required)* | Reads `Source/UI/MainView.xml`, `Source/UI/Styles.json`, and `Source/PluginProcessor.cpp`, adds parameters via `audio_plugin_add_param`, updates JIVE layout/styles using `Source/UI/Presets/` primitives, and runs a `Debug` compile check. |
-| `apc:ship` | `version` *(optional, default `"0.1.0"`)* | Runs `audio_plugin_ship(installLocal=true)` and self-heals C++/XML/JSON errors up to 3 times before reporting the `dist/` path and DAW rescan instructions. |
-| `apc:doctor` | *(none)* | Runs `audio_plugin_doctor`, initializes `~/.apc-mcp/deps/`, and outputs a concise readiness matrix. |
+| `apc:new` | `name` *(required)*, `style` *(optional: `fx` \| `synth` \| `utility`)* | Runs `apc-doctor` if cache is cold, then `apc` scaffolds `type="juce", ui="jive"`, and summarizes APVTS parameters and Debug hot-reload paths. |
+| `apc:ui` | `design` *(required)* | Uses `apc-add-param` to add parameters, updates JIVE layout/styles using `Source/UI/Presets/` primitives, and runs a `Debug` compile check. |
+| `apc:ship` | `version` *(optional, default `"0.1.0"`)* | Runs `apc-ship(installLocal=true)` and self-heals C++/XML/JSON errors up to 3 times before reporting the `dist/` path and DAW rescan instructions. |
+| `apc:doctor` | *(none)* | Runs `apc-doctor`, initializes `~/.apc-mcp/deps/`, and outputs a concise readiness matrix. |
 
-### audio_plugin_configure
+### apc-cfg
 
 ```text
-audio_plugin_configure()
-audio_plugin_configure(generator="Ninja")
-audio_plugin_configure(options="-DJUCE_DIR=/path/to/JUCE -DLV2_INCLUDE_DIR=/path/to/lv2/include")
+apc-cfg()
+apc-cfg(generator="Ninja")
+apc-cfg(options="-DJUCE_DIR=/path/to/JUCE -DLV2_INCLUDE_DIR=/path/to/lv2/include")
 ```
 
 | Argument | Type / default | Notes |
@@ -48,14 +48,14 @@ Separate flags with `;` when a value itself contains a space:
 string still works for the common case, but it cannot tell `-DNAME=a b` from
 two flags, so it splits there — use `;` whenever a value has a space in it.
 
-A `generator` you pass explicitly is always forwarded as `-G`, including onto an existing cache — that is how you switch generators on purpose. Only the *default* (`Unix Makefiles` on POSIX, CMake's platform default on Windows) is suppressed when `CMakeCache.txt` already exists, because re-issuing it onto a cache built with a different generator makes CMake abort with a generator mismatch. `audio_plugin_build` applies the same rule when it auto-configures.
+A `generator` you pass explicitly is always forwarded as `-G`, including onto an existing cache — that is how you switch generators on purpose. Only the *default* (`Unix Makefiles` on POSIX, CMake's platform default on Windows) is suppressed when `CMakeCache.txt` already exists, because re-issuing it onto a cache built with a different generator makes CMake abort with a generator mismatch. `apc-build` applies the same rule when it auto-configures.
 
-### audio_plugin_build
+### apc-build
 
 ```text
-audio_plugin_build()
-audio_plugin_build(config="Release", clean=true)
-audio_plugin_build(target="MyPlugin_Standalone")
+apc-build()
+apc-build(config="Release", clean=true)
+apc-build(target="MyPlugin_Standalone")
 ```
 
 | Argument | Type / default | Notes |
@@ -67,11 +67,11 @@ audio_plugin_build(target="MyPlugin_Standalone")
 
 Returns structured output with error and warning counts plus the first 20 of each. It configures `build/` automatically when the cache is missing, and reconfigures **single-config** caches (Ninja / Unix Makefiles) when you switch `Debug` ↔ `Release`. Multi-config generators simply receive `--config`.
 
-### audio_plugin_test
+### apc-test
 
 ```text
-audio_plugin_test()
-audio_plugin_test(config="Release", testName="MyPluginTest.*")
+apc-test()
+apc-test(config="Release", testName="MyPluginTest.*")
 ```
 
 | Argument | Type / default | Notes |
@@ -82,12 +82,12 @@ audio_plugin_test(config="Release", testName="MyPluginTest.*")
 
 Returns pass / failed / total. If ctest's output cannot be parsed, the tool says so instead of inventing counts.
 
-### audio_plugin_lint
+### apc-lint
 
 ```text
-audio_plugin_lint()
-audio_plugin_lint(fix=true)
-audio_plugin_lint(target="plugins/Foo/Source")
+apc-lint()
+apc-lint(fix=true)
+apc-lint(target="plugins/Foo/Source")
 ```
 
 | Argument | Type / default | Notes |
@@ -98,23 +98,23 @@ audio_plugin_lint(target="plugins/Foo/Source")
 
 `target` is containment-checked: `..` segments, absolute paths outside the project, and symlinks escaping the project are rejected. Directory walks skip the build tree, `_tools/`, `node_modules/`, `CMakeFiles/` and `_deps/`. Requires `clang-format`.
 
-### audio_plugin_plugins
+### apc-list
 
 ```text
-audio_plugin_plugins()
-audio_plugin_plugins(format="json")
+apc-list()
+apc-list(format="json")
 ```
 
 Lists directories under the configured `pluginsDir` that contain a `CMakeLists.txt`, with optional `status.json` metadata. `format` is `text` (default) or `json`. `json` always returns a parseable array — `[]` when the plugins directory does not exist or holds no plugins; the prose explanations (`No plugins/ directory found…`) are text-mode only. Symlinked `status.json` files are refused.
 
 `status.json` is **user-authored**: no tool creates or edits it, so a plugin without one simply has no metadata beyond what is on disk. See the layout note in [configuration](configuration.md).
 
-### audio_plugin_validate
+### apc-val
 
 ```text
-audio_plugin_validate()
-audio_plugin_validate(format="VST3")
-audio_plugin_validate(format="CLAP")
+apc-val()
+apc-val(format="VST3")
+apc-val(format="CLAP")
 ```
 
 | Argument | Type / default | Notes |
@@ -143,16 +143,16 @@ The third row is the important one: telling a user to "install the missing valid
 
 `format` accepts every member of the artefact enum — `VST3`, `CLAP`, `LV2`, `AudioUnit`, `Standalone`, `all` — even where no validator exists, so asking about a format is never itself an error.
 
-### audio_plugin_create
+### apc
 
 ```text
-audio_plugin_create(name="TapeEcho")
-audio_plugin_create(name="PolyLead", style="synth", vendor="MyCompany")
-audio_plugin_create(name="MyVerb", type="juce", ui="generic", vendor="MyCompany", formats="VST3;AU")
-audio_plugin_create(name="MyVerb", type="juce", ui="webview", vendor="MyCompany")
-audio_plugin_create(name="Phaser9000", type="clap")
-audio_plugin_create(name="Lv2Gain", type="lv2", vendor="MyCompany")
-audio_plugin_create(name="ToneGen", type="standalone", vendor="MyCompany")
+apc(name="TapeEcho")
+apc(name="PolyLead", style="synth", vendor="MyCompany")
+apc(name="MyVerb", type="juce", ui="generic", vendor="MyCompany", formats="VST3;AU")
+apc(name="MyVerb", type="juce", ui="webview", vendor="MyCompany")
+apc(name="Phaser9000", type="clap")
+apc(name="Lv2Gain", type="lv2", vendor="MyCompany")
+apc(name="ToneGen", type="standalone", vendor="MyCompany")
 ```
 
 | Argument | Type / default | Notes |
@@ -190,14 +190,14 @@ Control characters (newlines included) are rejected in `vendor` and `description
 
 The webview template asks CMake for `NEEDS_WEB_BROWSER TRUE`, `NEEDS_WEBVIEW2 TRUE` and static WebView2 linking — WebView2 on Windows, WebKit on Linux, WKWebView on macOS. `clap` and `lv2` are headless DSP scaffolds; `standalone` ships its own `AudioAppComponent` window. All three ignore `ui`.
 
-`create` also creates a minimal root `CMakeLists.txt` if needed, appends `add_subdirectory(plugins/<Name>)` once (it detects an existing registration and refuses to modify a symlinked root `CMakeLists.txt`), and initializes the global dependency cache `~/.apc-mcp/deps/`.
+`apc` also creates a minimal root `CMakeLists.txt` if needed, appends `add_subdirectory(plugins/<Name>)` once (it detects an existing registration and refuses to modify a symlinked root `CMakeLists.txt`), and initializes the global dependency cache `~/.apc-mcp/deps/`.
 
-### audio_plugin_add_param
+### apc-add-param
 
 ```text
-audio_plugin_add_param(id="cutoff", name="Filter Cutoff", min=20, max=20000, default=1000, unit="Hz", controlType="knob")
-audio_plugin_add_param(id="mix", name="Dry/Wet Mix", min=0, max=100, default=50, unit="%", controlType="slider")
-audio_plugin_add_param(id="bypass", name="Bypass", min=0, max=1, default=0, controlType="toggle")
+apc-add-param(id="cutoff", name="Filter Cutoff", min=20, max=20000, default=1000, unit="Hz", controlType="knob")
+apc-add-param(id="mix", name="Dry/Wet Mix", min=0, max=100, default=50, unit="%", controlType="slider")
+apc-add-param(id="bypass", name="Bypass", min=0, max=1, default=0, controlType="toggle")
 ```
 
 | Argument | Type / default | Notes |
@@ -214,11 +214,11 @@ audio_plugin_add_param(id="bypass", name="Bypass", min=0, max=1, default=0, cont
 
 Atomically updates `Source/PluginProcessor.cpp` (`createParameterLayout()`), `Source/UI/MainView.xml`, and `Source/UI/Styles.json`, verifying XML well-formedness and JSON validity before writing.
 
-### audio_plugin_ship
+### apc-ship
 
 ```text
-audio_plugin_ship()
-audio_plugin_ship(version="1.2.0", installLocal=true)
+apc-ship()
+apc-ship(version="1.2.0", installLocal=true)
 ```
 
 | Argument | Type / default | Notes |
@@ -229,10 +229,10 @@ audio_plugin_ship(version="1.2.0", installLocal=true)
 
 Runs the complete release pipeline (`Release Build → clang-format Lint → pluginval --strictness-level 5 --validate-in-process → dist/ Package + INSTALL.txt + macOS ad-hoc codesign → Local VST3 Install`) and returns structured compiler/validator diagnostics on any stage failure.
 
-### audio_plugin_doctor
+### apc-doctor
 
 ```text
-audio_plugin_doctor()
+apc-doctor()
 ```
 
 | Argument | Type / default | Notes |
