@@ -29,6 +29,7 @@ const PERMUTATIONS = [
   { name: 'ClapA',     type: 'clap',  ui: 'generic' },
   { name: 'JuceGen',   type: 'juce',  ui: 'generic' },
   { name: 'JuceWv',    type: 'juce',  ui: 'webview' },
+  { name: 'AraFx',     type: 'ara',   ui: 'jive' },
   { name: 'Vst3Gen',   type: 'vst3',  ui: 'generic' },
   { name: 'Vst3Wv',    type: 'vst3',  ui: 'webview' },
   { name: 'my-delay',  type: 'juce',  ui: 'webview' },
@@ -119,6 +120,7 @@ after(() => { fs.rmSync(ROOT, { recursive: true, force: true }); });
 // template family rather than on ui alone.
 const isJuce = s => s.type === 'juce' || s.type === 'vst3';
 const juceOnly = ui => [...scaffolded.values()].filter(s => isJuce(s) && (!ui || s.ui === ui));
+const araOnly = () => [...scaffolded.values()].filter(s => s.type === 'ara');
 
 // `type: standalone` is a JUCE **application** (juce_add_gui_app), not a plugin.
 // It has no FORMATS, no PLUGIN_CODE and no PluginProcessor, so every
@@ -584,16 +586,79 @@ describe('schema rejects format values JUCE cannot build', () => {
     assert.ok(fs.existsSync(path.join(PLUGINS, 'OkFormats', 'CMakeLists.txt')));
   });
 
-  it('type "ara" is not offered at all', async () => {
+  it('advertises the dedicated ARA effect scaffold as a supported type', async () => {
     const tools = await listTools();
     const create = tools.find(t => t.name === 'apc');
     const allowed = create.inputSchema.properties.type.enum ?? [];
-    assert.ok(!allowed.includes('ara'), `"ara" is still advertised: ${allowed.join(', ')}`);
-    // Exact list on purpose: this is a snapshot of the tool's advertised schema,
-    // so adding or removing a type is a deliberate, reviewed change rather than
-    // something that slips in. 'standalone' and 'lv2' were added for the
-    // application and native-LV2 templates.
-    assert.deepEqual(allowed, ['clap', 'vst3', 'juce', 'standalone', 'lv2']);
+    assert.ok(allowed.includes('ara'), `"ara" is missing from the supported type list: ${allowed.join(', ')}`);
+    assert.deepEqual(allowed, ['clap', 'vst3', 'juce', 'standalone', 'lv2', 'ara']);
+  });
+});
+
+describe('JUCE ARA effect template', () => {
+  it('emits the required SDK guard, effect-mode CMake block, and stable ARA IDs', () => {
+    for (const s of araOnly()) {
+      const cm = cmakeCode(s.files.get('CMakeLists.txt'));
+      assert.match(cm, /if\s*\(\s*NOT DEFINED APC_ARA_SDK_PATH OR APC_ARA_SDK_PATH STREQUAL ""\s*\)/,
+        `${s.name}: an unset APC_ARA_SDK_PATH must be rejected`);
+      assert.match(cm, /message\s*\(\s*FATAL_ERROR\s+"ARA SDK path is required\. Call "\s+"juce_set_ara_sdk_path\(<path>\) before juce_add_plugin\."\s*\)/,
+        `${s.name}: the missing-SDK diagnostic must identify the required JUCE setup`);
+      assert.match(cm, /ARA_Library\/PlugIn\/ARAPlug\.h/,
+        `${s.name}: reject SDK roots without the initialized ARA_Library submodule`);
+      assert.match(cm, /ARA_API\/ARAInterface\.h/,
+        `${s.name}: reject SDK roots without the initialized ARA_API submodule`);
+      const sdkCall = cm.search(/\n\s*juce_set_ara_sdk_path\(/);
+      const pluginCall = cm.indexOf('juce_add_plugin(');
+      assert.ok(sdkCall >= 0 && sdkCall < pluginCall,
+        `${s.name}: juce_set_ara_sdk_path must precede juce_add_plugin`);
+      const call = cm.match(/juce_add_plugin\s*\(\s*AraFx([\s\S]*?)\n\)/)?.[1] ?? '';
+      assert.match(call, /FORMATS\s+VST3\s+AU\b/,
+        `${s.name}: ARA uses VST3 and AU as formats`);
+      assert.match(call, /IS_ARA_EFFECT\s+TRUE/,
+        `${s.name}: juce_add_plugin must enable IS_ARA_EFFECT`);
+      assert.match(call, /ARA_FACTORY_ID\s+"\\"com\.acme\.AraFx\.factory\.1\\""/,
+        `${s.name}: ARA factory ID must be a unique versioned C string literal`);
+      assert.match(call, /ARA_DOCUMENT_ARCHIVE_ID\s+"\\"com\.acme\.AraFx\.archive\.1\\""/,
+        `${s.name}: ARA document archive ID must be a unique versioned C string literal`);
+      assert.doesNotMatch(call, /FORMATS\s+[^\n]*\bARA\b/,
+        `${s.name}: ARA must never appear as a JUCE plugin format`);
+    }
+  });
+
+  it('uses JUCE ARA extension classes and provides a real factory without stubs', () => {
+    for (const s of araOnly()) {
+      const files = [...s.files.values()].join('\n');
+      assert.match(s.files.get('Source/PluginProcessor.h'), /juce::AudioProcessorARAExtension/);
+      assert.match(s.files.get('Source/PluginProcessor.cpp'), /getARAClientExtensions\s*\(\)\s*\{\s*return this;/);
+      assert.match(s.files.get('Source/PluginEditor.h'), /juce::AudioProcessorEditorARAExtension/);
+      assert.match(s.files.get('Source/PluginEditor.cpp'), /juce::AudioProcessorEditorARAExtension\s*\(&processor\)/);
+      assert.match(s.files.get('Source/PluginDocumentController.h'), /juce::ARADocumentControllerSpecialisation/);
+      assert.match(s.files.get('Source/PluginDocumentController.cpp'), /createARAFactory\s*\(\)/);
+      assert.match(s.files.get('Source/PluginDocumentController.cpp'), /ARADocumentControllerSpecialisation::createARAFactory/);
+      assert.match(s.files.get('Source/PluginDocumentController.cpp'), /doCreatePlaybackRenderer/);
+      assert.match(s.files.get('Source/PluginPlaybackRenderer.h'), /juce::ARAPlaybackRenderer/);
+      assert.match(s.files.get('Source/PluginPlaybackRenderer.cpp'), /juce::ARAAudioSourceReader/);
+      assert.match(s.files.get('Source/PluginPlaybackRenderer.cpp'), /juce::BufferingAudioReader/);
+      assert.match(s.files.get('Source/PluginPlaybackRenderer.cpp'), /interpolat|sourceStep/);
+      const listedSources = cmakeListedFiles(cmakeCode(s.files.get('CMakeLists.txt')), 'target_sources');
+      for (const file of ['PluginPlaybackRenderer.h', 'PluginPlaybackRenderer.cpp']) {
+        assert.ok(s.files.has(`Source/${file}`), `${s.name}: ARA renderer source ${file} is missing`);
+        assert.ok(listedSources.includes(`Source/${file}`), `${s.name}: ${file} is absent from target_sources()`);
+      }
+      assert.doesNotMatch(files, /juce::ARAAudioProcessor|JUCE_ARA_MODULE|FORMATS\s+ARA/);
+      assert.doesNotMatch(files, /TODO|FIXME|PLACEHOLDER/i,
+        `${s.name}: generated ARA source must not leave implementation placeholders`);
+    }
+  });
+
+  it('rejects formats overrides and still reports ARA as an effect-mode request', async () => {
+    const r = await call('audio_plugin_create', {
+      projectPath: PROJ, name: 'AraFormatsOverride', type: 'ara', formats: 'ARA',
+    });
+    assert.equal(r.isError, true, r.text);
+    assert.match(r.text, /fixed JUCE ARA effect formats VST3 and AU/);
+    assert.ok(!fs.existsSync(path.join(PLUGINS, 'AraFormatsOverride')),
+      'a rejected ARA format override must not create files');
   });
 });
 

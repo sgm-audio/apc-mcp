@@ -153,18 +153,19 @@ apc(name="MyVerb", type="juce", ui="webview", vendor="MyCompany")
 apc(name="Phaser9000", type="clap")
 apc(name="Lv2Gain", type="lv2", vendor="MyCompany")
 apc(name="ToneGen", type="standalone", vendor="MyCompany")
+apc(name="AraReverb", type="ara", vendor="MyCompany")
 ```
 
 | Argument | Type / default | Notes |
 |---|---|---|
 | `projectPath` | string, optional | Parent project root; auto-detected from CWD |
 | `name` | **required**, `[A-Za-z][A-Za-z0-9_-]*` | Also the CMake target name; reserved names (`all`, `test`, `install`, …) are rejected |
-| `type` | `juce` (default), `vst3`, `clap`, `lv2`, `standalone` | See the table below |
+| `type` | `juce` (default), `vst3`, `clap`, `lv2`, `standalone`, `ara` | See the table below. `ara` is a JUCE effect mode with its own template, not a plugin format. |
 | `ui` | `jive` (default), `generic`, `juce`, `webview` | JUCE plugin types only; ignored elsewhere |
 | `style` | `fx` (default), `synth`, `utility` | Seeds initial DSP and JIVE UI controls (`cutoff` knob + `IS_SYNTH TRUE` for `synth`; `bypass` toggle for `utility`) |
 | `vendor` | `apc-mcp` | Embedded in plugin metadata. Any single line of text up to 128 characters, non-ASCII included ("ACME, Inc." and "Café Audio" both work); quotes, backslashes and `&` are escaped per output grammar. Used in sanitized form for bundle IDs, four-character codes and the LV2 URN — which is also the `LV2URI` of the JUCE plugin templates, so a `type="juce"` LV2 build and a `type="lv2"` build name the plugin's identity the same way |
 | `description` | `An audio plugin` | Any single line of text up to 512 characters, non-ASCII included. Escaped separately for C++, CMake and LV2 Turtle |
-| `formats` | JUCE default `VST3;LV2;Standalone` | Semicolon-separated override for `juce` / `vst3`; rejected for `clap`, `lv2`, `standalone` |
+| `formats` | JUCE default `VST3;LV2;Standalone` | Semicolon-separated override for `juce` / `vst3`; rejected for `ara` (fixed VST3/AU), `clap`, `lv2`, and `standalone` |
 
 Control characters (newlines included) are rejected in `vendor` and `description` with an explanatory message: they would terminate the C++, CMake or Turtle construct the value is pasted into, and no amount of escaping makes a newline safe in all three.
 
@@ -177,8 +178,9 @@ Control characters (newlines included) are rejected in `vendor` and `description
 | `clap` | `templates/clap/` | C++20 `MODULE` plugin against `free-audio/clap` headers, stereo `CLAP_EXT_AUDIO_PORTS`; a `.clap` binary (CFBundle on macOS) |
 | `lv2` | `templates/lv2/` | Native **pure C11** LV2 plugin against `lv2/core/lv2.h` with `manifest.ttl` + `plugin.ttl`; unrelated to JUCE's C++ `LV2` format |
 | `standalone` | `templates/standalone/` | A standalone GUI audio **application** (`juce_add_gui_app`), not a host-loadable plugin |
+| `ara` | `templates/ara/` | JUCE ARA effect with `FORMATS VST3 AU`, `IS_ARA_EFFECT TRUE`, an ARA-aware processor/editor, a playback renderer and a document-controller factory. Requires an external ARA SDK. |
 
-> `type="ara"` was removed in 2.0.0: it emitted `FORMATS ARA`, which `juce_add_plugin` does not accept, from a plain `juce::AudioProcessor`, so it reported success for a plugin that could never configure. ARA is a JUCE *effect mode* (`IS_ARA_EFFECT`), not a format. See the [roadmap](roadmap.md).
+ARA is an effect mode, not a format. `apc(type="ara")` does not auto-configure; clone the external [ARA SDK](https://github.com/Celemony/ARA_SDK) with its submodules initialized, then run `apc-cfg(options="-DAPC_ARA_SDK_PATH=/absolute/path/to/ARA_SDK")` before building. The path must name the SDK root containing `ARA_Library/PlugIn/ARAPlug.h` and `ARA_API/ARAInterface.h`. The generated CMake checks that layout with `FATAL_ERROR` and calls `juce_set_ara_sdk_path(...)` before `juce_add_plugin(...)`.
 
 **`ui` — editor style (JUCE plugin types only)**
 

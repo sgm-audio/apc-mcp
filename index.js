@@ -985,15 +985,18 @@ function replaceTemplateVars(content, vars) {
 }
 
 function mapPluginType(type, ui) {
-  // JUCE-based types can choose generic, webview, or jive UI.
-  // NOTE: 'ara' was removed from the schema — it mapped to the plain JUCE
-  // template with FORMATS "ARA", which is not a valid juce_add_plugin format
-  // and omitted AudioProcessorARAExtension / ARADocumentControllerSpecialisation
-  // (AUDIT FUNC-07). Restoring it requires a real ARA template first.
+  // JUCE-based types can choose generic, webview, or jive UI. ARA has its own
+  // ARA-aware editor and always uses the dedicated effect-mode template.
   const juceTemplate = ui === 'webview'
     ? 'juce-webview'
     : (ui === 'jive' ? 'juce-jive' : 'juce');
   switch (type) {
+    case 'ara': return {
+      template: 'ara',
+      formats: 'VST3;AU',
+      formatsRejection: 'type="ara" uses the fixed JUCE ARA effect formats VST3 and AU. '
+        + 'Remove the `formats` argument; ARA is not a plugin format.',
+    };
     case 'clap': return {
       template: 'clap',
       formats: 'CLAP',
@@ -2270,18 +2273,18 @@ registerTool(
       .describe('Parent project root where the plugins/ directory lives. Auto-detected from CWD.'),
     name: z.string().min(1).max(64).regex(SAFE_PLUGIN_NAME)
       .describe('Plugin name. Use kebab-case, snake_case, or CamelCase. Examples: "Phaser9000", "my-delay", "TapeEcho".'),
-    type: z.enum(['clap', 'vst3', 'juce', 'standalone', 'lv2']).default('juce')
-      .describe('What to scaffold. Defaults to "juce" (VST3;LV2;Standalone). "vst3" generates a JUCE plugin targeting VST3 only. "clap" generates a CLAP plugin against the free-audio/clap headers. "standalone" generates a standalone audio APPLICATION (juce_add_gui_app) — one executable that owns its audio device, not a plugin a host loads. "lv2" generates a native LV2 plugin in C with Turtle metadata, unrelated to the LV2 that type="juce" can emit from C++. (ARA is not offered yet — it needs a dedicated template.)'),
+    type: z.enum(['clap', 'vst3', 'juce', 'standalone', 'lv2', 'ara']).default('juce')
+      .describe('What to scaffold. Defaults to "juce" (VST3;LV2;Standalone). "vst3" generates a JUCE plugin targeting VST3 only. "clap" generates a CLAP plugin against the free-audio/clap headers. "standalone" generates a standalone audio APPLICATION (juce_add_gui_app) — one executable that owns its audio device, not a plugin a host loads. "lv2" generates a native LV2 plugin in C with Turtle metadata, unrelated to the LV2 that type="juce" can emit from C++. "ara" generates a JUCE ARA effect using FORMATS VST3 AU and IS_ARA_EFFECT TRUE; configure with -DAPC_ARA_SDK_PATH=/absolute/path/to/ARA_SDK. ARA is not a FORMATS entry.'),
     ui: z.enum(['generic', 'juce', 'webview', 'jive']).default('jive')
-      .describe('UI style for the JUCE plugin types. Defaults to "jive" (declarative XML/JSON JIVE UI in Source/UI/MainView.xml + Styles.json with APVTS parameter auto-attach, Debug disk hot-reload, Release BinaryData embedding, and -DAPC_USE_JIVE=ON|OFF toggle). "generic" (or "juce") uses JUCE\'s GenericAudioProcessorEditor with -DAPC_USE_JIVE=0. "webview" uses an HTML/CSS/JS WebView with parameter controls embedded via BinaryData. Ignored for "clap", "standalone" and "lv2", which ship their own UI or none.'),
+      .describe('UI style for the JUCE plugin types. Defaults to "jive" (declarative XML/JSON JIVE UI in Source/UI/MainView.xml + Styles.json with APVTS parameter auto-attach, Debug disk hot-reload, Release BinaryData embedding, and -DAPC_USE_JIVE=ON|OFF toggle). "generic" (or "juce") uses JUCE\'s GenericAudioProcessorEditor with -DAPC_USE_JIVE=0. "webview" uses an HTML/CSS/JS WebView with parameter controls embedded via BinaryData. Ignored for "clap", "standalone" and "lv2", which ship their own UI or none; "ara" uses its ARA-aware editor.'),
     style: z.enum(['fx', 'synth', 'utility']).default('fx')
-      .describe('Initial DSP & UI preset style for JUCE + JIVE scaffolds: "fx" (audio effect with gain + mix), "synth" (instrument with IS_SYNTH/NEEDS_MIDI_INPUT + cutoff knob), or "utility" (utility processor with gain + bypass toggle). Default: "fx".'),
+      .describe('Initial DSP & UI preset style for JUCE + JIVE scaffolds: "fx" (audio effect with gain + mix), "synth" (instrument with IS_SYNTH/NEEDS_MIDI_INPUT + cutoff knob), or "utility" (utility processor with gain + bypass toggle). Default: "fx". The style only affects JUCE + JIVE scaffolds; ARA is always generated as an effect.'),
     vendor: z.string().min(1).max(128).regex(SAFE_TEXT, FREE_TEXT_MESSAGE).default('apc-mcp')
       .describe('Vendor/company name embedded in plugin metadata. Any single line of text up to 128 characters, including non-ASCII.'),
     description: z.string().min(1).max(512).regex(SAFE_TEXT, FREE_TEXT_MESSAGE).default('An audio plugin')
       .describe('Short description for plugin metadata. Any single line of text up to 512 characters, including non-ASCII.'),
     formats: z.string().regex(SAFE_FORMATS).optional()
-      .describe('JUCE plugin formats override, semicolon-separated. Only for the juce/vst3 types. Default: "VST3;LV2;Standalone". Rejected for "clap", "standalone" and "lv2" — none of which has a JUCE FORMATS list.'),
+      .describe('JUCE plugin formats override, semicolon-separated. Only for "juce" and "vst3". Default: "VST3;LV2;Standalone". Rejected for "ara" (fixed to VST3 and AU), "clap", "standalone" and "lv2" — these types do not accept an override.'),
   },
   async (params) => {
     const proj = requireProjectPath(params.projectPath);
@@ -2315,6 +2318,15 @@ registerTool(
           `## apc failed\n"${params.name}" collides with a C/C++ reserved keyword (${id}). Choose a distinct plugin name.` }],
         isError: true,
       };
+    }
+
+    // ARA fixes its actual plugin formats to VST3 and AU. It is a JUCE effect
+    // mode, so accepting a caller override here could reintroduce FORMATS ARA or
+    // produce targets that the ARA template does not declare.
+    if (typeInfo.template === 'ara' && params.formats) {
+      return { content: [{ type: 'text', text:
+        `## audio_plugin_create failed\n${typeInfo.formatsRejection}` }],
+        isError: true };
     }
 
     // Validate the JUCE format list before writing anything to disk. `formats`
@@ -2482,9 +2494,11 @@ registerTool(
     }
     const hasLocalJuce = depsInfo.juceCached ||
       fs.existsSync(path.join(proj, '_tools', 'JUCE', 'CMakeLists.txt'));
-    const hasLocalJive = params.ui !== 'jive' || depsInfo.jiveCached ||
+    const hasLocalJive = typeInfo.template !== 'juce-jive' || depsInfo.jiveCached ||
       fs.existsSync(path.join(proj, '_tools', 'JIVE', 'CMakeLists.txt'));
-    if (findBinary('cmake') && hasLocalJuce && hasLocalJive) {
+    if (typeInfo.template === 'ara') {
+      smokeStatus += ' | Configure with `audio_plugin_configure(options="-DAPC_ARA_SDK_PATH=/absolute/path/to/ARA_SDK")` before building';
+    } else if (findBinary('cmake') && hasLocalJuce && hasLocalJive) {
       try {
         const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
         sanitizeCmakeCache(proj, buildDir);
@@ -2514,10 +2528,13 @@ registerTool(
     listDir(pluginDir);
 
     const kind = params.type === 'standalone' ? 'standalone app' : `${params.type} plugin`;
+    const templateSummary = params.type === 'ara'
+      ? 'Template: ara (ARA-aware editor; style and ui presets are ignored)'
+      : `Template: ${typeInfo.template} (style: ${params.style})`;
     const text = [
       `## Created ${kind}: ${params.name}`,
       `Location: ${pluginDir}`,
-      `Template: ${typeInfo.template} (style: ${params.style})`,
+      templateSummary,
       ...(cmakeRegistration ? [cmakeRegistration] : []),
       smokeStatus,
       '',

@@ -9,7 +9,7 @@ Everything you need to use or maintain apc-mcp. Start with the [README](../READM
 | [Getting started](getting-started.md) | MCP client setup, installing the toolchain, building your first plugin, where binaries land |
 | [Tool reference](tools.md) | Every tool, its arguments, examples, scaffold types and failure reporting |
 | [Configuration](configuration.md) | `apc-mcp.json`, defaults, project-root detection, expected layout |
-| [Toolchain & SDKs](toolchain.md) | Prerequisites, how CMake finds JUCE / CLAP / LV2, platform notes, gotchas |
+| [Toolchain & SDKs](toolchain.md) | Prerequisites, how CMake finds JUCE / CLAP / LV2, and how to supply the external ARA SDK; platform notes and gotchas |
 | [Troubleshooting](troubleshooting.md) | FAQ, missing-binary errors, validation skips, `npx` cache |
 
 ## For maintainers
@@ -19,7 +19,7 @@ Everything you need to use or maintain apc-mcp. Start with the [README](../READM
 | [Development](development.md) | Setup, test commands, adding a tool, code style, release process (contributing guide) |
 | [Security](security.md) | Threat model, defence layers, residual risk, vulnerability reporting |
 | [Project status](project-status.md) | Current state, verification baseline, known limitations, maintainer traps |
-| [Roadmap](roadmap.md) | Shipped templates and the remaining ARA work |
+| [Roadmap](roadmap.md) | Completed scaffolds and standing implementation constraints |
 | [Docs hygiene report](docs-hygiene.md) | Audit of the documentation set, findings, link check, confidence score |
 | [Archive](archive/README.md) | Frozen historical audit and handoff records (not maintained) |
 

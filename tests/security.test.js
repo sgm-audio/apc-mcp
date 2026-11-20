@@ -402,25 +402,42 @@ describe('SUB-6 · apc-mcp.json symlink containment', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-describe('FUNC-07 · type "ara" is no longer offered (unimplemented template)', () => {
-  it('the create schema does not advertise ara', async () => {
+describe('ARA effect generation uses JUCE ARA APIs rather than a legacy format stub', () => {
+  it('advertises ara as a supported generator type', async () => {
     const tools = await listTools();
     const create = tools.find(t => t.name === 'apc');
     assert.ok(create, 'apc not registered');
     const allowed = create.inputSchema.properties.type.enum ?? [];
-    assert.ok(!allowed.includes('ara'),
-      `"ara" is still advertised but scaffolds an unbuildable plugin: ${allowed.join(', ')}`);
+    assert.ok(allowed.includes('ara'), `"ara" is missing from the generator types: ${allowed.join(', ')}`);
   });
 
-  it('create rejects type "ara"', async () => {
+  it('creates an ARA effect scaffold with an explicit SDK configure instruction', async () => {
+    const name = 'AraSecurity';
     const r = await call('apc',
-      { projectPath: PROJ, name: 'AraNope', type: 'ara' }, { env: { PATH: FAKE_PATH } });
-    assert.equal(r.isError, true, `"ara" was accepted: ${r.text}`);
-    assert.ok(!fs.existsSync(path.join(PROJ, 'plugins', 'AraNope')),
-      'no plugin directory should have been created for a rejected type');
+      { projectPath: PROJ, name, type: 'ara', ui: 'webview' }, { env: { PATH: FAKE_PATH } });
+    assert.equal(r.isError, false, `ARA scaffold failed: ${r.text}`);
+    assert.match(r.text, /APC_ARA_SDK_PATH/);
+    const dir = path.join(PROJ, 'plugins', name);
+    const cm = fs.readFileSync(path.join(dir, 'CMakeLists.txt'), 'utf8');
+    assert.match(cm, /IS_ARA_EFFECT TRUE/);
+    assert.match(cm, /FORMATS VST3 AU/);
+    assert.doesNotMatch(cm, /FORMATS\s+ARA/);
+    for (const file of [
+      'PluginProcessor.h', 'PluginEditor.h', 'PluginDocumentController.h',
+      'PluginPlaybackRenderer.h', 'PluginPlaybackRenderer.cpp',
+    ]) {
+      assert.ok(fs.existsSync(path.join(dir, 'Source', file)), `missing ARA source ${file}`);
+    }
+    const sourceFiles = fs.readdirSync(path.join(dir, 'Source'))
+      .map(file => fs.readFileSync(path.join(dir, 'Source', file), 'utf8')).join('\n');
+    assert.match(sourceFiles, /juce::AudioProcessorARAExtension/);
+    assert.match(sourceFiles, /juce::AudioProcessorEditorARAExtension/);
+    assert.match(sourceFiles, /juce::ARADocumentControllerSpecialisation::createARAFactory/);
+    assert.match(sourceFiles, /doCreatePlaybackRenderer/);
+    assert.doesNotMatch(sourceFiles, /juce::ARAAudioProcessor|JUCE_ARA_MODULE|TODO|FIXME/i);
   });
 
-  it('create still accepts the supported types', async () => {
+  it('create still accepts the other supported types', async () => {
     for (const type of ['clap', 'vst3', 'juce']) {
       const name = 'Ok' + type.toUpperCase();
       const r = await call('apc',

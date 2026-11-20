@@ -40,14 +40,17 @@
 //   modules/juce_audio_processors_headless/utilities/juce_AudioParameterFloat.h
 //   modules/juce_audio_processors_headless/processors/juce_AudioProcessor.h
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
-#include <cmath>
 
 #ifndef JUCE_WINDOWS
  #define JUCE_WINDOWS 0
@@ -79,9 +82,22 @@
 #define JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(C) \
     C (const C &) = delete; C &operator= (const C &) = delete;
 
+namespace ARA
+{
+    struct ARAFactory {};
+    struct ARADocumentControllerHostInstance {};
+    namespace PlugIn
+    {
+        class PlugInEntry;
+        class DocumentController;
+    }
+}
+
 namespace juce
 {
     template <typename T> T jmax (T a, T b) { return a > b ? a : b; }
+    template <typename T> T jmin (T a, T b) { return a < b ? a : b; }
+    inline int roundToInt (double value) { return static_cast<int> (std::lround (value)); }
     template <typename T> constexpr T jlimit (T lowerLimit, T upperLimit, T valueToConstrain) noexcept
     {
         return valueToConstrain < lowerLimit ? lowerLimit : (upperLimit < valueToConstrain ? upperLimit : valueToConstrain);
@@ -198,6 +214,14 @@ namespace juce
     };
 
     class AudioProcessor;
+    class AudioProcessorARAExtension;
+    class AudioProcessorEditorARAExtension;
+    class AudioPlayHead;
+    class ARAInputStream;
+    class ARAOutputStream;
+    class ARARestoreObjectsFilter;
+    class ARAStoreObjectsFilter;
+    class ARAEditorView;
 
     class MemoryBlock
     {
@@ -269,11 +293,20 @@ namespace juce
     //==========================================================================
     // juce_audio_basics/buffers/juce_AudioSampleBuffer.h — note JUCE 9 declares
     // `class AudioBuffer` in a file still named juce_AudioSampleBuffer.h.
+    using int64 = std::int64_t;
+
     template <typename T> class AudioBuffer
     {
     public:
-        int getNumSamples() const { return 0; }
-        int getNumChannels() const { return 0; }
+        AudioBuffer() = default;
+        AudioBuffer (int channels, int samples) { setSize (channels, samples); }
+        int getNumSamples() const { return numSamples; }
+        int getNumChannels() const { return numChannels; }
+        void setSize (int channels, int samples, bool = false, bool = false, bool = false)
+        {
+            numChannels = channels;
+            numSamples = samples;
+        }
         void clear (int, int, int) {}
         void clear() {}
         const T *getReadPointer (int) const { return nullptr; }
@@ -283,10 +316,35 @@ namespace juce
         T *const *getArrayOfWritePointers() { return channelPointers; }
         T getSample (int, int) const { return {}; }
         void setSample (int destChannel, int destSample, T newValue) { (void) destChannel; (void) destSample; (void) newValue; }
+        void addSample (int destChannel, int destSample, T value) { (void) destChannel; (void) destSample; (void) value; }
+        void addFrom (int, int, const AudioBuffer<T> &, int, int, int) {}
+        void copyFrom (int, int, const AudioBuffer<T> &, int, int, int) {}
         void clearActiveBufferRegion() {}
 
     private:
         T *channelPointers[2] {};
+        int numChannels = 0;
+        int numSamples = 0;
+    };
+
+    template <typename T> class Range
+    {
+    public:
+        Range() = default;
+        Range (T startIn, T endIn) : start (startIn), end (endIn) {}
+        static Range withStartAndLength (T start, T length) { return { start, start + length }; }
+        T getStart() const { return start; }
+        T getEnd() const { return end; }
+        T getLength() const { return end - start; }
+        bool isEmpty() const { return end <= start; }
+        Range getIntersectionWith (const Range &other) const
+        {
+            return { std::max (start, other.start), std::min (end, other.end) };
+        }
+        Range movedToStartAt (T newStart) const { return { newStart, newStart + getLength() }; }
+
+    private:
+        T start {}, end {};
     };
 
     class MidiBuffer {};
@@ -489,6 +547,8 @@ namespace juce
     public:
         AudioProcessorEditor (AudioProcessor *) {}
         virtual ~AudioProcessorEditor() = default;
+        void setResizable (bool, bool) {}
+        virtual AudioProcessorEditorARAExtension *getARAClientExtensions() { return nullptr; }
     };
 
     class GenericAudioProcessorEditor : public AudioProcessorEditor
@@ -500,6 +560,9 @@ namespace juce
     class AudioProcessor
     {
     public:
+        enum class ProcessingPrecision { singlePrecision, doublePrecision };
+        enum class Realtime { no, yes };
+
         struct BusesProperties
         {
             BusesProperties &withInput (const String &, AudioChannelSet, bool) { return *this; }
@@ -520,7 +583,11 @@ namespace juce
 
         int getTotalNumInputChannels() const { return 0; }
         int getTotalNumOutputChannels() const { return 0; }
+        ProcessingPrecision getProcessingPrecision() const { return ProcessingPrecision::singlePrecision; }
+        Realtime isRealtime() const { return Realtime::yes; }
+        AudioPlayHead *getPlayHead() const { return nullptr; }
 
+        virtual AudioProcessorARAExtension *getARAClientExtensions() { return nullptr; }
         virtual void prepareToPlay (double, int) = 0;
         virtual void releaseResources() = 0;
         virtual bool isBusesLayoutSupported (const BusesLayout &) const { return true; }
@@ -539,6 +606,158 @@ namespace juce
         virtual void changeProgramName (int, const String &) = 0;
         virtual void getStateInformation (MemoryBlock &) = 0;
         virtual void setStateInformation (const void *, int) = 0;
+    };
+
+    template <typename ValueType>
+    class StubOptional
+    {
+    public:
+        ValueType orFallback (ValueType fallback) const { return fallback; }
+    };
+
+    class AudioPlayHead
+    {
+    public:
+        class PositionInfo
+        {
+        public:
+            StubOptional<int64> getTimeInSamples() const { return {}; }
+            bool getIsPlaying() const { return true; }
+        };
+    };
+
+    class ARAAudioSource
+    {
+    public:
+        int getChannelCount() const { return 2; }
+        double getSampleRate() const { return 44100.0; }
+        int64 getSampleCount() const { return 0; }
+    };
+
+    class ARAAudioModification
+    {
+    public:
+        ARAAudioSource *getAudioSource() const { return nullptr; }
+    };
+
+    class ARAPlaybackRegion
+    {
+    public:
+        enum class IncludeHeadAndTail { no, yes };
+        ARAAudioModification *getAudioModification() const { return nullptr; }
+        double getDurationInPlaybackTime() const { return 0.0; }
+        double getStartInPlaybackTime() const { return 0.0; }
+        double getStartInAudioModificationTime() const { return 0.0; }
+        double getEndInAudioModificationTime() const { return 0.0; }
+        int64 getStartInAudioModificationSamples() const { return 0; }
+        int64 getEndInAudioModificationSamples() const { return 0; }
+        Range<int64> getSampleRange (double, IncludeHeadAndTail) const { return {}; }
+    };
+
+    class AudioFormatReader
+    {
+    public:
+        virtual ~AudioFormatReader() = default;
+        bool read (AudioBuffer<float> *, int, int, int64, bool, bool) { return true; }
+    };
+
+    class ARAAudioSourceReader : public AudioFormatReader
+    {
+    public:
+        explicit ARAAudioSourceReader (ARAAudioSource *) {}
+        bool isValid() const { return true; }
+    };
+
+    class Thread
+    {
+    public:
+        enum class Priority { low, normal, high };
+    };
+
+    class TimeSliceThread : public Thread
+    {
+    public:
+        explicit TimeSliceThread (const String &) {}
+        bool isThreadRunning() const { return running; }
+        bool startThread (Priority) { running = true; return true; }
+        void stopThread (int) { running = false; }
+    private:
+        bool running = false;
+    };
+
+    class BufferingAudioReader : public AudioFormatReader
+    {
+    public:
+        BufferingAudioReader (AudioFormatReader *, TimeSliceThread &, int) {}
+        void setReadTimeout (int) {}
+    };
+
+    class ARARenderer
+    {
+    public:
+        enum class AlwaysNonRealtime { no, yes };
+        virtual ~ARARenderer() = default;
+    };
+
+    class ARAPlaybackRenderer : public ARARenderer
+    {
+    public:
+        explicit ARAPlaybackRenderer (ARA::PlugIn::DocumentController *) {}
+        virtual void prepareToPlay (double, int, int, AudioProcessor::ProcessingPrecision,
+                                   AlwaysNonRealtime = AlwaysNonRealtime::no) {}
+        virtual void releaseResources() {}
+        virtual bool processBlock (AudioBuffer<float> &, AudioProcessor::Realtime,
+                                   const AudioPlayHead::PositionInfo &) noexcept { return true; }
+        virtual bool processBlock (AudioBuffer<double> &, AudioProcessor::Realtime,
+                                   const AudioPlayHead::PositionInfo &) noexcept { return true; }
+        const std::vector<ARAPlaybackRegion *> &getPlaybackRegions() const { return playbackRegions; }
+    private:
+        std::vector<ARAPlaybackRegion *> playbackRegions;
+    };
+
+    class AudioProcessorARAExtension
+    {
+    protected:
+        bool getTailLengthSecondsForARA (double &) const { return false; }
+        bool prepareToPlayForARA (double, int, int, AudioProcessor::ProcessingPrecision) { return true; }
+        bool releaseResourcesForARA() { return true; }
+        bool processBlockForARA (AudioBuffer<float> &, AudioProcessor::Realtime, AudioPlayHead *) { return false; }
+    };
+
+    class AudioProcessorEditorARAExtension
+    {
+    public:
+        explicit AudioProcessorEditorARAExtension (AudioProcessor *) {}
+        ARAEditorView *getARAEditorView() const { return nullptr; }
+        bool isARAEditorView() const { return getARAEditorView() != nullptr; }
+    protected:
+        ~AudioProcessorEditorARAExtension() = default;
+    };
+
+    class ARAInputStream {};
+    class ARAOutputStream {};
+    class ARARestoreObjectsFilter {};
+    class ARAStoreObjectsFilter {};
+
+    class ARADocumentControllerSpecialisation
+    {
+    public:
+        ARADocumentControllerSpecialisation (const ARA::PlugIn::PlugInEntry *,
+                                             const ARA::ARADocumentControllerHostInstance *) {}
+        virtual ~ARADocumentControllerSpecialisation() = default;
+        ARA::PlugIn::DocumentController *getDocumentController() const { return nullptr; }
+
+        template <typename SpecialisationType>
+        static const ARA::ARAFactory *createARAFactory() {
+            static_assert(std::is_base_of_v<ARADocumentControllerSpecialisation, SpecialisationType>);
+            static const ARA::ARAFactory factory {};
+            return &factory;
+        }
+
+    protected:
+        virtual ARAPlaybackRenderer *doCreatePlaybackRenderer() { return nullptr; }
+        virtual bool doRestoreObjectsFromStream (ARAInputStream &, const ARARestoreObjectsFilter *) = 0;
+        virtual bool doStoreObjectsToStream (ARAOutputStream &, const ARAStoreObjectsFilter *) = 0;
     };
 
     class Timer

@@ -4,6 +4,10 @@
 
 This is the audit of the documentation set and the confidence assessment requested alongside the README rewrite. It is a dated snapshot; the [verification baseline](project-status.md#verification-baseline) holds the reproducible numbers for the code.
 
+## Post-audit update — 2026-11-20
+
+This report's counts, ratings, and “no ARA template” finding describe the tree as of 2026-11-07. Since then, `type="ara"` has been reintroduced as a dedicated JUCE ARA effect scaffold using VST3/AU formats, `IS_ARA_EFFECT TRUE`, a source-audio playback renderer, and an initialized-external-SDK guard. The remaining ARA validation limits are recorded in [Project status](project-status.md#known-limitations); this report's dated measurements are not current test totals.
+
 ## Method
 
 1. Read all seven root Markdown documents (~185 KB), `index.js` (1,418 lines), the five scaffold `CMakeLists.txt` files, `package.json`, `scripts/`, `tests/`, `.github/` workflows and templates.
@@ -19,7 +23,7 @@ This is the audit of the documentation set and the confidence assessment request
 | Root-level Markdown | 7 files / 184.7 KB, no index, live docs mixed with frozen logs | 4 files / 51.2 KB: concise README, release history, two short convention stubs |
 | Maintained reference docs | none (everything in README + root files) | **11 documents in `docs/`**, ~66 KB, with an [index](README.md) and a documented policy |
 | Historical records | `AUDIT.md` + `HANDOFF.md` (94 KB) presented as current docs | [`docs/archive/`](archive/README.md) with "not maintained" banners; current state rewritten as [project-status.md](project-status.md) |
-| Roadmap | `TODO.md`, mostly struck-through completed items | [roadmap.md](roadmap.md) — shipped vs ARA remaining |
+| Roadmap | `TODO.md`, mostly struck-through completed items | [roadmap.md](roadmap.md) — shipped templates and remaining validation work |
 | Link checking | `tests/release.test.js` checked relative links in root `.md` only | `npm run docs:check` checks every `.md` in the repo, HTML `href`/`src`/`srcset`, cross-file anchors and index completeness; wired into `npm run check` and CI |
 
 Everything that was documented is still documented, rewritten: the [docs index](README.md) maps each topic to its single maintained home.

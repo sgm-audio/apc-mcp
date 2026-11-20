@@ -79,6 +79,7 @@ const GEN = path.join(ROOT, 'generated');
 const CASES = [
   { name: 'JuceGeneric',   type: 'juce',       ui: 'generic', family: 'juce' },
   { name: 'JuceWebView',   type: 'juce',       ui: 'webview', family: 'juce' },
+  { name: 'AraEffect',     type: 'ara',        ui: 'generic', family: 'juce' },
   { name: 'Vst3Generic',   type: 'vst3',       ui: 'generic', family: 'juce' },
   { name: 'Vst3WebView',   type: 'vst3',       ui: 'webview', family: 'juce' },
   { name: 'ClapPlugin',    type: 'clap',       ui: 'generic', family: 'clap' },
