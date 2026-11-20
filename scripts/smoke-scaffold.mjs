@@ -45,6 +45,7 @@ const CLANG_TIDY = process.argv.includes('--clang-tidy');
 const BUILD_TARGETS = process.argv.includes('--build') || INSTALL || LV2_LINT || CLANG_TIDY;
 const CONFIGURE = BUILD_TARGETS || process.argv.includes('--configure');
 const JUCE_DIR = process.env.APC_JUCE_DIR || '';
+const JIVE_DIR = process.env.APC_JIVE_DIR || '';
 const CLAP_DIR = process.env.APC_CLAP_DIR || '';
 const LV2_DIR = process.env.APC_LV2_DIR || '';
 
@@ -58,8 +59,10 @@ const CASES = [
   { name: 'SmokeClap',      type: 'clap', ui: 'generic', family: 'clap' },
   { name: 'SmokeJuceGen',   type: 'juce', ui: 'generic', family: 'juce' },
   { name: 'SmokeJuceWv',    type: 'juce', ui: 'webview', family: 'juce' },
+  { name: 'SmokeJuceJive',  type: 'juce', ui: 'jive',    family: 'juce' },
   { name: 'SmokeVst3Gen',   type: 'vst3', ui: 'generic', family: 'juce' },
   { name: 'SmokeVst3Wv',    type: 'vst3', ui: 'webview', family: 'juce' },
+  { name: 'SmokeVst3Jive',  type: 'vst3', ui: 'jive',    family: 'juce' },
   { name: 'smoke-kebab',    type: 'clap', ui: 'generic', family: 'clap' },
   // A standalone application. `family` stays 'juce' because that is what
   // groups it for the optional cmake configure/build step — it needs JUCE, just
@@ -107,6 +110,10 @@ function vendorTools() {
   if (JUCE_DIR && fs.existsSync(JUCE_DIR)) {
     fs.symlinkSync(path.resolve(JUCE_DIR), path.join(tools, 'JUCE'), 'dir');
     console.log(`  vendored JUCE from ${JUCE_DIR}`);
+  }
+  if (JIVE_DIR && fs.existsSync(JIVE_DIR)) {
+    fs.symlinkSync(path.resolve(JIVE_DIR), path.join(tools, 'JIVE'), 'dir');
+    console.log(`  vendored JIVE from ${JIVE_DIR}`);
   }
   if (CLAP_DIR && fs.existsSync(CLAP_DIR)) {
     fs.symlinkSync(path.resolve(CLAP_DIR), path.join(tools, 'clap'), 'dir');

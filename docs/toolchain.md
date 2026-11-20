@@ -34,7 +34,8 @@ Pick the SDK for the format you scaffold. The templates resolve it in this order
 | Scaffold `type` | SDK | Resolution order |
 |---|---|---|
 | `clap` | [CLAP](https://github.com/free-audio/clap) — header-only C API | `find_package(clap CONFIG QUIET)` (i.e. `clap-config.cmake` on `CMAKE_PREFIX_PATH`) → `${CMAKE_SOURCE_DIR}/_tools/clap/CMakeLists.txt` via `add_subdirectory(…, EXCLUDE_FROM_ALL)` → legacy two-up fallback → clear `FATAL_ERROR`. The imported target is `clap`, not `CLAP::clap`. |
-| `juce`, `vst3`, `standalone` | [JUCE 9](https://github.com/juce-framework/JUCE) — C++ framework | If `juce::juce_audio_utils` is not already a target: `-DJUCE_DIR=/path/to/JUCE` → `${CMAKE_SOURCE_DIR}/_tools/JUCE` → legacy two-up fallback → clear `FATAL_ERROR`. Alternatively call `add_subdirectory(JUCE)` yourself from the root `CMakeLists.txt` before the plugin; the guard prevents adding JUCE twice. JUCE supplies VST3 and LV2 wrappers, so no separate [Steinberg VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is needed; the [Avid AAX SDK](https://developer.avid.com/aax/) is only needed if `formats` includes `AAX`. |
+| `juce`, `vst3`, `standalone` | [JUCE 9](https://github.com/juce-framework/JUCE) — C++ framework | If `juce::juce_audio_utils` is not already a target: `-DJUCE_DIR=/path/to/JUCE` or `$ENV{JUCE_DIR}` → `${CMAKE_SOURCE_DIR}/_tools/JUCE` → plugin `_tools/JUCE` → legacy two-up fallback → pinned `FetchContent` fallback (`9.0.3` commit `be29c81492b6151c8ea8d14c840e1311963b3a83`, respecting `FETCHCONTENT_FULLY_DISCONNECTED`). Alternatively call `add_subdirectory(JUCE)` yourself from the root `CMakeLists.txt` before the plugin; the guard prevents adding JUCE twice. JUCE supplies VST3 and LV2 wrappers, so no separate [Steinberg VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is needed; the [Avid AAX SDK](https://developer.avid.com/aax/) is only needed if `formats` includes `AAX`. |
+| `juce` / `vst3` with `ui="jive"` | [JIVE](https://github.com/ImJimmi/JIVE) — declarative XML/JSON UI | Resolved only when `APC_USE_JIVE=ON` and `jive::jive_layouts` is not already a target: `-DJIVE_DIR=/path/to/JIVE` or `$ENV{JIVE_DIR}` → plugin `_tools/JIVE` → `${CMAKE_SOURCE_DIR}/_tools/JIVE` → legacy two-up fallback → pinned `FetchContent` fallback (`v2.0.1` commit `693788a539eb42b9c15848706f9ceae43ee60084`, respecting `FETCHCONTENT_FULLY_DISCONNECTED`). Links `jive::jive_layouts` and `jive::jive_style_sheets` privately on the plugin target. |
 | `lv2` | [LV2](https://github.com/lv2/lv2) — header-only C11 spec | `find_path(LV2_INCLUDE_DIR NAMES lv2/core/lv2.h …)` with hints `LV2_DIR`, `LV2_INCLUDE_DIR`, env `APC_LV2_DIR` / `LV2_DIR` → `${CMAKE_SOURCE_DIR}/_tools/lv2/include` → legacy two-up fallback → clear `FATAL_ERROR`. System packages (`apt install lv2-dev`, `brew install lv2`) normally satisfy `find_path`. |
 
 Vendoring the simple default — see [Getting started](getting-started.md#3-bootstrap-a-project-folder):
@@ -42,18 +43,22 @@ Vendoring the simple default — see [Getting started](getting-started.md#3-boot
 ```sh
 git clone --depth 1 https://github.com/free-audio/clap.git _tools/clap
 # git clone --depth 1 --branch 9.0.3 https://github.com/juce-framework/JUCE.git _tools/JUCE
+# git clone --depth 1 --branch v2.0.1 https://github.com/ImJimmi/JIVE.git _tools/JIVE
 # git clone --depth 1 https://github.com/lv2/lv2.git _tools/lv2
 ```
 
 Or pass flags to `audio_plugin_configure`:
 
 ```text
-audio_plugin_configure(options="-DJUCE_DIR=/path/to/JUCE -DLV2_INCLUDE_DIR=/path/to/lv2/include")
+audio_plugin_configure(options="-DJUCE_DIR=/path/to/JUCE -DJIVE_DIR=/path/to/JIVE -DLV2_INCLUDE_DIR=/path/to/lv2/include")
 ```
 
 ## Platform notes
 
-- **Linux / JUCE:** install the system dev headers from JUCE's [Linux Dependencies.md](https://github.com/juce-framework/JUCE/blob/9.0.3/docs/Linux%20Dependencies.md) (`libasound2-dev`, `libjack-jackd2-dev`, `ladspa-sdk`, `libcurl4-openssl-dev`, `libfreetype*-dev`, `libfontconfig1-dev`, the `libx*`/`libglu`/`mesa` family, `libegl-dev`, and `libwebkit2gtk-4.1-dev` for `ui="webview"`). On headless CI, wrap JUCE builds that include the `LV2` format in `xvfb-run -a`: JUCE's `juce_lv2_helper` touches GUI context during `POST_BUILD` `.ttl` generation.
+- **Linux / JUCE:** install the system dev headers from JUCE's [Linux Dependencies.md](https://github.com/juce-framework/JUCE/blob/9.0.3/docs/Linux%20Dependencies.md) (`libasound2-dev`, `libjack-jackd2-dev`, `ladspa-sdk`, `libcurl4-openssl-dev`, `libfreetype*-dev`, `libfontconfig1-dev`, the `libx*`/`libglu`/`mesa` family, `libegl-dev`, and `libwebkit2gtk-4.1-dev` for `ui="webview"`). On minimal/headless Linux environments where `alsa` is absent from `pkg-config`, the JUCE scaffolds automatically set `JUCE_ALSA=0` so VST3/LV2 plugin builds still succeed. On headless CI, wrap JUCE builds that include the `LV2` format and `pluginval` runs in `xvfb-run -a`.
+- **Windows / MSVC:** JUCE plugin scaffolds set `CMAKE_MSVC_RUNTIME_LIBRARY` to `MultiThreaded$<$<CONFIG:Debug>:Debug>` (`/MT` in Release) so distributed `.vst3` binaries do not depend on a matching VC++ Redistributable.
+- **macOS universal binaries:** pass `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"` or `-DAPC_MACOS_UNIVERSAL=ON` when configuring Release distribution builds.
+- **Staging (`dist/`):** JUCE plugin builds automatically copy clean `.vst3`, `.component` (AU) and `.lv2` bundles into `<build>/dist/<Config>/` and expose a `<PluginName>_package` target.
 - **WebView backend:** the `webview` template uses WebView2 on Windows, WebKit on Linux and WKWebView on macOS. Windows additionally needs [Microsoft Edge WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
 - **Windows paths:** native `C:\...` paths are accepted (backslash is allowed in `projectPath`); they reach filesystem APIs or discrete argv entries, never a shell.
 - **macOS CLAP:** the CLAP template produces a `CFBundle` on Apple platforms; bundle packaging needs platform-specific verification beyond the Linux/Windows compile checks. See [Project status](project-status.md#known-limitations).

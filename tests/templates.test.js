@@ -284,7 +284,10 @@ describe('FUNC-02/08/11/12 · JUCE templates use the real JUCE 9 CMake API', () 
         `${s.name}: COMPANY_WEBSITE is a guessed domain, not an owned address`);
       assert.ok(!cm.includes('COMPANY_EMAIL'),
         `${s.name}: COMPANY_EMAIL is a guessed mailbox, not an owned address`);
-      assert.ok(!/https?:\/\/[A-Za-z0-9.-]+\.(?:com|net|org)\b/.test(cm),
+      const withoutGitRepo = cm.split('\n')
+        .filter(l => !/^\s*GIT_REPOSITORY\s+/.test(l))
+        .join('\n');
+      assert.ok(!/https?:\/\/[A-Za-z0-9.-]+\.(?:com|net|org)\b/.test(withoutGitRepo),
         `${s.name}: a hard-coded vendor URL is still present in the CMakeLists`);
     }
   });

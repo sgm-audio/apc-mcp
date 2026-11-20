@@ -136,6 +136,7 @@ The third row is the important one: telling a user to "install the missing valid
 ```text
 audio_plugin_create(name="Phaser9000", type="clap")
 audio_plugin_create(name="MyVerb", type="juce", vendor="MyCompany", formats="VST3;AU")
+audio_plugin_create(name="MyVerb", type="juce", ui="jive", vendor="MyCompany")
 audio_plugin_create(name="MyVerb", type="juce", ui="webview", vendor="MyCompany")
 audio_plugin_create(name="Lv2Gain", type="lv2", vendor="MyCompany")
 audio_plugin_create(name="ToneGen", type="standalone", vendor="MyCompany")
@@ -146,7 +147,7 @@ audio_plugin_create(name="ToneGen", type="standalone", vendor="MyCompany")
 | `projectPath` | string, optional | Parent project root; auto-detected from CWD |
 | `name` | **required**, `[A-Za-z][A-Za-z0-9_-]*` | Also the CMake target name; reserved names (`all`, `test`, `install`, …) are rejected |
 | `type` | `clap` (default), `vst3`, `juce`, `lv2`, `standalone` | See the table below |
-| `ui` | `generic` (default), `webview` | JUCE plugin types only; ignored elsewhere |
+| `ui` | `generic` (default), `webview`, `jive` | JUCE plugin types only; ignored elsewhere |
 | `vendor` | `apc-mcp` | Embedded in plugin metadata. Any single line of text up to 128 characters, non-ASCII included ("ACME, Inc." and "Café Audio" both work); quotes, backslashes and `&` are escaped per output grammar. Used in sanitized form for bundle IDs, four-character codes and the LV2 URN — which is also the `LV2URI` of the JUCE plugin templates, so a `type="juce"` LV2 build and a `type="lv2"` build name the plugin's identity the same way |
 | `description` | `An audio plugin` | Any single line of text up to 512 characters, non-ASCII included. Escaped separately for C++, CMake and LV2 Turtle |
 
@@ -158,7 +159,7 @@ Control characters (newlines included) are rejected in `vendor` and `description
 | `type` | Template | What you get |
 |---|---|---|
 | `clap` *(default)* | `templates/clap/` | C++20 `MODULE` plugin against `free-audio/clap` headers, stereo `CLAP_EXT_AUDIO_PORTS`; a `.clap` binary (CFBundle on macOS) |
-| `juce` | `templates/juce/` or `templates/juce-webview/` | Full `juce_add_plugin` project; `formats` accepts JUCE's `AU AUv3 AAX LV2 Standalone Unity VST VST3` |
+| `juce` | `templates/juce/`, `templates/juce-jive/` or `templates/juce-webview/` | Full `juce_add_plugin` project; `formats` accepts JUCE's `AU AUv3 AAX LV2 Standalone Unity VST VST3`; stages clean bundles to `build/dist/<Config>/` |
 | `vst3` | same JUCE templates | Convenience alias defaulting `formats` to `VST3` |
 | `lv2` | `templates/lv2/` | Native **pure C11** LV2 plugin against `lv2/core/lv2.h` with `manifest.ttl` + `plugin.ttl`; unrelated to JUCE's C++ `LV2` format |
 | `standalone` | `templates/standalone/` | A standalone GUI audio **application** (`juce_add_gui_app`), not a host-loadable plugin |
@@ -169,7 +170,8 @@ Control characters (newlines included) are rejected in `vendor` and `description
 
 | `ui` | What you get |
 |---|---|
-| `generic` *(default)* | `juce::GenericAudioProcessorEditor` — sliders for every parameter, no UI code |
+| `generic` *(default)* | `juce::GenericAudioProcessorEditor` — sliders for every parameter, `-DAPC_USE_JIVE=OFF` |
+| `jive` | Declarative [JIVE](https://github.com/ImJimmi/JIVE) XML/JSON UI (`Source/UI/MainView.xml` + `Source/UI/Styles.json`) with `jive::Interpreter`, APVTS `autoAttachParameters`, Debug disk hot-reload (`jive::SourceRoot`), Release `BinaryData` embedding, and `-DAPC_USE_JIVE=ON\|OFF` toggle |
 | `webview` | `juce::WebBrowserComponent` serving embedded HTML/CSS/JS from BinaryData, with a two-way bridge: C++ pushes `window.updateState(...)`, JS calls back via `apc://callback?action=...&data=...`. Edit `Source/UI/{index.html,style.css,app.js}` |
 
 The webview template asks CMake for `NEEDS_WEB_BROWSER TRUE`, `NEEDS_WEBVIEW2 TRUE` and static WebView2 linking — WebView2 on Windows, WebKit on Linux, WKWebView on macOS. `clap` and `lv2` are headless DSP scaffolds; `standalone` ships its own `AudioAppComponent` window. All three ignore `ui`.

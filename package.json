@@ -19,6 +19,7 @@
     "smoke": "node scripts/smoke-scaffold.mjs",
     "smoke:configure": "node scripts/smoke-scaffold.mjs --configure",
     "smoke:validate": "node scripts/smoke-validate.mjs",
+    "smoke:jive": "node scripts/smoke-jive.mjs",
     "cmake:lint": "cmake-lint templates/*/CMakeLists.txt",
     "quality": "npm run lint && npm run typecheck && npm test",
     "security": "npm audit && echo '\u2705 Security gate passed'",

@@ -984,12 +984,14 @@ function replaceTemplateVars(content, vars) {
 }
 
 function mapPluginType(type, ui) {
-  // JUCE-based types can choose webview or generic UI.
+  // JUCE-based types can choose generic, webview, or jive UI.
   // NOTE: 'ara' was removed from the schema — it mapped to the plain JUCE
   // template with FORMATS "ARA", which is not a valid juce_add_plugin format
   // and omitted AudioProcessorARAExtension / ARADocumentControllerSpecialisation
   // (AUDIT FUNC-07). Restoring it requires a real ARA template first.
-  const isWebView = ui === 'webview';
+  const juceTemplate = ui === 'webview'
+    ? 'juce-webview'
+    : (ui === 'jive' ? 'juce-jive' : 'juce');
   switch (type) {
     case 'clap': return {
       template: 'clap',
@@ -997,8 +999,8 @@ function mapPluginType(type, ui) {
       formatsRejection: 'type="clap" builds a native CLAP plugin against free-audio/clap and has no '
         + 'JUCE FORMATS list. Remove the `formats` argument (or use type="juce" for multi-format builds).',
     };
-    case 'vst3': return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3' };
-    case 'juce': return { template: isWebView ? 'juce-webview' : 'juce', formats: 'VST3;LV2;Standalone' };
+    case 'vst3': return { template: juceTemplate, formats: 'VST3' };
+    case 'juce': return { template: juceTemplate, formats: 'VST3;LV2;Standalone' };
     // A standalone *application*: juce_add_gui_app() builds one executable that
     // owns its audio device, so it has no plugin FORMATS at all. `formats: null`
     // is what tells the create handler to skip format validation. `ui` is not
@@ -1966,8 +1968,8 @@ registerTool(
       .describe('Plugin name. Use kebab-case, snake_case, or CamelCase. Examples: "Phaser9000", "my-delay", "TapeEcho".'),
     type: z.enum(['clap', 'vst3', 'juce', 'standalone', 'lv2']).default('clap')
       .describe('What to scaffold. "clap" generates a CLAP plugin against the free-audio/clap headers. "vst3" generates a JUCE plugin targeting VST3 only. "juce" generates a JUCE AudioProcessor for VST3;LV2;Standalone. "standalone" generates a standalone audio APPLICATION (juce_add_gui_app) — one executable that owns its audio device, not a plugin a host loads. "lv2" generates a native LV2 plugin in C with Turtle metadata, unrelated to the LV2 that type="juce" can emit from C++. (ARA is not offered yet — it needs a dedicated template.)'),
-    ui: z.enum(['generic', 'webview']).default('generic')
-      .describe('UI style for the JUCE plugin types. "generic" (default) uses JUCE\'s GenericAudioProcessorEditor. "webview" uses an HTML/CSS/JS WebView with parameter controls embedded via BinaryData. Ignored for "clap", "standalone" and "lv2", which ship their own UI or none.'),
+    ui: z.enum(['generic', 'webview', 'jive']).default('generic')
+      .describe('UI style for the JUCE plugin types. "generic" (default) uses JUCE\'s GenericAudioProcessorEditor with -DAPC_USE_JIVE=OFF. "jive" scaffolds a declarative XML/JSON JIVE UI (Source/UI/MainView.xml + Styles.json) with APVTS parameter auto-attach, Debug disk hot-reload, Release BinaryData embedding, and -DAPC_USE_JIVE=ON|OFF toggle. "webview" uses an HTML/CSS/JS WebView with parameter controls embedded via BinaryData. Ignored for "clap", "standalone" and "lv2", which ship their own UI or none.'),
     vendor: z.string().min(1).max(128).regex(SAFE_TEXT, FREE_TEXT_MESSAGE).default('apc-mcp')
       .describe('Vendor/company name embedded in plugin metadata. Any single line of text up to 128 characters, including non-ASCII.'),
     description: z.string().min(1).max(512).regex(SAFE_TEXT, FREE_TEXT_MESSAGE).default('An audio plugin')

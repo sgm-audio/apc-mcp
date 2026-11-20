@@ -57,6 +57,59 @@ Your binary lands at `build/plugins/MyGain/MyGain_artefacts/Release/CLAP/MyGain.
 
 The [getting started guide](docs/getting-started.md) covers the other formats, artefact paths and the few gotchas.
 
+## Using JIVE with apc-mcp
+
+`audio_plugin_create` supports [JIVE](https://github.com/ImJimmi/JIVE) (declarative XML layouts + JSON stylesheets for JUCE) as a first-class UI option on `type="juce"` and `type="vst3"`.
+
+### 1. Scaffold a JUCE + JIVE plugin
+
+```sh
+mkdir my-jive-plugin && cd my-jive-plugin
+echo '{}' > apc-mcp.json
+
+# Optional: vendor pinned checkouts locally (otherwise CMake FetchContent
+# fetches these exact commit SHAs automatically unless FETCHCONTENT_FULLY_DISCONNECTED=ON)
+git clone https://github.com/juce-framework/JUCE.git _tools/JUCE && git -C _tools/JUCE checkout be29c81492b6151c8ea8d14c840e1311963b3a83
+git clone https://github.com/ImJimmi/JIVE.git _tools/JIVE && git -C _tools/JIVE checkout 693788a539eb42b9c15848706f9ceae43ee60084
+```
+
+Then scaffold with `ui="jive"`:
+
+```text
+audio_plugin_create(projectPath="/path/to/my-jive-plugin", name="MyGain", type="juce", ui="jive", vendor="Acme")
+```
+
+This generates:
+
+- `plugins/MyGain/CMakeLists.txt` — pure CMake 3.22+, `-DAPC_USE_JIVE=ON|OFF` toggle, warnings-as-errors (`-Wall -Wextra -Werror` / `/W4 /WX`) on plugin sources, static MSVC runtime (`/MT`) on Windows, macOS universal binary support (`-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"` or `-DAPC_MACOS_UNIVERSAL=ON`), and a `MyGain_package` target staging bundles into `build/dist/<Config>/`.
+- `plugins/MyGain/Source/PluginProcessor.{h,cpp}` — JUCE `AudioProcessor` with `AudioProcessorValueTreeState` (`gain` parameter), smoothed gain DSP, and ValueTree state persistence.
+- `plugins/MyGain/Source/PluginEditor.{h,cpp}` — instantiates `jive::Interpreter` with `autoAttachParameters(apvts)`.
+- `plugins/MyGain/Source/UI/MainView.xml` and `Styles.json` — declarative XML layout and external JSON stylesheet.
+
+### 2. Debug hot-reload vs. Release BinaryData
+
+- **Debug builds (`JUCE_DEBUG=1`):** `jive::SourceRoot` points to `Source/UI` on disk, so editing `MainView.xml` or `Styles.json` hot-reloads the live editor window without recompiling.
+- **Release builds:** `MainView.xml` and `Styles.json` are embedded via `juce_add_binary_data`, so the shipped `.vst3` / `.component` / `.lv2` bundle has zero external file dependencies.
+- **Disabling JIVE:** pass `-DAPC_USE_JIVE=OFF` at configure time to skip fetching/linking JIVE completely and fall back to `juce::GenericAudioProcessorEditor`.
+
+### 3. Build, package, and validate
+
+```sh
+# Debug (hot-reload enabled) and Release (embedded BinaryData)
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --parallel
+
+# Clean packaged bundles are staged automatically in:
+#   build/dist/Release/MyGain.vst3
+#   build/dist/Release/MyGain.lv2
+#   build/dist/Release/MyGain.component   (macOS when AU is in formats)
+
+# Validate VST3 (wrap in `xvfb-run -a` on headless Linux)
+pluginval --strictness-level 5 --validate-in-process --validate build/dist/Release/MyGain.vst3
+```
+
+**Limitations:** `pluginval` is required for VST3 validation and needs a display (`xvfb-run -a` on headless Linux). On offline machines set `-DFETCHCONTENT_FULLY_DISCONNECTED=ON` alongside vendored `_tools/JUCE` + `_tools/JIVE` or `-DJUCE_DIR=... -DJIVE_DIR=...`.
+
 ## Documentation
 
 | Guide | What it covers |

@@ -1,0 +1,23 @@
+<Component
+    id="root"
+    width="420"
+    height="240"
+    style="Styles.json"
+    flex-direction="column"
+    justify-content="space-between"
+    padding="24"
+    gap="16"
+>
+    <Component id="header" flex-direction="row" justify-content="space-between" align-items="center">
+        <Text id="title">{{PLUGIN_DISPLAY_NAME}}</Text>
+        <Text id="vendor">{{VENDOR_HTML}}</Text>
+    </Component>
+
+    <Component id="controls" flex-direction="column" align-items="stretch" padding="16" gap="10">
+        <Component flex-direction="row" justify-content="space-between" align-items="center">
+            <Text class="label">Gain</Text>
+            <Text id="gain-readout" class="readout" parameter="gain" />
+        </Component>
+        <Slider id="gain" parameter="gain" orientation="horizontal" height="36" />
+    </Component>
+</Component>

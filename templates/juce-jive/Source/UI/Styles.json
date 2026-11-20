@@ -1,0 +1,40 @@
+{
+  "background": "#141820",
+  "foreground": "#E6ECF5",
+  "font-size": 14,
+
+  "#title": {
+    "font-size": 20,
+    "font-styles": "bold",
+    "foreground": "#F8FAFC"
+  },
+
+  "#vendor": {
+    "font-size": 12,
+    "foreground": "#8B97AD"
+  },
+
+  "#controls": {
+    "background": "#1D2430",
+    "border": "#2C3648",
+    "border-width": 1,
+    "border-radius": 10
+  },
+
+  ".label": {
+    "font-size": 13,
+    "foreground": "#B6C2D9"
+  },
+
+  ".readout": {
+    "font-size": 13,
+    "foreground": "#60A5FA"
+  },
+
+  "Slider": {
+    "background": "#0F141C",
+    "foreground": "#3B82F6",
+    "thumb": "#F8FAFC",
+    "border-radius": 6
+  }
+}
