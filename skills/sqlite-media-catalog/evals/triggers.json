@@ -1,9 +1,0 @@
-{
-  "skill": "sqlite-media-catalog",
-  "test_cases": [
-    {"input": "design a SQLite schema for my sample library", "should_trigger": true},
-    {"input": "media catalog search is slow", "should_trigger": true},
-    {"input": "how to store audio file metadata in SQLite", "should_trigger": true},
-    {"input": "write a VST3 processor", "should_trigger": false}
-  ]
-}
