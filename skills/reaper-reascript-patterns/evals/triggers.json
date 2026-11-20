@@ -1,0 +1,9 @@
+{
+  "skill": "reaper-reascript-patterns",
+  "test_cases": [
+    {"input": "debug my ReaScript that freezes the UI", "should_trigger": true},
+    {"input": "how to do undo properly in REAPER Lua", "should_trigger": true},
+    {"input": "Lua pattern match not working in ReaScript", "should_trigger": true},
+    {"input": "write a C++ DSP filter", "should_trigger": false}
+  ]
+}

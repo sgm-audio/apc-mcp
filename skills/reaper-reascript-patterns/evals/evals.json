@@ -1,0 +1,20 @@
+{
+  "skill": "reaper-reascript-patterns",
+  "test_cases": [
+    {
+      "name": "undo_balance",
+      "input": "This ReaScript has an early return inside the undo block",
+      "assertions": ["Flags unbalanced Undo/PreventUIRefresh"]
+    },
+    {
+      "name": "lua_pattern",
+      "input": "Why does name:match(\"[A-Z]{3}\") return nil?",
+      "assertions": ["Explains Lua patterns are not regex and {n,m} does not work"]
+    },
+    {
+      "name": "nil_guard",
+      "input": "Script crashes on reaper.GetActiveTake(item) when nothing is selected",
+      "assertions": ["Requires nil guard before use"]
+    }
+  ]
+}
