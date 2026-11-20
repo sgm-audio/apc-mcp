@@ -1,0 +1,20 @@
+{
+  "skill": "juce-ableton-ui-perf",
+  "test_cases": [
+    {
+      "name": "isshowing_guard",
+      "input": "My timerCallback is slowing down Ableton even with the editor closed",
+      "assertions": ["Requires isShowing() early return"]
+    },
+    {
+      "name": "visibility_changed",
+      "input": "How should I handle heavy UI components in Live?",
+      "assertions": ["Suggests visibilityChanged to create/destroy"]
+    },
+    {
+      "name": "no_unconditional_repaint",
+      "input": "I call repaint() every 30 ms",
+      "assertions": ["Flags unconditional repaint when not showing"]
+    }
+  ]
+}

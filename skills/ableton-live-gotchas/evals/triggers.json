@@ -1,0 +1,9 @@
+{
+  "skill": "ableton-live-gotchas",
+  "test_cases": [
+    {"input": "Ableton Live UI is laggy with my JUCE plugin", "should_trigger": true},
+    {"input": "MIDI plugin won't load in Live", "should_trigger": true},
+    {"input": "AU automation died after JUCE update", "should_trigger": true},
+    {"input": "write a Reaper ReaScript", "should_trigger": false}
+  ]
+}

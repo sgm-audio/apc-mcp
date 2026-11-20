@@ -1,0 +1,20 @@
+{
+  "skill": "ableton-live-gotchas",
+  "test_cases": [
+    {
+      "name": "editor_preload",
+      "input": "My JUCE plugin makes Ableton UI crawl on Windows even with the editor closed",
+      "assertions": ["Mentions Live pre-loads editors", "Suggests isShowing() guard"]
+    },
+    {
+      "name": "midi_only",
+      "input": "Pure MIDI VST3 won't instantiate in Ableton",
+      "assertions": ["Explains empty bus rejection", "Gives stereo output workaround"]
+    },
+    {
+      "name": "au_automation",
+      "input": "AU automation is permanently disabled after updating JUCE",
+      "assertions": ["Mentions JUCE_FORCE_USE_LEGACY_PARAM_IDS"]
+    }
+  ]
+}
