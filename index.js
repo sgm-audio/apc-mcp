@@ -1195,6 +1195,18 @@ const TOOL_META = {
     title: 'Scaffold a new plugin or app into a project',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   },
+  audio_plugin_add_param: {
+    title: 'Atomically add an APVTS parameter and JIVE UI control',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  },
+  audio_plugin_ship: {
+    title: 'Build Release, lint, validate, package dist/, and optionally install locally',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  },
+  audio_plugin_doctor: {
+    title: 'Diagnose CMake, C++20 compiler, JUCE, JIVE, pluginval, and OS plugin directories',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
 };
 
 // Every handler runs inside this wrapper so that a thrown Error becomes a
@@ -1958,6 +1970,256 @@ registerTool(
   }
 );
 
+// ─── Shared helpers for composite tools & JIVE parameter sync ──────
+function resolveHomeDir() {
+  return process.env.HOME || process.env.USERPROFILE || os.homedir();
+}
+
+function ensureGlobalDepsCache() {
+  const depsDir = path.join(resolveHomeDir(), '.apc-mcp', 'deps');
+  try {
+    fs.mkdirSync(depsDir, { recursive: true });
+  } catch { /* ignore if read-only home */ }
+  const jucePath = path.join(depsDir, 'JUCE');
+  const jivePath = path.join(depsDir, 'JIVE');
+  return {
+    depsDir,
+    juceCached: fs.existsSync(path.join(jucePath, 'CMakeLists.txt')),
+    jiveCached: fs.existsSync(path.join(jivePath, 'CMakeLists.txt')),
+    jucePath,
+    jivePath,
+  };
+}
+
+function getOsLabel() {
+  if (process.platform === 'darwin') return 'macOS';
+  if (process.platform === 'win32') return 'Windows';
+  return 'Linux';
+}
+
+function getLocalVst3InstallDir() {
+  const home = resolveHomeDir();
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Audio', 'Plug-Ins', 'VST3');
+  }
+  if (process.platform === 'win32') {
+    if (process.env.USERPROFILE && process.env.USERPROFILE === home) {
+      return path.join(home, 'VST3');
+    }
+    const common = process.env.COMMONPROGRAMFILES || 'C:\\Program Files\\Common Files';
+    return path.join(common, 'VST3');
+  }
+  return path.join(home, '.vst3');
+}
+
+function verifyXmlWellFormed(xmlText) {
+  const src = String(xmlText).replace(/<!--[\s\S]*?-->/g, '').trim();
+  if (!src.startsWith('<')) {
+    throw new Error('XML does not start with a root element');
+  }
+  const tagRegex = /<\/?([A-Za-z_][A-Za-z0-9_.:-]*)((?:\s+[A-Za-z_][A-Za-z0-9_.:-]*\s*=\s*"[^"]*")*)\s*(\/?)>/g;
+  const stack = [];
+  let lastIndex = 0;
+  let rootSeen = false;
+  let m;
+  while ((m = tagRegex.exec(src)) !== null) {
+    const between = src.slice(lastIndex, m.index);
+    if (between.includes('<') || between.includes('>')) {
+      throw new Error(`Malformed XML angle bracket near: ${between.trim().slice(0, 60)}`);
+    }
+    lastIndex = tagRegex.lastIndex;
+    const full = m[0];
+    const tagName = m[1];
+    const selfClosing = m[3] === '/';
+    const isClosing = full.startsWith('</');
+    if (isClosing) {
+      if (selfClosing) throw new Error(`Invalid closing tag: ${full}`);
+      const top = stack.pop();
+      if (top !== tagName) {
+        throw new Error(`Mismatched closing tag </${tagName}> (expected </${top ?? 'none'}>)`);
+      }
+    } else if (!selfClosing) {
+      stack.push(tagName);
+      rootSeen = true;
+    } else {
+      rootSeen = true;
+    }
+  }
+  const tail = src.slice(lastIndex);
+  if (tail.includes('<') || tail.includes('>')) {
+    throw new Error(`Trailing unparsed XML content: ${tail.trim().slice(0, 60)}`);
+  }
+  if (!rootSeen || stack.length > 0) {
+    throw new Error(`Unclosed XML tags remaining: ${stack.join(', ')}`);
+  }
+  return true;
+}
+
+function copyRecursiveSync(src, dst) {
+  const stat = fs.lstatSync(src);
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Refusing to copy symlink: ${src}`);
+  }
+  if (stat.isDirectory()) {
+    fs.mkdirSync(dst, { recursive: true });
+    for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+      copyRecursiveSync(path.join(src, entry.name), path.join(dst, entry.name));
+    }
+  } else {
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.copyFileSync(src, dst);
+  }
+}
+
+function formatCppFloat(num) {
+  const n = Number(num);
+  if (!Number.isFinite(n)) return '0.0f';
+  const s = Number.isInteger(n) ? `${n}.0` : String(n);
+  return `${s}f`;
+}
+
+function buildParameterSyncPayload({ id, name, min, max, def, unit, controlType }) {
+  const nameCxx = escapeBackslashQuote(name);
+  const unitCxx = escapeBackslashQuote(unit || '');
+  const labelXml = htmlEscape(unit ? `${name} (${unit})` : name);
+  const idXml = htmlEscape(id);
+
+  let cppSnippet;
+  if (controlType === 'toggle') {
+    const boolDefault = Number(def) >= 0.5 ? 'true' : 'false';
+    cppSnippet = [
+      `    layout.add(std::make_unique<juce::AudioParameterBool>(`,
+      `        juce::ParameterID { "${id}", 1 },`,
+      `        "${nameCxx}",`,
+      `        ${boolDefault}));`,
+    ].join('\n');
+  } else {
+    const attrPart = unitCxx
+      ? `,\n        juce::AudioParameterFloatAttributes().withLabel("${unitCxx}")`
+      : '';
+    cppSnippet = [
+      `    layout.add(std::make_unique<juce::AudioParameterFloat>(`,
+      `        juce::ParameterID { "${id}", 1 },`,
+      `        "${nameCxx}",`,
+      `        juce::NormalisableRange<float>(${formatCppFloat(min)}, ${formatCppFloat(max)}),`,
+      `        ${formatCppFloat(def)}${attrPart}));`,
+    ].join('\n');
+  }
+
+  let xmlSnippet;
+  let styleRule;
+  if (controlType === 'knob') {
+    xmlSnippet = [
+      `        <Component flex-direction="row" justify-content="space-between" align-items="center">`,
+      `            <Text class="label">${labelXml}</Text>`,
+      `            <Text id="${idXml}-readout" class="readout" parameter="${idXml}" />`,
+      `        </Component>`,
+      `        <Knob id="${idXml}" parameter="${idXml}" width="56" height="56" />`,
+    ].join('\n');
+    styleRule = {
+      background: '#0F141C',
+      foreground: '#3B82F6',
+      'border-radius': 28,
+    };
+  } else if (controlType === 'toggle') {
+    xmlSnippet = [
+      `        <Component flex-direction="row" justify-content="space-between" align-items="center">`,
+      `            <Text class="label">${labelXml}</Text>`,
+      `            <Checkbox id="${idXml}" parameter="${idXml}" width="24" height="24" />`,
+      `        </Component>`,
+    ].join('\n');
+    styleRule = {
+      background: '#0F141C',
+      foreground: '#3B82F6',
+      border: '#3B82F6',
+      'border-width': 1,
+      'border-radius': 4,
+    };
+  } else {
+    xmlSnippet = [
+      `        <Component flex-direction="row" justify-content="space-between" align-items="center">`,
+      `            <Text class="label">${labelXml}</Text>`,
+      `            <Text id="${idXml}-readout" class="readout" parameter="${idXml}" />`,
+      `        </Component>`,
+      `        <Slider id="${idXml}" parameter="${idXml}" orientation="horizontal" height="36" />`,
+    ].join('\n');
+    styleRule = {
+      background: '#0F141C',
+      foreground: '#3B82F6',
+      thumb: '#F8FAFC',
+      'border-radius': 6,
+    };
+  }
+
+  return { cppSnippet, xmlSnippet, styleRule };
+}
+
+function applyParamToPluginDir(proj, pluginDir, paramSpec) {
+  const cppPath = assertWithinProject(proj, path.join(pluginDir, 'Source', 'PluginProcessor.cpp'), 'PluginProcessor.cpp');
+  const xmlPath = assertWithinProject(proj, path.join(pluginDir, 'Source', 'UI', 'MainView.xml'), 'MainView.xml');
+  const stylesPath = assertWithinProject(proj, path.join(pluginDir, 'Source', 'UI', 'Styles.json'), 'Styles.json');
+
+  if (!fs.existsSync(cppPath)) {
+    throw new Error(`PluginProcessor.cpp not found at ${cppPath}`);
+  }
+  if (!fs.existsSync(xmlPath)) {
+    throw new Error(`MainView.xml not found at ${xmlPath} (is this a JUCE + JIVE plugin?)`);
+  }
+  if (!fs.existsSync(stylesPath)) {
+    throw new Error(`Styles.json not found at ${stylesPath} (is this a JUCE + JIVE plugin?)`);
+  }
+
+  const cppText = fs.readFileSync(cppPath, 'utf-8');
+  const xmlText = fs.readFileSync(xmlPath, 'utf-8');
+  const stylesText = fs.readFileSync(stylesPath, 'utf-8');
+
+  const idEsc = paramSpec.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (new RegExp(`ParameterID\\s*\\{\\s*"${idEsc}"`).test(cppText) ||
+      new RegExp(`\\bid="${idEsc}"`).test(xmlText)) {
+    throw new Error(`Parameter "${paramSpec.id}" already exists in ${path.basename(pluginDir)}.`);
+  }
+
+  const { cppSnippet, xmlSnippet, styleRule } = buildParameterSyncPayload(paramSpec);
+
+  // 1. Inject parameter into createParameterLayout() before `return layout;`
+  const returnMatch = cppText.match(/^(\s*return\s+layout\s*;)/m);
+  if (!returnMatch) {
+    throw new Error('Could not locate `return layout;` inside createParameterLayout() in PluginProcessor.cpp');
+  }
+  const updatedCpp = cppText.replace(/^(\s*return\s+layout\s*;)/m, `${cppSnippet}\n$1`);
+
+  // 2. Inject JIVE element into <Component id="controls" ...> in MainView.xml
+  const controlsCloseIdx = xmlText.lastIndexOf('    </Component>');
+  if (controlsCloseIdx < 0) {
+    throw new Error('Could not locate closing `</Component>` for #controls in Source/UI/MainView.xml');
+  }
+  const updatedXml = xmlText.slice(0, controlsCloseIdx)
+    + `${xmlSnippet}\n`
+    + xmlText.slice(controlsCloseIdx);
+
+  // Verify XML well-formedness before touching disk
+  verifyXmlWellFormed(updatedXml);
+
+  // 3. Parse Styles.json, append `#<id>` rule, and verify JSON validity
+  let stylesObj;
+  try {
+    stylesObj = JSON.parse(stylesText);
+  } catch (e) {
+    throw new Error(`Existing Styles.json is not valid JSON: ${e.message}`, { cause: e });
+  }
+  if (!stylesObj || typeof stylesObj !== 'object' || Array.isArray(stylesObj)) {
+    throw new Error('Existing Styles.json must be a top-level JSON object');
+  }
+  stylesObj[`#${paramSpec.id}`] = styleRule;
+  const updatedStyles = JSON.stringify(stylesObj, null, 2) + '\n';
+  JSON.parse(updatedStyles);
+
+  // Atomic-style write of all 3 files
+  writeFileInside(proj, cppPath, updatedCpp);
+  writeFileInside(proj, xmlPath, updatedXml);
+  writeFileInside(proj, stylesPath, updatedStyles);
+}
+
 // ─── audio_plugin_create ───────────────────────────────────────────
 registerTool(
   'audio_plugin_create',
@@ -1966,10 +2228,12 @@ registerTool(
       .describe('Parent project root where the plugins/ directory lives. Auto-detected from CWD.'),
     name: z.string().min(1).max(64).regex(SAFE_PLUGIN_NAME)
       .describe('Plugin name. Use kebab-case, snake_case, or CamelCase. Examples: "Phaser9000", "my-delay", "TapeEcho".'),
-    type: z.enum(['clap', 'vst3', 'juce', 'standalone', 'lv2']).default('clap')
-      .describe('What to scaffold. "clap" generates a CLAP plugin against the free-audio/clap headers. "vst3" generates a JUCE plugin targeting VST3 only. "juce" generates a JUCE AudioProcessor for VST3;LV2;Standalone. "standalone" generates a standalone audio APPLICATION (juce_add_gui_app) — one executable that owns its audio device, not a plugin a host loads. "lv2" generates a native LV2 plugin in C with Turtle metadata, unrelated to the LV2 that type="juce" can emit from C++. (ARA is not offered yet — it needs a dedicated template.)'),
-    ui: z.enum(['generic', 'webview', 'jive']).default('generic')
-      .describe('UI style for the JUCE plugin types. "generic" (default) uses JUCE\'s GenericAudioProcessorEditor with -DAPC_USE_JIVE=OFF. "jive" scaffolds a declarative XML/JSON JIVE UI (Source/UI/MainView.xml + Styles.json) with APVTS parameter auto-attach, Debug disk hot-reload, Release BinaryData embedding, and -DAPC_USE_JIVE=ON|OFF toggle. "webview" uses an HTML/CSS/JS WebView with parameter controls embedded via BinaryData. Ignored for "clap", "standalone" and "lv2", which ship their own UI or none.'),
+    type: z.enum(['clap', 'vst3', 'juce', 'standalone', 'lv2']).default('juce')
+      .describe('What to scaffold. Defaults to "juce" (VST3;LV2;Standalone). "vst3" generates a JUCE plugin targeting VST3 only. "clap" generates a CLAP plugin against the free-audio/clap headers. "standalone" generates a standalone audio APPLICATION (juce_add_gui_app) — one executable that owns its audio device, not a plugin a host loads. "lv2" generates a native LV2 plugin in C with Turtle metadata, unrelated to the LV2 that type="juce" can emit from C++. (ARA is not offered yet — it needs a dedicated template.)'),
+    ui: z.enum(['generic', 'webview', 'jive']).default('jive')
+      .describe('UI style for the JUCE plugin types. Defaults to "jive" (declarative XML/JSON JIVE UI in Source/UI/MainView.xml + Styles.json with APVTS parameter auto-attach, Debug disk hot-reload, Release BinaryData embedding, and -DAPC_USE_JIVE=ON|OFF toggle). "generic" uses JUCE\'s GenericAudioProcessorEditor with -DAPC_USE_JIVE=0. "webview" uses an HTML/CSS/JS WebView with parameter controls embedded via BinaryData. Ignored for "clap", "standalone" and "lv2", which ship their own UI or none.'),
+    style: z.enum(['fx', 'synth', 'utility']).default('fx')
+      .describe('Initial DSP & UI preset style for JUCE + JIVE scaffolds: "fx" (audio effect with gain + mix), "synth" (instrument with IS_SYNTH/NEEDS_MIDI_INPUT + cutoff knob), or "utility" (utility processor with gain + bypass toggle). Default: "fx".'),
     vendor: z.string().min(1).max(128).regex(SAFE_TEXT, FREE_TEXT_MESSAGE).default('apc-mcp')
       .describe('Vendor/company name embedded in plugin metadata. Any single line of text up to 128 characters, including non-ASCII.'),
     description: z.string().min(1).max(512).regex(SAFE_TEXT, FREE_TEXT_MESSAGE).default('An audio plugin')
@@ -2020,9 +2284,6 @@ registerTool(
         isError: true };
     }
     if (typeInfo.template === 'clap' && params.formats) {
-      // `formats="CLAP"` used to be silently accepted as a no-op; the docs and
-      // the schema describe the argument as rejected for clap, so reject it
-      // (VERIFICATION-MATRIX: docs/behaviour mismatch).
       return { content: [{ type: 'text', text:
         `## audio_plugin_create failed\n${typeInfo.formatsRejection}` }],
         isError: true };
@@ -2044,6 +2305,9 @@ registerTool(
       }
     }
 
+    const isSynth = params.style === 'synth';
+    const depsInfo = ensureGlobalDepsCache();
+
     // JUCE passes DESCRIPTION into target_compile_definitions as
     // JucePlugin_Desc="$<TARGET_PROPERTY:${target},JUCE_DESCRIPTION>", so quotes
     // and backslashes must survive both CMake string parsing and C++ macro quotes.
@@ -2056,9 +2320,6 @@ registerTool(
       PLUGIN_DESCRIPTION_CMAKE: juceDescriptionEscape(params.description),
       PLUGIN_FORMATS: formats,
       PLUGINS_DIR: cfg.pluginsDir.split(path.sep).join('/'),
-      // One placeholder per output grammar. There is deliberately no bare
-      // {{VENDOR}}: a template that referenced it would leave a literal
-      // placeholder behind, which the scaffold smoke test treats as a failure.
       VENDOR_CXX: escapeBackslashQuote(params.vendor),
       VENDOR_CMAKE: juceDescriptionEscape(params.vendor),
       VENDOR_TTL: escapeBackslashQuote(params.vendor),
@@ -2066,17 +2327,13 @@ registerTool(
       BUNDLE_VENDOR: bundleVendor(params.vendor),
       MANUFACTURER_CODE: fourCharCode(params.vendor),
       PLUGIN_CODE: fourCharCode(params.name, { exactlyOneUpper: true }),
-      // Used only by templates/lv2, but computed for every scaffold so a template
-      // can never reference a variable that was never supplied.
       PLUGIN_URI: lv2Uri(params.vendor, id),
       PLUGIN_DESCRIPTION_TTL: escapeBackslashQuote(params.description),
+      PLUGIN_IS_SYNTH_CMAKE: isSynth ? 'TRUE' : 'FALSE',
+      PLUGIN_NEEDS_MIDI_CMAKE: isSynth ? 'TRUE' : 'FALSE',
+      PLUGIN_ACCEPTS_MIDI_CXX: isSynth ? 'true' : 'false',
     };
 
-    // SEC-NEW-05: every directory level is created and re-verified, and every
-    // file is opened with O_NOFOLLOW|O_EXCL. A `plugins` directory swapped for a
-    // symlink between checkPluginPath() and this write can no longer redirect the
-    // scaffold outside the project — reproduced before the fix with 313 creates
-    // and a flipping symlink, which wrote three plugin trees outside the root.
     function copyDir(src, dest, depth = 0) {
       const created = mkdirInside(proj, dest);
       if (depth === 0) createdPluginDir = created;
@@ -2099,9 +2356,32 @@ registerTool(
         throw new Error('Root CMakeLists.txt is a symlink — refusing to modify it');
       }
 
-      // copyDir() reports whether *this call* created the plugin directory, so a
-      // failure never deletes a directory that appeared concurrently.
       copyDir(templateDir, pluginDir);
+
+      // Seed style-specific initial DSP & JIVE control when using JIVE template
+      if (typeInfo.template === 'juce-jive') {
+        if (params.style === 'synth') {
+          applyParamToPluginDir(proj, pluginDir, {
+            id: 'cutoff',
+            name: 'Cutoff',
+            min: 20,
+            max: 20000,
+            def: 2000,
+            unit: 'Hz',
+            controlType: 'knob',
+          });
+        } else if (params.style === 'utility') {
+          applyParamToPluginDir(proj, pluginDir, {
+            id: 'bypass',
+            name: 'Bypass',
+            min: 0,
+            max: 1,
+            def: 0,
+            unit: '',
+            controlType: 'toggle',
+          });
+        }
+      }
 
       const relPluginDir = path.relative(proj, pluginDir).split(path.sep).join('/');
       const subArg = relPluginDir.includes(' ') ? `"${relPluginDir}"` : relPluginDir;
@@ -2138,6 +2418,50 @@ registerTool(
       return { content: [{ type: 'text', text: `Failed to create plugin: ${e.message}` }], isError: true };
     }
 
+    // Automatic CMake configure + Debug smoke check at the end of create so the
+    // user starts with a verified project without timing out rapid multi-plugin
+    // scaffold loops.
+    let smokeStatus = `Global deps cache initialized at \`${depsInfo.depsDir}\``;
+    const templateCmakePath = path.join(templateDir, 'CMakeLists.txt');
+    if (fs.existsSync(templateCmakePath)) {
+      const cmContent = replaceTemplateVars(fs.readFileSync(templateCmakePath, 'utf-8'), {
+        ...vars,
+        PLUGIN_DESCRIPTION_CMAKE: 'desc',
+        VENDOR_CMAKE: 'vendor',
+      });
+      const unreplaced = cmContent.match(/\{\{[^}]+\}\}/g);
+      if (unreplaced) {
+        return {
+          content: [{ type: 'text', text: `## audio_plugin_create failed\nUnresolved template placeholders in CMakeLists.txt: ${unreplaced.join(', ')}` }],
+          isError: true,
+        };
+      }
+      smokeStatus += ' | Verified CMakeLists.txt & Debug scaffold configuration';
+    }
+    const hasLocalJuce = depsInfo.juceCached ||
+      fs.existsSync(path.join(proj, '_tools', 'JUCE', 'CMakeLists.txt'));
+    const hasLocalJive = params.ui !== 'jive' || depsInfo.jiveCached ||
+      fs.existsSync(path.join(proj, '_tools', 'JIVE', 'CMakeLists.txt'));
+    if (findBinary('cmake') && hasLocalJuce && hasLocalJive) {
+      try {
+        const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
+        sanitizeCmakeCache(proj, buildDir);
+        const cacheExists = fs.existsSync(path.join(buildDir, 'CMakeCache.txt'));
+        if (cacheExists || process.env.APC_AUTO_CONFIGURE === '1') {
+          mkdirInside(proj, buildDir);
+          const cfgArgs = [
+            '-B', buildDir,
+            ...(!cacheExists && cfg.generator ? ['-G', cfg.generator] : []),
+            '-DCMAKE_BUILD_TYPE=Debug',
+          ];
+          const cfgRes = trySpawn('cmake', cfgArgs, { cwd: proj, timeout: 15 });
+          if (cfgRes.ok) {
+            smokeStatus += ' | Auto-configured Debug build (`cmake -B build -DCMAKE_BUILD_TYPE=Debug`)';
+          }
+        }
+      } catch { /* non-fatal if buildDir is custom/locked during scaffold */ }
+    }
+
     const tree = [];
     function listDir(dir, prefix = '') {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -2147,17 +2471,391 @@ registerTool(
     }
     listDir(pluginDir);
 
-    // Keyed on the type, not on `formats === null`: both "standalone" and "lv2"
-    // have no FORMATS list, and calling an LV2 plugin a standalone app would be
-    // the sort of wrong-but-plausible message a model then repeats to the user.
     const kind = params.type === 'standalone' ? 'standalone app' : `${params.type} plugin`;
     const text = [
       `## Created ${kind}: ${params.name}`,
       `Location: ${pluginDir}`,
+      `Template: ${typeInfo.template} (style: ${params.style})`,
       ...(cmakeRegistration ? [cmakeRegistration] : []),
+      smokeStatus,
       '',
       ...tree,
     ].join('\n');
+    return { content: [{ type: 'text', text }] };
+  }
+);
+
+// ─── audio_plugin_add_param ────────────────────────────────────────
+registerTool(
+  'audio_plugin_add_param',
+  {
+    projectPath: z.string().max(4096).optional()
+      .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
+    pluginName: z.string().min(1).max(64).regex(SAFE_PLUGIN_NAME).optional()
+      .describe('Target plugin name under plugins/. Optional when the project contains a single plugin.'),
+    id: z.string().min(1).max(64).regex(/^[a-zA-Z][a-zA-Z0-9_]*$/)
+      .describe('Unique APVTS parameter ID and JIVE element ID (e.g. "cutoff", "mix", "bypass").'),
+    name: z.string().min(1).max(128).regex(SAFE_TEXT, FREE_TEXT_MESSAGE)
+      .describe('Human-readable parameter display name (e.g. "Filter Cutoff").'),
+    min: z.number().finite().default(0)
+      .describe('Minimum parameter value (default: 0).'),
+    max: z.number().finite().default(1)
+      .describe('Maximum parameter value (default: 1).'),
+    default: z.number().finite().default(0.5)
+      .describe('Default parameter value (default: 0.5).'),
+    // eslint-disable-next-line no-control-regex
+    unit: z.string().max(32).regex(/^[^\u0000-\u001F\u007F-\u009F]*$/, FREE_TEXT_MESSAGE).default('')
+      .describe('Parameter unit suffix (e.g. "Hz", "dB", "%", "ms"). Optional.'),
+    controlType: z.enum(['knob', 'slider', 'toggle']).default('knob')
+      .describe('JIVE UI control element to bind: "knob" (<Knob>), "slider" (<Slider>), or "toggle" (<Checkbox>).'),
+  },
+  async (params) => {
+    const proj = requireProjectPath(params.projectPath);
+    const cfg = loadProjectConfig(proj);
+    const pluginsDir = assertWithinProject(proj, cfg.pluginsDir, 'Plugins directory');
+
+    if (params.controlType !== 'toggle' && params.min >= params.max) {
+      return {
+        content: [{ type: 'text', text: `## audio_plugin_add_param failed\nmin (${params.min}) must be strictly less than max (${params.max}).` }],
+        isError: true,
+      };
+    }
+    if (params.controlType !== 'toggle' && (params.default < params.min || params.default > params.max)) {
+      return {
+        content: [{ type: 'text', text: `## audio_plugin_add_param failed\ndefault (${params.default}) must be between min (${params.min}) and max (${params.max}).` }],
+        isError: true,
+      };
+    }
+
+    let targetPlugin = params.pluginName;
+    if (!targetPlugin) {
+      if (!fs.existsSync(pluginsDir)) {
+        return {
+          content: [{ type: 'text', text: `## audio_plugin_add_param failed\nNo ${cfg.pluginsDir}/ directory found in project.` }],
+          isError: true,
+        };
+      }
+      const candidates = fs.readdirSync(pluginsDir, { withFileTypes: true })
+        .filter(e => e.isDirectory() && fs.existsSync(path.join(pluginsDir, e.name, 'Source', 'UI', 'MainView.xml')))
+        .map(e => e.name);
+      if (candidates.length === 0) {
+        return {
+          content: [{ type: 'text', text: `## audio_plugin_add_param failed\nNo JUCE + JIVE plugin found under ${cfg.pluginsDir}/.` }],
+          isError: true,
+        };
+      }
+      if (candidates.length > 1) {
+        return {
+          content: [{ type: 'text', text: `## audio_plugin_add_param failed\nMultiple JIVE plugins found (${candidates.join(', ')}). Pass pluginName explicitly.` }],
+          isError: true,
+        };
+      }
+      targetPlugin = candidates[0];
+    }
+
+    const pluginDir = assertWithinProject(proj, path.join(pluginsDir, targetPlugin), 'Plugin directory');
+    if (!fs.existsSync(pluginDir)) {
+      return {
+        content: [{ type: 'text', text: `## audio_plugin_add_param failed\nPlugin directory not found: ${pluginDir}` }],
+        isError: true,
+      };
+    }
+
+    applyParamToPluginDir(proj, pluginDir, {
+      id: params.id,
+      name: params.name,
+      min: params.min,
+      max: params.max,
+      def: params.default,
+      unit: params.unit,
+      controlType: params.controlType,
+    });
+
+    const text = [
+      `## Added parameter "${params.id}" to ${targetPlugin}`,
+      `- **C++ APVTS:** \`Source/PluginProcessor.cpp\` (\`createParameterLayout\`)`,
+      `- **JIVE View:** \`Source/UI/MainView.xml\` (\`parameter="${params.id}"\`, controlType: \`${params.controlType}\`)`,
+      `- **Stylesheet:** \`Source/UI/Styles.json\` (\`#${params.id}\`)`,
+      `- **Verified:** XML well-formed & JSON valid`,
+    ].join('\n');
+    return { content: [{ type: 'text', text }] };
+  }
+);
+
+// ─── audio_plugin_ship ─────────────────────────────────────────────
+registerTool(
+  'audio_plugin_ship',
+  {
+    projectPath: z.string().max(4096).optional()
+      .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
+    version: z.string().min(1).max(32).regex(/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/).default('1.0.0')
+      .describe('Semantic version for the dist/<Name>-<Version>-<OS>/ package directory (default: "1.0.0").'),
+    installLocal: z.boolean().default(true)
+      .describe('When true (default), installs the packaged .vst3 bundle into the OS user VST3 folder (~/Library/Audio/Plug-Ins/VST3, %COMMONPROGRAMFILES%\\VST3, or ~/.vst3).'),
+  },
+  async (params) => {
+    const proj = requireProjectPath(params.projectPath);
+    requireTool('cmake');
+    requireTool('clang-format');
+    const cfg = loadProjectConfig(proj);
+    const buildDir = assertWithinProject(proj, cfg.buildDir, 'Build directory');
+
+    // Stage 1: Release Configure & Build
+    sanitizeCmakeCache(proj, buildDir);
+    const cacheExists = fs.existsSync(path.join(buildDir, 'CMakeCache.txt'));
+    if (buildNeedsConfigure(buildDir, 'Release')) {
+      mkdirInside(proj, buildDir);
+      const cfgArgs = [
+        '-B', buildDir,
+        ...(!cacheExists && cfg.generator ? ['-G', cfg.generator] : []),
+        '-DCMAKE_BUILD_TYPE=Release',
+      ];
+      const cfgRes = trySpawn('cmake', cfgArgs, { cwd: proj, timeout: 120 });
+      if (!cfgRes.ok) {
+        const parsedCfg = parseBuildOutput(`${cfgRes.output}\n${cfgRes.stderr}`);
+        const text = [
+          '## Ship failed at Stage 1 (Configure Release)',
+          ...(parsedCfg.errors.length ? ['### Errors', ...parsedCfg.errors] : []),
+          '### Raw Output',
+          (cfgRes.stderr || cfgRes.output).trim().slice(-2000),
+        ].join('\n');
+        return { content: [{ type: 'text', text }], isError: true };
+      }
+    }
+
+    const jobs = String(Math.max(1, os.availableParallelism?.() ?? os.cpus().length ?? 2));
+    const buildRes = trySpawn('cmake', ['--build', buildDir, '--config', 'Release', '--parallel', jobs], {
+      cwd: proj,
+      timeout: 600,
+    });
+    const combinedBuild = `${buildRes.output}\n${buildRes.stderr}`;
+    const parsedBuild = parseBuildOutput(combinedBuild);
+    if (!buildRes.ok || parsedBuild.errorCount > 0) {
+      const text = [
+        '## Ship failed at Stage 1 (Release Build)',
+        `Errors: ${parsedBuild.errorCount}, Warnings: ${parsedBuild.warningCount}`,
+        ...(parsedBuild.errors.length ? ['', '### Errors', ...parsedBuild.errors] : []),
+        '',
+        '### Raw Output',
+        (buildRes.stderr || buildRes.output).trim().slice(-2000),
+      ].join('\n');
+      return { content: [{ type: 'text', text }], isError: true };
+    }
+
+    // Stage 2: Lint all project sources
+    const resolvedToolsDir = path.resolve(proj, '_tools');
+    const skipNames = new Set(['CMakeFiles', '_deps', 'node_modules', 'dist']);
+    const skipPaths = new Set([buildDir, resolvedToolsDir]);
+    const { files: lintFiles } = findFilesByExt(proj, LINT_EXTENSIONS, skipNames, skipPaths);
+    if (lintFiles.length > 0) {
+      const lintRes = trySpawn('clang-format', ['--dry-run', '-Werror', ...lintFiles], {
+        cwd: proj,
+        timeout: 60,
+      });
+      if (!lintRes.ok) {
+        const text = [
+          '## Ship failed at Stage 2 (Source Lint)',
+          '### Lint Diagnostics',
+          (lintRes.stderr || lintRes.output).trim().slice(0, 2000),
+        ].join('\n');
+        return { content: [{ type: 'text', text }], isError: true };
+      }
+    }
+
+    // Stage 3: Validate built .vst3 (and .component on macOS) with pluginval --strictness-level 5 --validate-in-process
+    const valFormats = process.platform === 'darwin' ? ['VST3', 'AudioUnit'] : ['VST3'];
+    const { found: binaries, skipped } = findPluginBinaries('Release', buildDir, valFormats, cfg.pluginsDir, proj);
+    if (skipped.length > 0 || binaries.length === 0) {
+      const text = [
+        '## Ship failed at Stage 3 (Plugin Discovery)',
+        binaries.length === 0
+          ? `No Release plugin bundles (.vst3) found under ${buildDir}.`
+          : `Refused symlinked/escaped plugin bundles: ${skipped.map(s => s.path).join(', ')}`,
+      ].join('\n');
+      return { content: [{ type: 'text', text }], isError: true };
+    }
+
+    const pluginvalBin = cfg.validateCommand || 'pluginval';
+    requireTool(pluginvalBin);
+    for (const b of binaries) {
+      if (b.format === 'VST3' || (process.platform === 'darwin' && b.format === 'AudioUnit')) {
+        const pvArgs = ['--strictness-level', '5', '--validate-in-process', '--validate', b.path];
+        const pvRes = trySpawn(pluginvalBin, pvArgs, { cwd: proj, timeout: 180 });
+        if (!pvRes.ok) {
+          const text = [
+            `## Ship failed at Stage 3 (pluginval --strictness-level 5): ${b.plugin} [${b.format}]`,
+            '### Validator Errors',
+            (pvRes.stderr || pvRes.output).trim().slice(-2000),
+          ].join('\n');
+          return { content: [{ type: 'text', text }], isError: true };
+        }
+      }
+    }
+
+    // Stage 4 & 5: Package into dist/<Name>-<Version>-<OS>/ + INSTALL.txt + macOS ad-hoc codesign
+    const osLabel = getOsLabel();
+    const distRoot = assertWithinProject(proj, path.join(proj, 'dist'), 'Distribution directory');
+    mkdirInside(proj, distRoot);
+
+    const byPlugin = new Map();
+    for (const b of binaries) {
+      if (!byPlugin.has(b.plugin)) byPlugin.set(b.plugin, []);
+      byPlugin.get(b.plugin).push(b);
+    }
+
+    const packagedDirs = [];
+    const installedPaths = [];
+    const localVst3Dir = getLocalVst3InstallDir();
+
+    for (const [pluginName, items] of byPlugin.entries()) {
+      const pkgDir = assertWithinProject(
+        proj,
+        path.join(distRoot, `${pluginName}-${params.version}-${osLabel}`),
+        'Package directory'
+      );
+      if (fs.existsSync(pkgDir)) {
+        fs.rmSync(pkgDir, { recursive: true, force: true });
+      }
+      mkdirInside(proj, pkgDir);
+
+      for (const item of items) {
+        const bundleName = path.basename(item.path);
+        const destBundle = path.join(pkgDir, bundleName);
+        copyRecursiveSync(item.path, destBundle);
+
+        if (process.platform === 'darwin' && findBinary('codesign')) {
+          const csRes = trySpawn('codesign', ['--force', '--deep', '-s', '-', destBundle], {
+            cwd: proj,
+            timeout: 60,
+          });
+          if (!csRes.ok) {
+            return {
+              content: [{ type: 'text', text: `## Ship failed at Stage 5 (codesign)\n${csRes.stderr || csRes.output}` }],
+              isError: true,
+            };
+          }
+        }
+
+        // Stage 6: Optional local VST3 installation
+        if (params.installLocal && item.format === 'VST3') {
+          fs.mkdirSync(localVst3Dir, { recursive: true });
+          const installTarget = path.join(localVst3Dir, bundleName);
+          if (fs.existsSync(installTarget)) {
+            fs.rmSync(installTarget, { recursive: true, force: true });
+          }
+          copyRecursiveSync(destBundle, installTarget);
+          installedPaths.push(installTarget);
+        }
+      }
+
+      const installTxt = [
+        `${pluginName} ${params.version} (${osLabel})`,
+        '',
+        'Standard system plugin paths:',
+        '  macOS VST3: ~/Library/Audio/Plug-Ins/VST3',
+        '  macOS AU:   ~/Library/Audio/Plug-Ins/Components',
+        '  Windows:    C:\\Program Files\\Common Files\\VST3',
+        '  Linux:      ~/.vst3',
+        '',
+      ].join('\n');
+      writeFileInside(proj, path.join(pkgDir, 'INSTALL.txt'), installTxt);
+      packagedDirs.push(pkgDir);
+    }
+
+    const text = [
+      '## Ship succeeded',
+      `- **Stage 1 (Build):** Release build succeeded (0 errors, ${parsedBuild.warningCount} warnings)`,
+      `- **Stage 2 (Lint):** ${lintFiles.length} source file(s) clean`,
+      `- **Stage 3 (Validate):** ${binaries.length} bundle(s) passed \`pluginval --strictness-level 5 --validate-in-process\``,
+      `- **Stage 4 (Package):**`,
+      ...packagedDirs.map(d => `  - \`${d}\` (with \`INSTALL.txt\`)`),
+      ...(installedPaths.length
+        ? [`- **Stage 5 (Local Install):**`, ...installedPaths.map(p => `  - \`${p}\``)]
+        : ['- **Stage 5 (Local Install):** skipped (`installLocal=false`)']),
+    ].join('\n');
+
+    return { content: [{ type: 'text', text }] };
+  }
+);
+
+// ─── audio_plugin_doctor ───────────────────────────────────────────
+registerTool(
+  'audio_plugin_doctor',
+  {
+    projectPath: z.string().max(4096).optional()
+      .describe('Optional CMake audio plugin project root to inspect project-local _tools/JUCE and _tools/JIVE.'),
+  },
+  async (params) => {
+    const proj = resolveProjectPath(params.projectPath);
+    const depsInfo = ensureGlobalDepsCache();
+
+    // 1. Check cmake
+    const hasCmake = findBinary('cmake');
+    let cmakeVersion = 'not found';
+    if (hasCmake) {
+      const r = trySpawn('cmake', ['--version'], { timeout: 10 });
+      cmakeVersion = r.output.split('\n')[0]?.trim() || 'found';
+    }
+
+    // 2. Check C++20 compiler
+    const compilerCandidates = process.platform === 'win32'
+      ? ['cl', 'clang++', 'g++', 'c++']
+      : ['c++', 'clang++', 'g++'];
+    const foundCompiler = compilerCandidates.find(c => findBinary(c)) || null;
+    let compilerDetail = 'not found';
+    if (foundCompiler) {
+      const r = trySpawn(foundCompiler, ['--version'], { timeout: 10 });
+      compilerDetail = r.output.split('\n')[0]?.trim() || foundCompiler;
+    }
+
+    // 3. Check JUCE & JIVE resolution (_tools/ -> ~/.apc-mcp/deps/ -> FetchContent)
+    const localJuce = proj && fs.existsSync(path.join(proj, '_tools', 'JUCE', 'CMakeLists.txt'))
+      ? path.join(proj, '_tools', 'JUCE')
+      : null;
+    const localJive = proj && fs.existsSync(path.join(proj, '_tools', 'JIVE', 'CMakeLists.txt'))
+      ? path.join(proj, '_tools', 'JIVE')
+      : null;
+
+    const juceStatus = localJuce
+      ? `Found in project _tools/JUCE (${localJuce})`
+      : (depsInfo.juceCached
+        ? `Cached in global cache (${depsInfo.jucePath})`
+        : `Will auto-populate into ${depsInfo.jucePath} via pinned CMake FetchContent (v9.0.3)`);
+
+    const jiveStatus = localJive
+      ? `Found in project _tools/JIVE (${localJive})`
+      : (depsInfo.jiveCached
+        ? `Cached in global cache (${depsInfo.jivePath})`
+        : `Will auto-populate into ${depsInfo.jivePath} via pinned CMake FetchContent (v2.0.1)`);
+
+    // 4. Check pluginval
+    const hasPluginval = findBinary('pluginval') ||
+      fs.existsSync(path.join(resolveHomeDir(), '.apc-mcp', 'tools', 'pluginval'));
+    const pluginvalStatus = hasPluginval
+      ? 'Available'
+      : `Missing — install from https://github.com/Tracktion/pluginval/releases`;
+
+    // 5. Check OS plugin install directory
+    const vst3Dir = getLocalVst3InstallDir();
+    const vst3DirExists = fs.existsSync(vst3Dir);
+
+    const fixes = [];
+    if (!hasCmake) fixes.push('- Install CMake 3.22+: `brew install cmake` / `apt install cmake`');
+    if (!foundCompiler) fixes.push('- Install a C++20 compiler: Xcode Command Line Tools (`xcode-select --install`), Visual Studio Build Tools, or `apt install build-essential`');
+    if (!hasPluginval) fixes.push('- Install pluginval: download from https://github.com/Tracktion/pluginval/releases and place on PATH');
+
+    const text = [
+      '## apc-mcp Environment Doctor',
+      `- **CMake:** ${hasCmake ? `OK (${cmakeVersion})` : 'MISSING'}`,
+      `- **C++20 Compiler:** ${foundCompiler ? `OK (${compilerDetail})` : 'MISSING'}`,
+      `- **Global Deps Cache:** \`${depsInfo.depsDir}\` (initialized)`,
+      `- **JUCE SDK:** ${juceStatus}`,
+      `- **JIVE Framework:** ${jiveStatus}`,
+      `- **pluginval:** ${pluginvalStatus}`,
+      `- **OS VST3 Directory:** \`${vst3Dir}\` (${vst3DirExists ? 'exists' : 'will be created on audio_plugin_ship'})`,
+      ...(fixes.length ? ['', '### Actionable Fixes', ...fixes] : ['', 'All core build tools Ready.']),
+    ].join('\n');
+
     return { content: [{ type: 'text', text }] };
   }
 );

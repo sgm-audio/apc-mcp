@@ -20,11 +20,14 @@ import os from 'node:os';
 import { call, listTools, PROJECT_ROOT } from './helpers/mcp-client.mjs';
 
 const TOOL_NAMES = [
+  'audio_plugin_add_param',
   'audio_plugin_build',
   'audio_plugin_configure',
   'audio_plugin_create',
+  'audio_plugin_doctor',
   'audio_plugin_lint',
   'audio_plugin_plugins',
+  'audio_plugin_ship',
   'audio_plugin_test',
   'audio_plugin_validate',
 ];
@@ -50,7 +53,7 @@ after(() => { fs.rmSync(ROOT, { recursive: true, force: true }); });
 
 describe('apc-mcp MCP server', () => {
   describe('tools/list', () => {
-    it('advertises all 7 tools', async () => {
+    it('advertises all 10 tools', async () => {
       const tools = await listTools();
       assert.ok(Array.isArray(tools) && tools.length > 0,
         `expected a tools array, got: ${JSON.stringify(tools)?.slice(0, 200)}`);
@@ -78,12 +81,12 @@ describe('apc-mcp MCP server', () => {
       // Anything that writes into the project must say so. `test` runs ctest, and
       // `validate` runs third-party binaries, so neither may claim read-only
       // either — a client that trusts readOnlyHint may auto-approve them.
-      for (const n of ['audio_plugin_create', 'audio_plugin_configure', 'audio_plugin_build', 'audio_plugin_lint']) {
+      for (const n of ['audio_plugin_create', 'audio_plugin_configure', 'audio_plugin_build', 'audio_plugin_lint', 'audio_plugin_add_param', 'audio_plugin_ship']) {
         assert.equal(byName[n].annotations.destructiveHint, true,
           `${n} writes into the project and must declare destructiveHint`);
       }
       for (const n of ['audio_plugin_create', 'audio_plugin_configure', 'audio_plugin_build',
-        'audio_plugin_lint', 'audio_plugin_test', 'audio_plugin_validate']) {
+        'audio_plugin_lint', 'audio_plugin_test', 'audio_plugin_validate', 'audio_plugin_add_param', 'audio_plugin_ship', 'audio_plugin_doctor']) {
         assert.equal(byName[n].annotations.readOnlyHint, false,
           `${n} executes a command or writes files and must not claim readOnlyHint`);
       }

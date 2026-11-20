@@ -18,7 +18,7 @@ public:
     bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return "{{PLUGIN_DISPLAY_NAME}}"; }
-    bool acceptsMidi() const override { return false; }
+    bool acceptsMidi() const override { return {{PLUGIN_ACCEPTS_MIDI_CXX}}; }
     bool producesMidi() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
 
