@@ -32,13 +32,25 @@ endif()
 # falls back to juce::GenericAudioProcessorEditor.
 option(APC_USE_JIVE "Enable JIVE declarative XML/JSON UI" ON)
 
+# ── Global dependency cache (~/.apc-mcp/deps/) ───────────────────────
+if(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
+    file(TO_CMAKE_PATH "$ENV{HOME}/.apc-mcp/deps" APC_DEFAULT_DEPS_CACHE)
+elseif(DEFINED ENV{USERPROFILE} AND NOT "$ENV{USERPROFILE}" STREQUAL "")
+    file(TO_CMAKE_PATH "$ENV{USERPROFILE}/.apc-mcp/deps" APC_DEFAULT_DEPS_CACHE)
+else()
+    set(APC_DEFAULT_DEPS_CACHE "${CMAKE_BINARY_DIR}/_deps")
+endif()
+set(APC_DEPS_CACHE_DIR "${APC_DEFAULT_DEPS_CACHE}" CACHE PATH
+    "Global user cache directory for JUCE and JIVE dependencies")
+
 # ── JUCE ─────────────────────────────────────────────────────────────
 # Guarded so a multi-plugin repo adds JUCE once from the root CMakeLists.
 # Resolution order:
 #   1. Already-defined juce::juce_audio_utils target
 #   2. -DJUCE_DIR=... or $ENV{JUCE_DIR}
-#   3. Vendored _tools/JUCE (project root, plugin dir, or legacy two-up)
-#   4. Pinned FetchContent fallback (JUCE 9.0.3 commit SHA)
+#   3. Explicit project _tools/JUCE
+#   4. Global user cache ~/.apc-mcp/deps/JUCE (or juce-src)
+#   5. Pinned FetchContent fallback (populated into ~/.apc-mcp/deps/)
 if(NOT TARGET juce::juce_audio_utils)
     if(NOT JUCE_DIR AND DEFINED ENV{JUCE_DIR} AND EXISTS "$ENV{JUCE_DIR}/CMakeLists.txt")
         set(JUCE_DIR "$ENV{JUCE_DIR}")
@@ -50,11 +62,19 @@ if(NOT TARGET juce::juce_audio_utils)
             set(JUCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/_tools/JUCE")
         elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/JUCE/CMakeLists.txt")
             set(JUCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/JUCE")
+        elseif(EXISTS "${APC_DEPS_CACHE_DIR}/JUCE/CMakeLists.txt")
+            set(JUCE_DIR "${APC_DEPS_CACHE_DIR}/JUCE")
+        elseif(EXISTS "${APC_DEPS_CACHE_DIR}/juce-src/CMakeLists.txt")
+            set(JUCE_DIR "${APC_DEPS_CACHE_DIR}/juce-src")
         endif()
     endif()
     if(JUCE_DIR)
         add_subdirectory("${JUCE_DIR}" "${CMAKE_BINARY_DIR}/_tools/JUCE" EXCLUDE_FROM_ALL)
     else()
+        if(NOT FETCHCONTENT_BASE_DIR)
+            set(FETCHCONTENT_BASE_DIR "${APC_DEPS_CACHE_DIR}" CACHE PATH
+                "FetchContent cache directory (~/.apc-mcp/deps)" FORCE)
+        endif()
         include(FetchContent)
         set(APC_JUCE_GIT_TAG "be29c81492b6151c8ea8d14c840e1311963b3a83" CACHE STRING
             "Pinned JUCE commit SHA (v9.0.3)")
@@ -62,14 +82,16 @@ if(NOT TARGET juce::juce_audio_utils)
             JUCE
             GIT_REPOSITORY "https://github.com/juce-framework/JUCE.git"
             GIT_TAG "${APC_JUCE_GIT_TAG}"
+            SOURCE_DIR "${FETCHCONTENT_BASE_DIR}/JUCE"
         )
         if(FETCHCONTENT_FULLY_DISCONNECTED
+            AND NOT EXISTS "${FETCHCONTENT_BASE_DIR}/JUCE/CMakeLists.txt"
             AND NOT EXISTS "${FETCHCONTENT_BASE_DIR}/juce-src/CMakeLists.txt"
             AND NOT FETCHCONTENT_SOURCE_DIR_JUCE)
             message(FATAL_ERROR
                 "JUCE not found and FETCHCONTENT_FULLY_DISCONNECTED is ON. "
                 "Provide -DJUCE_DIR=/path/to/JUCE, vendor _tools/JUCE, "
-                "or set FETCHCONTENT_SOURCE_DIR_JUCE.")
+                "or populate ~/.apc-mcp/deps/JUCE.")
         endif()
         FetchContent_MakeAvailable(JUCE)
     endif()
@@ -79,8 +101,9 @@ endif()
 # Resolution order:
 #   1. Already-defined jive::jive_layouts target
 #   2. -DJIVE_DIR=... or $ENV{JIVE_DIR}
-#   3. Vendored _tools/JIVE (plugin dir, project root, or legacy two-up)
-#   4. Pinned FetchContent fallback (JIVE v2.0.1 commit SHA)
+#   3. Explicit project _tools/JIVE
+#   4. Global user cache ~/.apc-mcp/deps/JIVE (or jive-src)
+#   5. Pinned FetchContent fallback (populated into ~/.apc-mcp/deps/)
 if(APC_USE_JIVE)
     if(NOT TARGET jive::jive_layouts)
         if(NOT JIVE_DIR AND DEFINED ENV{JIVE_DIR} AND EXISTS "$ENV{JIVE_DIR}/CMakeLists.txt")
@@ -93,11 +116,19 @@ if(APC_USE_JIVE)
                 set(JIVE_DIR "${CMAKE_SOURCE_DIR}/_tools/JIVE")
             elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/JIVE/CMakeLists.txt")
                 set(JIVE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/JIVE")
+            elseif(EXISTS "${APC_DEPS_CACHE_DIR}/JIVE/CMakeLists.txt")
+                set(JIVE_DIR "${APC_DEPS_CACHE_DIR}/JIVE")
+            elseif(EXISTS "${APC_DEPS_CACHE_DIR}/jive-src/CMakeLists.txt")
+                set(JIVE_DIR "${APC_DEPS_CACHE_DIR}/jive-src")
             endif()
         endif()
         if(JIVE_DIR)
             add_subdirectory("${JIVE_DIR}" "${CMAKE_BINARY_DIR}/_tools/JIVE" EXCLUDE_FROM_ALL)
         else()
+            if(NOT FETCHCONTENT_BASE_DIR)
+                set(FETCHCONTENT_BASE_DIR "${APC_DEPS_CACHE_DIR}" CACHE PATH
+                    "FetchContent cache directory (~/.apc-mcp/deps)" FORCE)
+            endif()
             include(FetchContent)
             set(APC_JIVE_GIT_TAG "693788a539eb42b9c15848706f9ceae43ee60084" CACHE STRING
                 "Pinned JIVE commit SHA (v2.0.1)")
@@ -105,14 +136,16 @@ if(APC_USE_JIVE)
                 JIVE
                 GIT_REPOSITORY "https://github.com/ImJimmi/JIVE.git"
                 GIT_TAG "${APC_JIVE_GIT_TAG}"
+                SOURCE_DIR "${FETCHCONTENT_BASE_DIR}/JIVE"
             )
             if(FETCHCONTENT_FULLY_DISCONNECTED
+                AND NOT EXISTS "${FETCHCONTENT_BASE_DIR}/JIVE/CMakeLists.txt"
                 AND NOT EXISTS "${FETCHCONTENT_BASE_DIR}/jive-src/CMakeLists.txt"
                 AND NOT FETCHCONTENT_SOURCE_DIR_JIVE)
                 message(FATAL_ERROR
                     "JIVE not found and FETCHCONTENT_FULLY_DISCONNECTED is ON. "
                     "Provide -DJIVE_DIR=/path/to/JIVE, vendor _tools/JIVE, "
-                    "or set FETCHCONTENT_SOURCE_DIR_JIVE.")
+                    "or populate ~/.apc-mcp/deps/JIVE.")
             endif()
             FetchContent_MakeAvailable(JIVE)
         endif()

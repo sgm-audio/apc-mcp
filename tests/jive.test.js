@@ -72,9 +72,12 @@ describe('plain JUCE scaffold: deterministic deps, warnings-as-errors, portabili
     files = readTree(path.join(PLUGINS, 'PlainJucePkg'));
   });
 
-  it('pins JUCE to an exact 40-char commit SHA with local _tools/JUCE & FETCHCONTENT_FULLY_DISCONNECTED support', () => {
+  it('pins JUCE to an exact 40-char commit SHA with local _tools/JUCE, ~/.apc-mcp/deps/JUCE & FETCHCONTENT_FULLY_DISCONNECTED support', () => {
     const cm = cmakeCode(files.get('CMakeLists.txt'));
     assert.match(cm, /_tools\/JUCE\/CMakeLists\.txt/, 'must support local _tools/JUCE override');
+    assert.match(cm, /\.apc-mcp\/deps/, 'must configure ~/.apc-mcp/deps global dependency cache');
+    assert.match(cm, /\$\{APC_DEPS_CACHE_DIR\}\/JUCE\/CMakeLists\.txt/, 'must check ~/.apc-mcp/deps/JUCE cache');
+    assert.match(cm, /FETCHCONTENT_BASE_DIR\s+"\$\{APC_DEPS_CACHE_DIR\}"/, 'must populate FetchContent into ~/.apc-mcp/deps/');
     assert.match(cm, /FetchContent_Declare\s*\(\s*JUCE\b/, 'must support FetchContent fallback for JUCE');
     assert.match(cm, /\b[0-9a-f]{40}\b/, 'JUCE FetchContent must be pinned to a 40-char commit SHA');
     assert.doesNotMatch(cm, /GIT_TAG\s+"?(?:main|master|develop|HEAD)"?/i,
@@ -151,12 +154,14 @@ describe('JUCE + JIVE scaffold (ui="jive"): template files, CMake plumbing, hot-
     }
   });
 
-  it('resolves JIVE via _tools/JIVE or JIVE_DIR before pinned FetchContent and guards on APC_USE_JIVE', () => {
+  it('resolves JIVE via _tools/JIVE, JIVE_DIR, or ~/.apc-mcp/deps/JIVE before pinned FetchContent and guards on APC_USE_JIVE', () => {
     const cm = cmakeCode(files.get('CMakeLists.txt'));
     assert.match(cm, /option\s*\(\s*APC_USE_JIVE\b[\s\S]*?\bON\s*\)/,
       'JIVE scaffold must default option(APC_USE_JIVE ... ON)');
     assert.match(cm, /if\s*\(\s*APC_USE_JIVE\s*\)/, 'JIVE integration must be guarded by if(APC_USE_JIVE)');
     assert.match(cm, /_tools\/JIVE\/CMakeLists\.txt/, 'must support local _tools/JIVE override');
+    assert.match(cm, /\$\{APC_DEPS_CACHE_DIR\}\/JIVE\/CMakeLists\.txt/, 'must check global ~/.apc-mcp/deps/JIVE cache');
+    assert.match(cm, /FETCHCONTENT_BASE_DIR\s+"\$\{APC_DEPS_CACHE_DIR\}"/, 'must populate FetchContent into ~/.apc-mcp/deps/');
     assert.match(cm, /ENV\{JIVE_DIR\}/, 'must support JIVE_DIR environment variable override');
     assert.match(cm, /FetchContent_Declare\s*\(\s*JIVE\b/, 'must support pinned FetchContent fallback for JIVE');
     const shas = cm.match(/\b[0-9a-f]{40}\b/g) ?? [];

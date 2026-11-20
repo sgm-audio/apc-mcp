@@ -28,8 +28,15 @@ const argVal = (name, fallback) => {
   return hit ? hit.slice(name.length + 3) : fallback;
 };
 
+const DEFAULT_DEPS_CACHE = path.join(os.homedir(), '.apc-mcp', 'deps');
 const JUCE_DIR = process.env.APC_JUCE_DIR || '';
 const JIVE_DIR = process.env.APC_JIVE_DIR || '';
+const CACHED_JUCE_DIR = fs.existsSync(path.join(DEFAULT_DEPS_CACHE, 'JUCE', 'CMakeLists.txt'))
+  ? path.join(DEFAULT_DEPS_CACHE, 'JUCE')
+  : '';
+const CACHED_JIVE_DIR = fs.existsSync(path.join(DEFAULT_DEPS_CACHE, 'JIVE', 'CMakeLists.txt'))
+  ? path.join(DEFAULT_DEPS_CACHE, 'JIVE')
+  : '';
 const STRICTNESS = process.env.APC_STRICTNESS || '5';
 const CONFIG_ARG = argVal('config', 'all');
 const EXPLICIT_DIR = argVal('dir', '');
@@ -47,7 +54,11 @@ function binaryOnPath(bin) {
   const exts = process.platform === 'win32'
     ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').map(e => e.toLowerCase())
     : [''];
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
+  const searchDirs = [
+    ...(process.env.PATH ?? '').split(path.delimiter).filter(Boolean),
+    path.join(os.homedir(), '.apc-mcp', 'tools'),
+  ];
+  for (const dir of searchDirs) {
     for (const ext of exts) {
       const candidate = path.join(dir, bin + ext);
       try {
@@ -60,10 +71,12 @@ function binaryOnPath(bin) {
 }
 
 const problems = [];
-if (!JUCE_DIR || !fs.existsSync(JUCE_DIR)) problems.push('APC_JUCE_DIR must point at a JUCE checkout');
-if (!JIVE_DIR || !fs.existsSync(JIVE_DIR)) problems.push('APC_JIVE_DIR must point at a JIVE checkout');
+if (JUCE_DIR && !fs.existsSync(JUCE_DIR)) problems.push(`APC_JUCE_DIR (${JUCE_DIR}) does not exist`);
+if (JIVE_DIR && !fs.existsSync(JIVE_DIR)) problems.push(`APC_JIVE_DIR (${JIVE_DIR}) does not exist`);
+if (!JUCE_DIR && !CACHED_JUCE_DIR) problems.push('neither APC_JUCE_DIR nor ~/.apc-mcp/deps/JUCE found');
+if (!JIVE_DIR && !CACHED_JIVE_DIR) problems.push('neither APC_JIVE_DIR nor ~/.apc-mcp/deps/JIVE found');
 if (!binaryOnPath('cmake')) problems.push('cmake is not on PATH');
-if (!binaryOnPath('pluginval')) problems.push('pluginval is not on PATH');
+if (!binaryOnPath('pluginval')) problems.push('pluginval is not on PATH or ~/.apc-mcp/tools/pluginval');
 
 if (problems.length) {
   console.error('smoke-jive: cannot run — missing requirements:');
@@ -95,14 +108,17 @@ try {
   ];
 
   if (!fs.existsSync(path.join(proj, 'apc-mcp.json'))) {
-    fs.mkdirSync(path.join(proj, '_tools'), { recursive: true });
+    fs.mkdirSync(proj, { recursive: true });
     fs.writeFileSync(path.join(proj, 'apc-mcp.json'), '{}\n');
     fs.writeFileSync(path.join(proj, 'CMakeLists.txt'),
       'cmake_minimum_required(VERSION 3.22)\nproject(apc_jive_e2e)\n');
-    fs.symlinkSync(path.resolve(JUCE_DIR), path.join(proj, '_tools', 'JUCE'), 'dir');
-    fs.symlinkSync(path.resolve(JIVE_DIR), path.join(proj, '_tools', 'JIVE'), 'dir');
+    if (JUCE_DIR || JIVE_DIR) {
+      fs.mkdirSync(path.join(proj, '_tools'), { recursive: true });
+      if (JUCE_DIR) fs.symlinkSync(path.resolve(JUCE_DIR), path.join(proj, '_tools', 'JUCE'), 'dir');
+      if (JIVE_DIR) fs.symlinkSync(path.resolve(JIVE_DIR), path.join(proj, '_tools', 'JIVE'), 'dir');
+    }
 
-    console.log(`smoke-jive e2e project: ${proj}`);
+    console.log(`smoke-jive e2e project: ${proj} (deps: ${JUCE_DIR || CACHED_JUCE_DIR}, ${JIVE_DIR || CACHED_JIVE_DIR})`);
 
     for (const c of cases) {
       const r = await call('audio_plugin_create', {

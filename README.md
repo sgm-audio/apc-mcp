@@ -64,9 +64,10 @@ The [getting started guide](docs/getting-started.md) covers the other formats, a
 ### 1. Prerequisites & SDK paths
 
 - **CMake 3.22+** (with Ninja or your platform generator) and a **C++20 compiler** (GCC 12+, Clang, MSVC 2022+, or Xcode).
-- **JUCE 9.0.3** (`be29c81492b6151c8ea8d14c840e1311963b3a83`) and **JIVE v2.0.1** (`693788a539eb42b9c15848706f9ceae43ee60084`):
-  - **Automatic:** CMake `FetchContent` fetches these exact pinned commit SHAs automatically if no local checkout is present.
-  - **Local / offline override:** vendor into `_tools/JUCE` and `_tools/JIVE`, or pass `-DJUCE_DIR=/path/to/JUCE -DJIVE_DIR=/path/to/JIVE` (or `JUCE_DIR` / `JIVE_DIR` environment variables) alongside `-DFETCHCONTENT_FULLY_DISCONNECTED=ON`.
+- **JUCE 9.0.3** (`be29c81492b6151c8ea8d14c840e1311963b3a83`) and **JIVE v2.0.1** (`693788a539eb42b9c15848706f9ceae43ee60084`), resolved in priority order:
+  1. Explicit project `_tools/JUCE` and `_tools/JIVE` (or `-DJUCE_DIR=...` / `-DJIVE_DIR=...`)
+  2. Global user cache `~/.apc-mcp/deps/JUCE` and `~/.apc-mcp/deps/JIVE`
+  3. Pinned Git commit SHAs via CMake `FetchContent` (automatically populated into `~/.apc-mcp/deps/` on first run; respects `-DFETCHCONTENT_FULLY_DISCONNECTED=ON`)
 
 ```sh
 mkdir my-jive-plugin && cd my-jive-plugin
