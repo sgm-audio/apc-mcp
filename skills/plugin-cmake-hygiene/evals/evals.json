@@ -1,0 +1,20 @@
+{
+  "skill": "plugin-cmake-hygiene",
+  "test_cases": [
+    {
+      "name": "unpinned_fetch",
+      "input": "This CMake does FetchContent of JUCE from main",
+      "assertions": ["Flags unpinned main/master", "Requires a commit SHA or tag"]
+    },
+    {
+      "name": "stable_plugin_code",
+      "input": "My plugin gets a different plugin code every time I scaffold",
+      "assertions": ["Requires deterministic PLUGIN_CODE derivation"]
+    },
+    {
+      "name": "lv2_uri",
+      "input": "JUCE LV2 build fails with missing scheme in URI",
+      "assertions": ["Requires explicit LV2URI with scheme"]
+    }
+  ]
+}

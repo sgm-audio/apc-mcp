@@ -1,0 +1,9 @@
+{
+  "skill": "plugin-cmake-hygiene",
+  "test_cases": [
+    {"input": "fix my JUCE CMakeLists that fetches from main", "should_trigger": true},
+    {"input": "make my plugin build reproducible", "should_trigger": true},
+    {"input": "LV2URI missing scheme error", "should_trigger": true},
+    {"input": "design a website", "should_trigger": false}
+  ]
+}
