@@ -1,4 +1,4 @@
 # Changelog
 
 ## 2026-11-20
-- Initial skill: audio-thread safety rules for JUCE DSP
+- Rewritten to Agent Skills standard (trigger-rich description, imperative instructions, examples)

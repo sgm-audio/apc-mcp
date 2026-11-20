@@ -1,32 +1,31 @@
 ---
 name: juce-dsp-safety
-description: "Real-time DSP safety rules for JUCE audio plugins. Use when writing, reviewing, or generating AudioProcessor processBlock, prepareToPlay, or any code that runs on the audio thread. Flags locks, allocations, file I/O, and other non-realtime operations."
-type: workflow
-lifecycle: active
+description: "Real-time DSP safety rules for JUCE AudioProcessor code. Use when writing or reviewing processBlock, prepareToPlay, or any code that runs on the audio thread. Flags locks, allocations, file I/O, and other non-realtime operations."
 ---
 
-# JUCE DSP Safety — Audio Thread Rules
+# JUCE DSP Safety
 
-Apply these rules to every JUCE AudioProcessor that processes audio. The audio thread must never block, allocate, or do non-deterministic work.
+## When to use
+- Editing `processBlock` or `prepareToPlay`.
+- A plugin glitches, drops out, or crashes under load.
+- Reviewing generated or hand-written DSP.
 
-## Hard Rules (Audio Thread)
-- No `new`, `malloc`, `std::vector::push_back` that can reallocate, or any heap allocation.
-- No locks (`std::mutex`, `juce::CriticalSection`, `std::atomic` with blocking CAS loops that can spin forever).
-- No file I/O, network, logging that flushes, or `DBG`/`std::cout`.
-- No `juce::String` operations that allocate (prefer `juce::String::fromUTF8` pre-allocated or raw buffers).
-- No exceptions that can be thrown on the audio path.
-- Prefer `juce::AudioBuffer` views, pre-allocated delay lines, and fixed-size arrays.
+## Rules (audio thread)
+- No allocations (`new`, `std::vector::resize`, `String` construction that allocates).
+- No locks (`CriticalSection`, `std::mutex`, `MessageManagerLock`).
+- No file I/O, logging that allocates, or network.
+- No unbounded loops or heavy computation that can miss the deadline.
+- Prefer pre-allocated buffers and lock-free structures prepared in `prepareToPlay`.
 
-## Allowed Patterns
-- Pre-allocate everything in `prepareToPlay` or constructor.
-- Use `juce::dsp::AudioBlock` and `juce::dsp::ProcessContextReplacing`.
-- Double-buffer or lock-free queues for parameter updates from the message thread.
-- `juce::SmoothedValue` for parameter smoothing (already realtime-safe).
+## Example
+```cpp
+void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+{
+    // safe: read atomic parameters, process pre-allocated state
+    // unsafe: buffer.setSize(...), new float[], file writes
+}
+```
 
-## Review Checklist
-1. Does `processBlock` (or `process`) allocate?
-2. Is there any `CriticalSection` or mutex held across the audio callback?
-3. Are delay lines, FFT buffers, and coefficient arrays sized in `prepareToPlay`?
-4. Are parameter changes copied via atomic or lock-free mechanism?
-
-Flag any violation immediately with the exact line and the safe alternative.
+## Verification
+- Plugin survives long stress tests at small buffer sizes with no dropouts.
+- Thread sanitizer or manual review finds zero audio-thread violations.
