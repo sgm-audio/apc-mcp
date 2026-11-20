@@ -601,7 +601,7 @@ describe('JUCE ARA effect template', () => {
       const cm = cmakeCode(s.files.get('CMakeLists.txt'));
       assert.match(cm, /if\s*\(\s*NOT DEFINED APC_ARA_SDK_PATH OR APC_ARA_SDK_PATH STREQUAL ""\s*\)/,
         `${s.name}: an unset APC_ARA_SDK_PATH must be rejected`);
-      assert.match(cm, /message\s*\(\s*FATAL_ERROR\s+"ARA SDK path is required\. Call juce_set_ara_sdk_path\(<path>\) before juce_add_plugin\."\s*\)/,
+      assert.match(cm, /message\s*\(\s*FATAL_ERROR\s+"ARA SDK path is required\. Call "\s+"juce_set_ara_sdk_path\(<path>\) before juce_add_plugin\."\s*\)/,
         `${s.name}: the missing-SDK diagnostic must identify the required JUCE setup`);
       assert.match(cm, /ARA_Library\/PlugIn\/ARAPlug\.h/,
         `${s.name}: reject SDK roots without the initialized ARA_Library submodule`);

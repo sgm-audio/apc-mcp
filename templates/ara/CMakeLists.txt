@@ -3,7 +3,9 @@ cmake_minimum_required(VERSION 3.22)
 # Fail before JUCE FetchContent or compiler discovery: ARA cannot be built without
 # the external ARA SDK. The JUCE setter is called below after JUCE is available.
 if(NOT DEFINED APC_ARA_SDK_PATH OR APC_ARA_SDK_PATH STREQUAL "")
-    message(FATAL_ERROR "ARA SDK path is required. Call juce_set_ara_sdk_path(<path>) before juce_add_plugin.")
+    message(FATAL_ERROR
+        "ARA SDK path is required. Call "
+        "juce_set_ara_sdk_path(<path>) before juce_add_plugin.")
 endif()
 if(NOT EXISTS "${APC_ARA_SDK_PATH}/ARA_Library/PlugIn/ARAPlug.h"
     OR NOT EXISTS "${APC_ARA_SDK_PATH}/ARA_API/ARAInterface.h")
