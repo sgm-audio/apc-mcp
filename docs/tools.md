@@ -1,20 +1,32 @@
 # Tool reference
 
-apc-mcp registers **seven** MCP tools. All of them accept an optional `projectPath`; when omitted, the server walks up from its working directory (max 20 levels) looking for `apc-mcp.json` or `CMakeLists.txt`. A project root must exist and carry one of those markers — see [Configuration](configuration.md#project-root-detection).
+apc-mcp registers **ten** MCP tools and **four** native MCP Prompts (`prompts/list` & `prompts/get` slash commands). All tools accept an optional `projectPath`; when omitted, the server walks up from its working directory (max 20 levels) looking for `apc-mcp.json` or `CMakeLists.txt`. A project root must exist and carry one of those markers — see [Configuration](configuration.md#project-root-detection).
 
 Tools fail **honestly**: if the underlying command failed, emitted compiler errors, had failing tests, or a build/test step had to be skipped, the result carries `isError: true` and says why. A skipped validation is never reported as a clean one, and a check that was never attempted is reported as `NOT CHECKABLE` rather than passed off as success (see [`audio_plugin_validate`](#audio_plugin_validate)).
 
 | Tool | What it runs | Key arguments |
 |---|---|---|
+| [`audio_plugin_create`](#audio_plugin_create) | Copies a scaffold from `templates/` (defaults to `type="juce"`, `ui="jive"`, `style="fx"`) | `name`, `type`, `ui`, `style`, `formats`, `vendor`, `description` |
+| [`audio_plugin_add_param`](#audio_plugin_add_param) | Atomically updates C++ APVTS + `MainView.xml` + `Styles.json` | `pluginName`, `id`, `name`, `min`, `max`, `default`, `unit`, `controlType` |
+| [`audio_plugin_ship`](#audio_plugin_ship) | `Release Build → Lint → pluginval (strictness 5) → dist/ Package → Local Install` | `version`, `installLocal` |
+| [`audio_plugin_doctor`](#audio_plugin_doctor) | Diagnoses CMake, C++20 compiler, JUCE, JIVE, `pluginval`, `~/.apc-mcp/deps/`, and OS plugin directories | `projectPath` |
 | [`audio_plugin_configure`](#audio_plugin_configure) | `cmake -B …` | `generator`, `options`, `config` |
 | [`audio_plugin_build`](#audio_plugin_build) | `cmake --build …` (auto-configures first) | `config`, `target`, `clean` |
 | [`audio_plugin_test`](#audio_plugin_test) | `ctest` | `config`, `testName` |
 | [`audio_plugin_lint`](#audio_plugin_lint) | `clang-format` (dry-run by default) | `fix`, `target` |
 | [`audio_plugin_plugins`](#audio_plugin_plugins) | Reads the `plugins/` tree | `format` |
 | [`audio_plugin_validate`](#audio_plugin_validate) | `pluginval` / `clap-validator` | `config`, `format` |
-| [`audio_plugin_create`](#audio_plugin_create) | Copies a scaffold from `templates/` | `name`, `type`, `ui`, `formats`, `vendor`, `description` |
 
-`configure`, `build`, `test` and `lint` work with **any CMake-based C/C++ project**, not just the scaffolds this server generates. Only `create` and `validate` are plugin-format-specific.
+`configure`, `build`, `test` and `lint` work with **any CMake-based C/C++ project**, not just the scaffolds this server generates. Only `create`, `add_param`, `ship`, and `validate` are plugin-format-specific.
+
+### Native MCP Slash Commands (`prompts/list` & `prompts/get`)
+
+| Prompt | Arguments | Workflow |
+|---|---|---|
+| `apc:new` | `name` *(required)*, `style` *(optional: `fx` \| `synth` \| `utility`)* | Runs `audio_plugin_doctor` if cache is cold, scaffolds `type="juce", ui="jive"`, and summarizes APVTS parameters and Debug hot-reload paths. |
+| `apc:ui` | `design` *(required)* | Reads `Source/UI/MainView.xml`, `Source/UI/Styles.json`, and `Source/PluginProcessor.cpp`, adds parameters via `audio_plugin_add_param`, updates JIVE layout/styles using `Source/UI/Presets/` primitives, and runs a `Debug` compile check. |
+| `apc:ship` | `version` *(optional, default `"0.1.0"`)* | Runs `audio_plugin_ship(installLocal=true)` and self-heals C++/XML/JSON errors up to 3 times before reporting the `dist/` path and DAW rescan instructions. |
+| `apc:doctor` | *(none)* | Runs `audio_plugin_doctor`, initializes `~/.apc-mcp/deps/`, and outputs a concise readiness matrix. |
 
 ### audio_plugin_configure
 
@@ -134,10 +146,11 @@ The third row is the important one: telling a user to "install the missing valid
 ### audio_plugin_create
 
 ```text
-audio_plugin_create(name="Phaser9000", type="clap")
-audio_plugin_create(name="MyVerb", type="juce", vendor="MyCompany", formats="VST3;AU")
-audio_plugin_create(name="MyVerb", type="juce", ui="jive", vendor="MyCompany")
+audio_plugin_create(name="TapeEcho")
+audio_plugin_create(name="PolyLead", style="synth", vendor="MyCompany")
+audio_plugin_create(name="MyVerb", type="juce", ui="generic", vendor="MyCompany", formats="VST3;AU")
 audio_plugin_create(name="MyVerb", type="juce", ui="webview", vendor="MyCompany")
+audio_plugin_create(name="Phaser9000", type="clap")
 audio_plugin_create(name="Lv2Gain", type="lv2", vendor="MyCompany")
 audio_plugin_create(name="ToneGen", type="standalone", vendor="MyCompany")
 ```
@@ -146,21 +159,22 @@ audio_plugin_create(name="ToneGen", type="standalone", vendor="MyCompany")
 |---|---|---|
 | `projectPath` | string, optional | Parent project root; auto-detected from CWD |
 | `name` | **required**, `[A-Za-z][A-Za-z0-9_-]*` | Also the CMake target name; reserved names (`all`, `test`, `install`, …) are rejected |
-| `type` | `clap` (default), `vst3`, `juce`, `lv2`, `standalone` | See the table below |
-| `ui` | `generic` (default), `webview`, `jive` | JUCE plugin types only; ignored elsewhere |
+| `type` | `juce` (default), `vst3`, `clap`, `lv2`, `standalone` | See the table below |
+| `ui` | `jive` (default), `generic`, `juce`, `webview` | JUCE plugin types only; ignored elsewhere |
+| `style` | `fx` (default), `synth`, `utility` | Seeds initial DSP and JIVE UI controls (`cutoff` knob + `IS_SYNTH TRUE` for `synth`; `bypass` toggle for `utility`) |
 | `vendor` | `apc-mcp` | Embedded in plugin metadata. Any single line of text up to 128 characters, non-ASCII included ("ACME, Inc." and "Café Audio" both work); quotes, backslashes and `&` are escaped per output grammar. Used in sanitized form for bundle IDs, four-character codes and the LV2 URN — which is also the `LV2URI` of the JUCE plugin templates, so a `type="juce"` LV2 build and a `type="lv2"` build name the plugin's identity the same way |
 | `description` | `An audio plugin` | Any single line of text up to 512 characters, non-ASCII included. Escaped separately for C++, CMake and LV2 Turtle |
+| `formats` | JUCE default `VST3;LV2;Standalone` | Semicolon-separated override for `juce` / `vst3`; rejected for `clap`, `lv2`, `standalone` |
 
 Control characters (newlines included) are rejected in `vendor` and `description` with an explanatory message: they would terminate the C++, CMake or Turtle construct the value is pasted into, and no amount of escaping makes a newline safe in all three.
-| `formats` | JUCE default `VST3;LV2;Standalone` | Semicolon-separated override for `juce` / `vst3`; rejected for `clap`, `lv2`, `standalone` |
 
 **`type` — which template**
 
 | `type` | Template | What you get |
 |---|---|---|
-| `clap` *(default)* | `templates/clap/` | C++20 `MODULE` plugin against `free-audio/clap` headers, stereo `CLAP_EXT_AUDIO_PORTS`; a `.clap` binary (CFBundle on macOS) |
-| `juce` | `templates/juce/`, `templates/juce-jive/` or `templates/juce-webview/` | Full `juce_add_plugin` project; `formats` accepts JUCE's `AU AUv3 AAX LV2 Standalone Unity VST VST3`; stages clean bundles to `build/dist/<Config>/` |
+| `juce` *(default)* | `templates/juce-jive/`, `templates/juce/`, or `templates/juce-webview/` | Full `juce_add_plugin` project; `formats` accepts JUCE's `AU AUv3 AAX LV2 Standalone Unity VST VST3`; includes `package` target staging bundles to `dist/<Name>-<Version>-<Platform>/` |
 | `vst3` | same JUCE templates | Convenience alias defaulting `formats` to `VST3` |
+| `clap` | `templates/clap/` | C++20 `MODULE` plugin against `free-audio/clap` headers, stereo `CLAP_EXT_AUDIO_PORTS`; a `.clap` binary (CFBundle on macOS) |
 | `lv2` | `templates/lv2/` | Native **pure C11** LV2 plugin against `lv2/core/lv2.h` with `manifest.ttl` + `plugin.ttl`; unrelated to JUCE's C++ `LV2` format |
 | `standalone` | `templates/standalone/` | A standalone GUI audio **application** (`juce_add_gui_app`), not a host-loadable plugin |
 
@@ -170,10 +184,59 @@ Control characters (newlines included) are rejected in `vendor` and `description
 
 | `ui` | What you get |
 |---|---|
-| `generic` *(default)* | `juce::GenericAudioProcessorEditor` — sliders for every parameter, `-DAPC_USE_JIVE=OFF` |
-| `jive` | Declarative [JIVE](https://github.com/ImJimmi/JIVE) XML/JSON UI (`Source/UI/MainView.xml` + `Source/UI/Styles.json`) with `jive::Interpreter`, APVTS `autoAttachParameters`, Debug disk hot-reload (`jive::SourceRoot`), Release `BinaryData` embedding, and `-DAPC_USE_JIVE=ON\|OFF` toggle |
+| `jive` *(default)* | Declarative [JIVE](https://github.com/ImJimmi/JIVE) XML/JSON UI (`Source/UI/MainView.xml` + `Source/UI/Styles.json`) with `jive::Interpreter`, APVTS `autoAttachParameters`, Debug disk hot-reload (`jive::SourceRoot`), Release `BinaryData` embedding, and `-DAPC_USE_JIVE=ON\|OFF` toggle |
+| `generic` (or `juce`) | `juce::GenericAudioProcessorEditor` — sliders for every parameter, `-DAPC_USE_JIVE=0` |
 | `webview` | `juce::WebBrowserComponent` serving embedded HTML/CSS/JS from BinaryData, with a two-way bridge: C++ pushes `window.updateState(...)`, JS calls back via `apc://callback?action=...&data=...`. Edit `Source/UI/{index.html,style.css,app.js}` |
 
 The webview template asks CMake for `NEEDS_WEB_BROWSER TRUE`, `NEEDS_WEBVIEW2 TRUE` and static WebView2 linking — WebView2 on Windows, WebKit on Linux, WKWebView on macOS. `clap` and `lv2` are headless DSP scaffolds; `standalone` ships its own `AudioAppComponent` window. All three ignore `ui`.
 
-`create` also creates a minimal root `CMakeLists.txt` if needed and appends `add_subdirectory(plugins/<Name>)` once (it detects an existing registration and refuses to modify a symlinked root `CMakeLists.txt`). It does **not** install SDKs — see [Toolchain & SDKs](toolchain.md).
+`create` also creates a minimal root `CMakeLists.txt` if needed, appends `add_subdirectory(plugins/<Name>)` once (it detects an existing registration and refuses to modify a symlinked root `CMakeLists.txt`), and initializes the global dependency cache `~/.apc-mcp/deps/`.
+
+### audio_plugin_add_param
+
+```text
+audio_plugin_add_param(id="cutoff", name="Filter Cutoff", min=20, max=20000, default=1000, unit="Hz", controlType="knob")
+audio_plugin_add_param(id="mix", name="Dry/Wet Mix", min=0, max=100, default=50, unit="%", controlType="slider")
+audio_plugin_add_param(id="bypass", name="Bypass", min=0, max=1, default=0, controlType="toggle")
+```
+
+| Argument | Type / default | Notes |
+|---|---|---|
+| `projectPath` | string, optional | Auto-detected from CWD |
+| `pluginName` | string, optional | Target plugin under `plugins/`; auto-inferred when the project has a single JIVE plugin |
+| `id` | **required**, `[a-zA-Z][a-zA-Z0-9_]*` | Unique APVTS parameter ID and JIVE element ID |
+| `name` | **required**, string | Display name |
+| `min` | number, `0` | Minimum parameter value |
+| `max` | number, `1` | Maximum parameter value |
+| `default` | number, `0.5` | Initial default value |
+| `unit` | string, `""` | Optional unit suffix (`"Hz"`, `"dB"`, `"%"`, `"ms"`) |
+| `controlType` | `knob` (default), `slider`, `toggle` | Injects `<Knob>`, `<Slider>`, or `<Checkbox>` (with `AudioParameterBool`) |
+
+Atomically updates `Source/PluginProcessor.cpp` (`createParameterLayout()`), `Source/UI/MainView.xml`, and `Source/UI/Styles.json`, verifying XML well-formedness and JSON validity before writing.
+
+### audio_plugin_ship
+
+```text
+audio_plugin_ship()
+audio_plugin_ship(version="1.2.0", installLocal=true)
+```
+
+| Argument | Type / default | Notes |
+|---|---|---|
+| `projectPath` | string, optional | Auto-detected from CWD |
+| `version` | string, `"1.0.0"` | Semantic version for `dist/<Name>-<Version>-<OS>/` |
+| `installLocal` | boolean, `true` | Copies `.vst3` into `~/Library/Audio/Plug-Ins/VST3`, `%COMMONPROGRAMFILES%\VST3`, or `~/.vst3` |
+
+Runs the complete release pipeline (`Release Build → clang-format Lint → pluginval --strictness-level 5 --validate-in-process → dist/ Package + INSTALL.txt + macOS ad-hoc codesign → Local VST3 Install`) and returns structured compiler/validator diagnostics on any stage failure.
+
+### audio_plugin_doctor
+
+```text
+audio_plugin_doctor()
+```
+
+| Argument | Type / default | Notes |
+|---|---|---|
+| `projectPath` | string, optional | Optional project root to check for `_tools/JUCE` and `_tools/JIVE` |
+
+Checks `cmake`, the C++20 compiler, `JUCE`, `JIVE`, `pluginval`, and OS plugin directories, auto-initializing `~/.apc-mcp/deps/` and returning actionable fix commands.

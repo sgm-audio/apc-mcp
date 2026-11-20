@@ -1192,19 +1192,19 @@ const TOOL_META = {
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   audio_plugin_create: {
-    title: 'Scaffold a new plugin or app into a project',
+    title: 'Scaffold a new plugin or app (defaults to type="juce", ui="jive", style="fx"; slash command /apc:new)',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   },
   audio_plugin_add_param: {
-    title: 'Atomically add an APVTS parameter and JIVE UI control',
+    title: 'Atomically add an APVTS parameter and JIVE UI control + style rule (slash command /apc:ui)',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   },
   audio_plugin_ship: {
-    title: 'Build Release, lint, validate, package dist/, and optionally install locally',
+    title: 'Composite Release build, lint, pluginval (strictness 5), dist/ package, and local VST3 install (slash command /apc:ship)',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   },
   audio_plugin_doctor: {
-    title: 'Diagnose CMake, C++20 compiler, JUCE, JIVE, pluginval, and OS plugin directories',
+    title: 'Diagnose CMake, C++20 compiler, JUCE, JIVE, pluginval, ~/.apc-mcp/deps/, and OS plugin directories (slash command /apc:doctor)',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
 };
