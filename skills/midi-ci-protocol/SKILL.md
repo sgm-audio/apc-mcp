@@ -1,17 +1,21 @@
 ---
 name: midi-ci-protocol
-description: "MIDI-CI and MIDI 2.0 protocol implementation guidance for Rust or C++. Use when implementing discovery, property exchange, or protocol negotiation. Focuses on the official MIDI-CI specification details that are easy to get wrong."
-type: knowledge
-lifecycle: active
+description: "MIDI-CI and MIDI 2.0 protocol implementation guidance for Rust or C++. Use when implementing discovery, property exchange, or protocol negotiation. Focuses on official specification details that are easy to get wrong."
 ---
 
-# MIDI-CI Protocol Notes
+# MIDI-CI Protocol
 
-- MIDI-CI uses Universal System Exclusive. MUID is 28-bit, randomly generated, never 0xFFFFFFF.
-- Discovery: Initiator sends Discovery, Responder replies with Reply to Discovery.
-- Property Exchange uses JSON over SysEx. Chunking is required for large payloads (max 100 bytes payload per message in many implementations).
-- Protocol Negotiation: Query Protocol, then Set Protocol.
-- Always handle NAK and timeout. Devices can ignore unsupported features.
-- In Rust, prefer zero-copy parsing of SysEx bytes; avoid allocating per message on the hot path.
+## When to use
+- Implementing MIDI Capability Inquiry (MIDI-CI) discovery or property exchange.
+- Negotiating MIDI 2.0 protocol between devices or plugins.
+- Debugging failed profile or property transactions.
 
-Reference the official MIDI Association MIDI-CI specification for exact message formats. Do not invent message layouts.
+## Key rules
+- Follow the official MIDI-CI specification for message formatting and timeouts.
+- Handle the exact discovery and reply sequence; partial implementations fail silently.
+- Property exchange requires correct subscription and chunking.
+- Test against real hardware or a known-good reference implementation.
+
+## Verification
+- Discovery completes and properties can be read/written with a reference device.
+- No malformed messages on the wire.

@@ -1,4 +1,4 @@
 # Changelog
 
 ## 2026-11-20
-- Initial skill for Ableton-specific JUCE UI performance
+- Rewritten to Agent Skills standard (trigger-rich description, imperative instructions, examples)
