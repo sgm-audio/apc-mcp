@@ -29,7 +29,7 @@ const LOG = path.join(ROOT, 'argv.log');
 const SHIM_OUT = path.join(ROOT, 'shim-stdout.txt');
 const SHIM_ERR = path.join(ROOT, 'shim-stderr.txt');
 
-const TOOLS = ['cmake', 'ctest', 'clang-format', 'pluginval', 'clap-validator'];
+const TOOLS = ['cmake', 'ctest', 'clang-format', 'pluginval', 'clap-validator', 'xvfb-run'];
 
 // One shim shape for every tool: record argv (tagged with the tool name), echo
 // the canned stdout/stderr files, exit with the requested code.
@@ -39,6 +39,7 @@ function writeShim(dir, name) {
   fs.writeFileSync(p, [
     '#!/bin/sh',
     `printf '%s ARGS: %s\\n' "$name" "$*" >> "$APC_SHIM_LOG"`.replace('$name', name),
+    ...(name === 'xvfb-run' ? ['[ "$1" = -a ] || exit 2', 'shift', 'exec "$@"'] : []),
     'if [ -n "$APC_SHIM_STDOUT" ] && [ -s "$APC_SHIM_STDOUT" ]; then cat "$APC_SHIM_STDOUT"; fi',
     'if [ -n "$APC_SHIM_STDERR" ] && [ -s "$APC_SHIM_STDERR" ]; then cat "$APC_SHIM_STDERR" >&2; fi',
     'exit "${APC_SHIM_EXIT:-0}"',
@@ -64,6 +65,7 @@ function shimEnv(dir = FAKE_BIN, { stdout = '', stderr = '', exit = 0 } = {}) {
   fs.writeFileSync(SHIM_ERR, stderr);
   return {
     PATH: dir + path.delimiter + SYS_PATH,
+    DISPLAY: '',
     APC_SHIM_LOG: LOG,
     APC_SHIM_STDOUT: SHIM_OUT,
     APC_SHIM_STDERR: SHIM_ERR,
@@ -455,7 +457,10 @@ describe('QA-06 · a missing optional validator must not abort the report', () =
     assert.match(r.text, /2 passed, 0 failed/);
 
     const pvArgs = argvOf('pluginval')[0] ?? '';
-    assert.match(pvArgs, /^--strictness-level 10 /,
+    if (process.platform === 'linux') {
+      assert.deepEqual(argvOf('xvfb-run'), [`-a pluginval ${pvArgs}`]);
+    }
+    assert.match(pvArgs, /^--strictness-level 10 --validate /,
       `pluginval requires --strictness-level, got: ${pvArgs}`);
     assert.doesNotMatch(pvArgs, /--validate-in-new-process/,
       `--validate-in-new-process is not a real pluginval flag: ${pvArgs}`);

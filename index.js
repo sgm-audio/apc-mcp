@@ -12,6 +12,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { spawnSync } from 'node:child_process';
+import { pluginvalCommand } from './pluginval.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1893,11 +1894,12 @@ registerTool(
       // Tracktion/pluginval uses --strictness-level (out-of-process is already
       // default); free-audio/clap-validator requires the `validate` subcommand.
       const args = b.format === 'VST3'
-        ? ['--strictness-level', String(cfg.strictnessLevel ?? 10), b.path]
+        ? ['--strictness-level', String(cfg.strictnessLevel ?? 10), '--validate', b.path]
         : ['validate', b.path];
       // cwd: validators write logs; without this they land wherever the MCP
       // client happened to spawn the server, i.e. outside the project.
-      const r = trySpawn(bin, args, { cwd: proj, timeout: 120 });
+      const command = b.format === 'VST3' ? pluginvalCommand(bin, args) : { cmd: bin, args };
+      const r = trySpawn(command.cmd, command.args, { cwd: proj, timeout: 120 });
       results.push({
         ...b,
         status: r.ok ? 'pass' : 'fail',
@@ -2680,7 +2682,8 @@ registerTool(
     for (const b of binaries) {
       if (b.format === 'VST3' || (process.platform === 'darwin' && b.format === 'AudioUnit')) {
         const pvArgs = ['--strictness-level', '5', '--validate-in-process', '--validate', b.path];
-        const pvRes = trySpawn(pluginvalBin, pvArgs, { cwd: proj, timeout: 180 });
+        const command = pluginvalCommand(pluginvalBin, pvArgs);
+        const pvRes = trySpawn(command.cmd, command.args, { cwd: proj, timeout: 180 });
         if (!pvRes.ok) {
           const text = [
             `## Ship failed at Stage 3 (pluginval --strictness-level 5): ${b.plugin} [${b.format}]`,
