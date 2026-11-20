@@ -107,10 +107,10 @@ describe('plain JUCE scaffold: deterministic deps, warnings-as-errors, portabili
       'Release builds must statically link MSVC runtime (/MT via MultiThreaded$<$<CONFIG:Debug>:Debug>)');
     assert.match(cm, /CMAKE_OSX_ARCHITECTURES/,
       'must support universal macOS binaries via CMAKE_OSX_ARCHITECTURES');
-    assert.match(cm, /dist\/PlainJucePkg-1\.0\.0-\$\{APC_OS_NAME\}/,
-      'must stage bundles into dist/<PluginName>-<Version>-<OS>/');
+    assert.match(cm, /dist\/PlainJucePkg-\$\{APC_PLUGIN_VERSION\}-\$\{APC_DIST_PLATFORM\}/,
+      'must stage bundles into dist/<PluginName>-<Version>-<Platform>/');
     assert.match(cm, /INSTALL\.txt/, 'must generate INSTALL.txt inside dist package');
-    assert.match(cm, /codesign\s+--force\s+--deep\s+-s\s+-/, 'must ad-hoc codesign macOS bundles');
+    assert.match(cm, /codesign\s+--force\s+--deep\s+(?:--sign|-s)\s+-/, 'must ad-hoc codesign macOS bundles');
     assert.match(cm, /PlainJucePkg_package/, 'must expose a <PluginName>_package target');
     assert.match(cm, /add_custom_target\s*\(\s*package\b/, 'must expose a top-level package target');
   });
