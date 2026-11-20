@@ -14,7 +14,12 @@ endif()
 find_package(clap CONFIG QUIET)
 
 if(NOT TARGET clap)
-    # Fall back to a vendored copy, the usual arrangement for plugin repos.
+    if(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
+        file(TO_CMAKE_PATH "$ENV{HOME}/.apc-mcp/deps" APC_CLAP_DEPS_CACHE)
+    elseif(DEFINED ENV{USERPROFILE} AND NOT "$ENV{USERPROFILE}" STREQUAL "")
+        file(TO_CMAKE_PATH "$ENV{USERPROFILE}/.apc-mcp/deps" APC_CLAP_DEPS_CACHE)
+    endif()
+    # Fall back to a vendored copy or the global ~/.apc-mcp/deps/clap cache.
     if(EXISTS "${CMAKE_SOURCE_DIR}/_tools/clap/CMakeLists.txt")
         add_subdirectory(
             "${CMAKE_SOURCE_DIR}/_tools/clap"
@@ -25,11 +30,16 @@ if(NOT TARGET clap)
             "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/clap"
             "${CMAKE_BINARY_DIR}/_tools/clap"
             EXCLUDE_FROM_ALL)
+    elseif(APC_CLAP_DEPS_CACHE AND EXISTS "${APC_CLAP_DEPS_CACHE}/clap/CMakeLists.txt")
+        add_subdirectory(
+            "${APC_CLAP_DEPS_CACHE}/clap"
+            "${CMAKE_BINARY_DIR}/_tools/clap"
+            EXCLUDE_FROM_ALL)
     else()
         message(FATAL_ERROR
             "CLAP headers not found. Either vendor free-audio/clap at _tools/clap in the "
-            "project root, add_subdirectory() it yourself, or install it so that "
-            "clap-config.cmake is on CMAKE_PREFIX_PATH.")
+            "project root, populate ~/.apc-mcp/deps/clap, add_subdirectory() it yourself, "
+            "or install it so that clap-config.cmake is on CMAKE_PREFIX_PATH.")
     endif()
 endif()
 

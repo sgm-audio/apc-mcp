@@ -282,6 +282,17 @@ target_link_libraries({{PLUGIN_NAME}}
         juce::juce_recommended_warning_flags
 )
 
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_options({{PLUGIN_NAME}} PUBLIC $<$<CONFIG:Release>:-flto=auto>)
+endif()
+
+if(APC_USE_JIVE AND NOT MSVC)
+    # JIVE's juce_add_modules attaches jive_TooltipWindow.cpp directly to the
+    # plugin target; suppress third-party JIVE -Wshadow while keeping
+    # -Wall -Wextra -Werror enforced on Source/PluginProcessor.cpp and Source/PluginEditor.cpp.
+    target_compile_options({{PLUGIN_NAME}} PRIVATE -Wno-shadow)
+endif()
+
 # ── Distribution Packaging (dist/) ───────────────────────────────────
 get_target_property(APC_PLUGIN_VERSION {{PLUGIN_NAME}} JUCE_VERSION)
 if(NOT APC_PLUGIN_VERSION)

@@ -213,6 +213,10 @@ target_link_libraries({{PLUGIN_NAME}}
         juce::juce_recommended_warning_flags
 )
 
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_options({{PLUGIN_NAME}} PUBLIC $<$<CONFIG:Release>:-flto=auto>)
+endif()
+
 # ── Distribution Packaging (dist/) ───────────────────────────────────
 get_target_property(APC_PLUGIN_VERSION {{PLUGIN_NAME}} JUCE_VERSION)
 if(NOT APC_PLUGIN_VERSION)

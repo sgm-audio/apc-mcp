@@ -22,16 +22,24 @@ find_path(LV2_INCLUDE_DIR
     DOC "Directory that contains lv2/core/lv2.h")
 
 if(NOT LV2_INCLUDE_DIR)
-    # Fall back to a vendored copy, mirroring how templates/clap handles clap.
+    if(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
+        file(TO_CMAKE_PATH "$ENV{HOME}/.apc-mcp/deps" APC_LV2_DEPS_CACHE)
+    elseif(DEFINED ENV{USERPROFILE} AND NOT "$ENV{USERPROFILE}" STREQUAL "")
+        file(TO_CMAKE_PATH "$ENV{USERPROFILE}/.apc-mcp/deps" APC_LV2_DEPS_CACHE)
+    endif()
+    # Fall back to a vendored copy or ~/.apc-mcp/deps/lv2, mirroring templates/clap.
     if(EXISTS "${CMAKE_SOURCE_DIR}/_tools/lv2/include/lv2/core/lv2.h")
         set(LV2_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/_tools/lv2/include")
     elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/lv2/include/lv2/core/lv2.h")
         set(LV2_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../_tools/lv2/include")
+    elseif(APC_LV2_DEPS_CACHE AND EXISTS "${APC_LV2_DEPS_CACHE}/lv2/include/lv2/core/lv2.h")
+        set(LV2_INCLUDE_DIR "${APC_LV2_DEPS_CACHE}/lv2/include")
     else()
         message(FATAL_ERROR
             "LV2 headers not found. Install them (Debian/Ubuntu: apt install lv2-dev; "
             "Arch: pacman -S lv2; macOS: brew install lv2), vendor lv2/lv2 at _tools/lv2 "
-            "in the project root, or configure with -DLV2_INCLUDE_DIR=/path/containing/lv2.")
+            "in the project root, populate ~/.apc-mcp/deps/lv2, or configure with "
+            "-DLV2_INCLUDE_DIR=/path/containing/lv2.")
     endif()
 endif()
 
