@@ -1,0 +1,9 @@
+{
+  "skill": "audio-freelance-proposal",
+  "test_cases": [
+    {"input": "write an Upwork proposal for this JUCE job", "should_trigger": true},
+    {"input": "Fiverr gig reply for a ReaScript", "should_trigger": true},
+    {"input": "client-facing pitch for audio plugin work", "should_trigger": true},
+    {"input": "debug this C++ crash", "should_trigger": false}
+  ]
+}
