@@ -1,0 +1,20 @@
+{
+  "skill": "juce-parameter-id-stability",
+  "test_cases": [
+    {
+      "name": "legacy_ids",
+      "input": "AU automation is permanently disabled after I updated JUCE",
+      "assertions": ["Recommends JUCE_FORCE_USE_LEGACY_PARAM_IDS"]
+    },
+    {
+      "name": "meta_param",
+      "input": "My meta-parameter changes get overwritten in Ableton VST3",
+      "assertions": ["Requires host notification of slave changes"]
+    },
+    {
+      "name": "notify_volume",
+      "input": "Preset loading is slow because I call setValueNotifyingHost on every param",
+      "assertions": ["Only notify on actual change", "Prefer updateHostDisplay batching"]
+    }
+  ]
+}

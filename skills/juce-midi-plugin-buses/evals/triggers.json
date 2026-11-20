@@ -1,0 +1,9 @@
+{
+  "skill": "juce-midi-plugin-buses",
+  "test_cases": [
+    {"input": "MIDI plugin won't instantiate in Ableton Live", "should_trigger": true},
+    {"input": "VST3 arpeggiator fails to load", "should_trigger": true},
+    {"input": "how to declare buses for MIDI-only plugin", "should_trigger": true},
+    {"input": "optimize my DSP", "should_trigger": false}
+  ]
+}

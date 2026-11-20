@@ -1,0 +1,20 @@
+{
+  "skill": "juce-latency-host-quirks",
+  "test_cases": [
+    {
+      "name": "live10_crash",
+      "input": "Ableton Live 10 crashes on project load when my VST3 calls setLatencySamples",
+      "assertions": ["Mentions delay the call or avoid certain restart flags"]
+    },
+    {
+      "name": "offline_render",
+      "input": "Offline render in Ableton has dropouts after I started reporting dynamic latency",
+      "assertions": ["Do not change latency from processBlock", "Compute in prepareToPlay"]
+    },
+    {
+      "name": "early_report",
+      "input": "When should I call setLatencySamples?",
+      "assertions": ["As early as possible, only when it changes"]
+    }
+  ]
+}

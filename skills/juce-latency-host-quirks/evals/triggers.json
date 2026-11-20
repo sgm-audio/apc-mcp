@@ -1,0 +1,9 @@
+{
+  "skill": "juce-latency-host-quirks",
+  "test_cases": [
+    {"input": "setLatencySamples crashes Ableton", "should_trigger": true},
+    {"input": "offline render dropouts with dynamic latency", "should_trigger": true},
+    {"input": "when to report plugin latency", "should_trigger": true},
+    {"input": "write a delay line", "should_trigger": false}
+  ]
+}

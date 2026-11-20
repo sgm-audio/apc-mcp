@@ -1,0 +1,20 @@
+{
+  "skill": "juce-midi-plugin-buses",
+  "test_cases": [
+    {
+      "name": "empty_bus_rejection",
+      "input": "My MIDI-only VST3 fails to load in Ableton with 'could not be opened'",
+      "assertions": ["Explains empty bus rejection", "Gives stereo output fix"]
+    },
+    {
+      "name": "conditional_layout",
+      "input": "I only want the dummy audio bus in Live",
+      "assertions": ["Shows PluginHostType().isAbletonLive() conditional"]
+    },
+    {
+      "name": "midi_effect_flag",
+      "input": "Should I check MIDI Effect Plugin for an arpeggiator?",
+      "assertions": ["Warns that the flag can prevent loading in Live"]
+    }
+  ]
+}
