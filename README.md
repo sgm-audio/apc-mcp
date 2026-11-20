@@ -107,10 +107,10 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --target package --parallel
 ```
 
-The `package` target writes self-contained bundles and `INSTALL.txt` into `build/dist/<PluginName>-1.0.0-<OS>/` (and runs `codesign --force --deep -s -` on macOS):
+The `package` target writes self-contained bundles and `INSTALL.txt` into `dist/<PluginName>-1.0.0-<Platform>/` (and `build/dist/<PluginName>-1.0.0-<Platform>/`), running `codesign --force --deep --sign -` on macOS:
 
 ```text
-build/dist/MyGain-1.0.0-<OS>/
+dist/MyGain-1.0.0-<Platform>/
   MyGain.vst3
   MyGain.component   # macOS when AU is in formats
   INSTALL.txt
@@ -119,7 +119,7 @@ build/dist/MyGain-1.0.0-<OS>/
 Validate with `pluginval` (wrap in `xvfb-run -a` on headless Linux):
 
 ```sh
-pluginval --strictness-level 5 --validate-in-process --validate build/dist/MyGain-1.0.0-<OS>/MyGain.vst3
+pluginval --strictness-level 5 --validate-in-process --validate dist/MyGain-1.0.0-<Platform>/MyGain.vst3
 ```
 
 ### 5. End-user installation paths
@@ -134,8 +134,8 @@ pluginval --strictness-level 5 --validate-in-process --validate build/dist/MyGai
 
 ### 6. Current limitations
 
-- **ARA2:** Not offered yet (removed in 2.0.0; requires a dedicated `IS_ARA_EFFECT` template).
-- **Public distribution signing:** Packaging applies ad-hoc codesigning (`codesign --force --deep -s -`) on macOS for local loading. Commercial distribution requires Developer ID signing + Apple notarization on macOS and Authenticode signing on Windows.
+- **ARA2:** Still a stub / not offered yet (removed in 2.0.0; requires a dedicated `IS_ARA_EFFECT` template).
+- **Public distribution signing:** Packaging applies ad-hoc codesigning (`codesign --force --deep --sign -`) on macOS for local testing only. Commercial distribution requires Developer ID signing + Apple notarization on macOS and Authenticode signing on Windows.
 - **Headless Linux:** `pluginval` is a GUI application and requires a display (`xvfb-run -a`). JUCE builds automatically set `JUCE_ALSA=0` when `libasound2-dev` is absent.
 
 ## Documentation

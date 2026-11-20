@@ -250,69 +250,115 @@ target_link_libraries({{PLUGIN_NAME}}
 )
 
 # ── Distribution Packaging (dist/) ───────────────────────────────────
-# Stage clean .vst3 / .component / .lv2 bundles and INSTALL.txt into
-# <build>/dist/<PluginName>-<Version>-<OS>/ via `<name>_package` and `package`.
+get_target_property(APC_PLUGIN_VERSION {{PLUGIN_NAME}} JUCE_VERSION)
+if(NOT APC_PLUGIN_VERSION)
+    set(APC_PLUGIN_VERSION "${PROJECT_VERSION}")
+endif()
+if(NOT APC_PLUGIN_VERSION)
+    set(APC_PLUGIN_VERSION "0.1.0")
+endif()
+
 if(APPLE)
-    set(APC_OS_NAME "macOS")
+    set(APC_DIST_PLATFORM "macOS")
 elseif(WIN32)
-    set(APC_OS_NAME "Windows")
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(APC_OS_NAME "Linux")
+    set(APC_DIST_PLATFORM "Windows")
 else()
-    set(APC_OS_NAME "${CMAKE_SYSTEM_NAME}")
+    set(APC_DIST_PLATFORM "Linux")
 endif()
 
 set(APC_DIST_DIR
-    "${CMAKE_BINARY_DIR}/dist/{{PLUGIN_NAME}}-1.0.0-${APC_OS_NAME}")
+    "${CMAKE_SOURCE_DIR}/dist/{{PLUGIN_NAME}}-${APC_PLUGIN_VERSION}-${APC_DIST_PLATFORM}")
+set(APC_BUILD_DIST_DIR
+    "${CMAKE_BINARY_DIR}/dist/{{PLUGIN_NAME}}-${APC_PLUGIN_VERSION}-${APC_DIST_PLATFORM}")
+
+add_custom_target({{PLUGIN_NAME}}_package
+    COMMENT "Packaging {{PLUGIN_NAME}} into ${APC_DIST_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${APC_DIST_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E remove_directory "${APC_DIST_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${APC_DIST_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${APC_BUILD_DIST_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E remove_directory "${APC_BUILD_DIST_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${APC_BUILD_DIST_DIR}"
+)
+
+if(TARGET {{PLUGIN_NAME}}_VST3)
+    add_dependencies({{PLUGIN_NAME}}_package {{PLUGIN_NAME}}_VST3)
+    get_target_property(
+        APC_VST3_BUNDLE {{PLUGIN_NAME}}_VST3 JUCE_PLUGIN_ARTEFACT_FILE)
+    if(NOT APC_VST3_BUNDLE)
+        set(APC_VST3_BUNDLE "$<TARGET_FILE_DIR:{{PLUGIN_NAME}}_VST3>")
+    endif()
+    add_custom_command(TARGET {{PLUGIN_NAME}}_package POST_BUILD
+        COMMENT "Copying {{PLUGIN_NAME}}.vst3 into ${APC_DIST_DIR}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${APC_VST3_BUNDLE}"
+            "${APC_DIST_DIR}/{{PLUGIN_NAME}}.vst3"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${APC_VST3_BUNDLE}"
+            "${APC_BUILD_DIST_DIR}/{{PLUGIN_NAME}}.vst3"
+    )
+endif()
+
+if(APPLE AND TARGET {{PLUGIN_NAME}}_AU)
+    add_dependencies({{PLUGIN_NAME}}_package {{PLUGIN_NAME}}_AU)
+    get_target_property(
+        APC_AU_BUNDLE {{PLUGIN_NAME}}_AU JUCE_PLUGIN_ARTEFACT_FILE)
+    if(NOT APC_AU_BUNDLE)
+        set(APC_AU_BUNDLE "$<TARGET_FILE_DIR:{{PLUGIN_NAME}}_AU>")
+    endif()
+    add_custom_command(TARGET {{PLUGIN_NAME}}_package POST_BUILD
+        COMMENT "Copying {{PLUGIN_NAME}}.component into ${APC_DIST_DIR}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${APC_AU_BUNDLE}"
+            "${APC_DIST_DIR}/{{PLUGIN_NAME}}.component"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${APC_AU_BUNDLE}"
+            "${APC_BUILD_DIST_DIR}/{{PLUGIN_NAME}}.component"
+    )
+endif()
+
+if(APPLE)
+    if(TARGET {{PLUGIN_NAME}}_VST3)
+        add_custom_command(TARGET {{PLUGIN_NAME}}_package POST_BUILD
+            COMMENT "Ad-hoc signing {{PLUGIN_NAME}}.vst3"
+            COMMAND codesign --force --deep --sign -
+                "${APC_DIST_DIR}/{{PLUGIN_NAME}}.vst3"
+            COMMAND codesign --force --deep --sign -
+                "${APC_BUILD_DIST_DIR}/{{PLUGIN_NAME}}.vst3"
+        )
+    endif()
+    if(TARGET {{PLUGIN_NAME}}_AU)
+        add_custom_command(TARGET {{PLUGIN_NAME}}_package POST_BUILD
+            COMMENT "Ad-hoc signing {{PLUGIN_NAME}}.component"
+            COMMAND codesign --force --deep --sign -
+                "${APC_DIST_DIR}/{{PLUGIN_NAME}}.component"
+            COMMAND codesign --force --deep --sign -
+                "${APC_BUILD_DIST_DIR}/{{PLUGIN_NAME}}.component"
+        )
+    endif()
+endif()
+
 set(APC_INSTALL_TXT "${CMAKE_CURRENT_BINARY_DIR}/INSTALL.txt")
 file(WRITE "${APC_INSTALL_TXT}"
-    "{{PLUGIN_DISPLAY_NAME}} v1.0.0 (${APC_OS_NAME})\n"
-    "Vendor: {{VENDOR_CMAKE}}\n\n"
-    "Installation paths:\n"
-    "  macOS VST3:    ~/Library/Audio/Plug-Ins/VST3/\n"
-    "  macOS AU:      ~/Library/Audio/Plug-Ins/Components/\n"
-    "  Windows VST3:  C:\\Program Files\\Common Files\\VST3\\\n"
-    "  Linux VST3:    ~/.vst3/\n"
-    "  Linux LV2:     ~/.lv2/\n"
+    "Install {{PLUGIN_NAME}} ${APC_PLUGIN_VERSION}\n"
+    "Copy the .vst3 (and .component on macOS) into your system plugin folder and rescan:\n\n"
+    "macOS:   ~/Library/Audio/Plug-Ins/VST3/  or  /Library/Audio/Plug-Ins/VST3/\n"
+    "Windows: C:\\Program Files\\Common Files\\VST3\\\n"
+    "Linux:   ~/.vst3/\n\n"
+    "These bundles are ad-hoc signed for local testing only.\n"
 )
 
-set(APC_PACKAGE_DEPS)
-set(APC_PACKAGE_COMMANDS
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${APC_DIST_DIR}"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+add_custom_command(TARGET {{PLUGIN_NAME}}_package POST_BUILD
+    COMMENT "Writing INSTALL.txt into ${APC_DIST_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E copy
         "${APC_INSTALL_TXT}" "${APC_DIST_DIR}/INSTALL.txt"
+    COMMAND "${CMAKE_COMMAND}" -E copy
+        "${APC_INSTALL_TXT}" "${APC_BUILD_DIST_DIR}/INSTALL.txt"
 )
-foreach(apc_fmt_pair IN ITEMS "VST3:vst3" "AU:component" "LV2:lv2")
-    string(REPLACE ":" ";" APC_PAIR "${apc_fmt_pair}")
-    list(GET APC_PAIR 0 APC_FMT)
-    list(GET APC_PAIR 1 APC_EXT)
-    if(TARGET {{PLUGIN_NAME}}_${APC_FMT})
-        list(APPEND APC_PACKAGE_DEPS {{PLUGIN_NAME}}_${APC_FMT})
-        get_target_property(
-            APC_ARTEFACT {{PLUGIN_NAME}}_${APC_FMT} JUCE_PLUGIN_ARTEFACT_FILE)
-        if(APC_ARTEFACT)
-            set(APC_DEST "${APC_DIST_DIR}/{{PLUGIN_DISPLAY_NAME}}.${APC_EXT}")
-            list(APPEND APC_PACKAGE_COMMANDS
-                COMMAND "${CMAKE_COMMAND}" -E rm -rf "${APC_DEST}"
-                COMMAND "${CMAKE_COMMAND}" -E copy_directory "${APC_ARTEFACT}" "${APC_DEST}"
-            )
-            if(APPLE)
-                list(APPEND APC_PACKAGE_COMMANDS
-                    COMMAND codesign --force --deep -s - "${APC_DEST}"
-                )
-            endif()
-        endif()
-    endif()
-endforeach()
 
-add_custom_target({{PLUGIN_NAME}}_package ALL
-    ${APC_PACKAGE_COMMANDS}
-    DEPENDS ${APC_PACKAGE_DEPS}
-    COMMENT "Packaging {{PLUGIN_DISPLAY_NAME}} into ${APC_DIST_DIR}"
-)
 if(NOT TARGET package)
     add_custom_target(package
-        COMMENT "Packaging all plugins into ${CMAKE_BINARY_DIR}/dist/"
+        COMMENT "Packaging {{PLUGIN_NAME}} into ${APC_DIST_DIR}"
     )
 endif()
 add_dependencies(package {{PLUGIN_NAME}}_package)
