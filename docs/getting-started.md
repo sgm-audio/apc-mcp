@@ -59,7 +59,7 @@ Minimum for any build:
 | [CMake 3.22+](https://cmake.org/download/) | `cmake` + `ctest`; optional [Ninja](https://ninja-build.org/) for faster builds |
 | C11 / C++20 compiler | Xcode Command Line Tools, Visual Studio Build Tools, or GCC / Clang |
 
-Then the SDK for the format you scaffold, and optionally `clang-format`, `pluginval` and `clap-validator` for lint/validate. The full table, platform notes and installation hints are in [Toolchain & SDKs](toolchain.md).
+Then the SDK for the scaffold you build, and optionally `clang-format`, `pluginval` and `clap-validator` for lint/validate. ARA projects additionally require an external ARA SDK (not bundled with JUCE or apc-mcp); see [Toolchain & SDKs](toolchain.md#sdk-discovery).
 
 ## 3. Bootstrap a project folder
 
@@ -89,12 +89,28 @@ audio_plugin_validate(projectPath="/path/to/my-plugins", format="CLAP")
 
 `audio_plugin_create` writes `plugins/MyGain/` and registers `add_subdirectory(plugins/MyGain)` in the root `CMakeLists.txt` (creating a minimal one if you started from `apc-mcp.json` alone). `audio_plugin_build` auto-configures `build/` on first use.
 
+For an ARA effect, clone the external SDK with its submodules initialized (JUCE 9 documents ARA SDK 2.1.0) and provide its root path explicitly before building. The root must contain `ARA_Library/PlugIn/ARAPlug.h` and `ARA_API/ARAInterface.h`; `audio_plugin_create` intentionally defers CMake configuration for this type:
+
+```sh
+git clone --depth 1 --recurse-submodules --branch releases/2.1.0 \\
+  https://github.com/Celemony/ARA_SDK.git /absolute/path/to/ARA_SDK
+```
+
+```text
+audio_plugin_create(projectPath="/path/to/my-plugins", name="MyAraEffect", type="ara")
+audio_plugin_configure(projectPath="/path/to/my-plugins", options="-DAPC_ARA_SDK_PATH=/absolute/path/to/ARA_SDK")
+audio_plugin_build(projectPath="/path/to/my-plugins", config="Release")
+```
+
+ARA is enabled with `IS_ARA_EFFECT TRUE` and actual JUCE formats `VST3 AU`. The generated CMake fails with `FATAL_ERROR` if `APC_ARA_SDK_PATH` is unset, empty, or does not point to a complete SDK root.
+
 Artefacts land under `build/plugins/<Name>/<Name>_artefacts/<Config>/`:
 
 | `type` | Artefact |
 |---|---|
 | `clap` | `CLAP/MyGain.clap` |
 | `juce` / `vst3` | `VST3/…vst3`, `LV2/…lv2`, `Standalone/…` (depending on `formats`) |
+| `ara` | `VST3/…vst3` and, on macOS, `AU/…component` |
 | `lv2` | `LV2/MyGain.lv2/MyGain.so` plus Turtle metadata |
 | `standalone` | `Standalone/MyGain` (an executable, not a plugin) |
 

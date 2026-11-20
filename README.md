@@ -12,7 +12,7 @@
 
 # apc-mcp
 
-**apc-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server for commercial audio plugin development. It equips an AI coding agent with **10 MCP tools** and **4 native `/` slash commands** (`prompts/list` & `prompts/get`) to **scaffold, design, synchronize parameters, configure, build, test, lint, validate, package, and locally install** CMake audio plugins for **JUCE + JIVE**, standard **JUCE**, **CLAP**, **VST3**, **LV2**, and **standalone** applications.
+**apc-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server for commercial audio plugin development. It equips an AI coding agent with **10 MCP tools** and **4 native `/` slash commands** (`prompts/list` & `prompts/get`) to **scaffold, design, synchronize parameters, configure, build, test, lint, validate, package, and locally install** CMake audio plugins for **JUCE + JIVE**, standard **JUCE**, **JUCE ARA effects**, **CLAP**, **VST3**, **LV2**, and **standalone** applications.
 
 > **It wraps your toolchain — it does not ship one.** apc-mcp calls the CMake, C/C++ compiler, `ctest`, `clang-format`, `pluginval` and `clap-validator` binaries on your `PATH`, and caches or resolves JUCE and JIVE deterministically via `_tools/` or `~/.apc-mcp/deps/`. [What you need →](docs/toolchain.md)
 
@@ -92,18 +92,31 @@ See the full [Tool reference](docs/tools.md) for all 10 tools (`audio_plugin_cre
 
 ### `audio_plugin_create`
 
-Scaffolds a new plugin or application into `<pluginsDir>/<name>`, registers `add_subdirectory(...)` in the root `CMakeLists.txt`, initializes `~/.apc-mcp/deps/`, and verifies the CMake configuration.
+Scaffolds a new plugin or application into `<pluginsDir>/<name>`, registers `add_subdirectory(...)` in the root `CMakeLists.txt`, and initializes `~/.apc-mcp/deps/`. JUCE projects are auto-configured when their SDKs are available; ARA projects defer configuration until you supply the required external SDK path.
 
 | Parameter | Type / Default | Description |
 |---|---|---|
 | `projectPath` | `string` *(optional)* | Project root containing `apc-mcp.json` or `CMakeLists.txt` (auto-detected from CWD). |
 | `name` | `string` *(required)* | Plugin name (`[a-zA-Z][a-zA-Z0-9_-]*`, e.g. `"TapeEcho"`, `"Phaser9000"`). |
-| `type` | `'juce'` *(default)* \| `'vst3'` \| `'clap'` \| `'lv2'` \| `'standalone'` | Target plugin architecture. Defaults to `'juce'` (`VST3;LV2;Standalone`). |
-| `ui` | `'jive'` *(default)* \| `'generic'` \| `'juce'` \| `'webview'` | UI framework for `juce`/`vst3` plugins. Defaults to `'jive'`. Use `'generic'` (or `'juce'`) for `GenericAudioProcessorEditor`. |
-| `style` | `'fx'` *(default)* \| `'synth'` \| `'utility'` | Seeds initial DSP & JIVE controls: `'fx'` (stereo effect with `gain`), `'synth'` (`IS_SYNTH TRUE`, `NEEDS_MIDI_INPUT TRUE`, `gain` + `cutoff` knob), or `'utility'` (`gain` + `bypass` toggle). |
+| `type` | `'juce'` *(default)* \| `'vst3'` \| `'clap'` \| `'lv2'` \| `'standalone'` \| `'ara'` | Target scaffold. Defaults to `'juce'` (`VST3;LV2;Standalone`). `'ara'` creates a JUCE ARA effect with fixed VST3/AU formats; it requires an external ARA SDK at configure time. |
+| `ui` | `'jive'` *(default)* \| `'generic'` \| `'juce'` \| `'webview'` | UI framework for `juce`/`vst3` plugins. Defaults to `'jive'`. Use `'generic'` (or `'juce'`) for `GenericAudioProcessorEditor`; ARA uses its dedicated ARA-aware editor and ignores this option. |
+| `style` | `'fx'` *(default)* \| `'synth'` \| `'utility'` | Seeds initial DSP & JIVE controls: `'fx'` (stereo effect with `gain`), `'synth'` (`IS_SYNTH TRUE`, `NEEDS_MIDI_INPUT TRUE`, `gain` + `cutoff` knob), or `'utility'` (`gain` + `bypass` toggle). ARA is always generated as an effect and ignores this option. |
 | `vendor` | `'apc-mcp'` *(default)* | Vendor/company name embedded in plugin metadata (up to 128 chars, non-ASCII supported). |
 | `description` | `'An audio plugin'` *(default)* | Short plugin description (up to 512 chars, non-ASCII supported). |
-| `formats` | `'VST3;LV2;Standalone'` *(optional)* | Semicolon-separated JUCE formats override (`AU`, `AUv3`, `AAX`, `LV2`, `Standalone`, `Unity`, `VST`, `VST3`). |
+| `formats` | `'VST3;LV2;Standalone'` *(optional)* | Semicolon-separated JUCE format override for `juce`/`vst3` (`AU`, `AUv3`, `AAX`, `LV2`, `Standalone`, `Unity`, `VST`, `VST3`). Rejected for `ara`, which uses fixed VST3 and AU formats; ARA is not a format. |
+
+For `type="ara"`, obtain the external ARA SDK with its submodules initialized, then configure it before building. JUCE 9 documents ARA SDK 2.1.0:
+
+```sh
+git clone --depth 1 --recurse-submodules --branch releases/2.1.0 \\
+  https://github.com/Celemony/ARA_SDK.git /absolute/path/to/ARA_SDK
+```
+
+```text
+audio_plugin_configure(projectPath="/path/to/my-plugins", options="-DAPC_ARA_SDK_PATH=/absolute/path/to/ARA_SDK")
+```
+
+The path must be the SDK root containing `ARA_Library/PlugIn/ARAPlug.h` and `ARA_API/ARAInterface.h`. Generated CMake fails early with `FATAL_ERROR` for an unset, empty, or incomplete SDK, then calls `juce_set_ara_sdk_path(...)` before `juce_add_plugin(...)`. ARA uses `FORMATS VST3 AU` with `IS_ARA_EFFECT TRUE`; do not pass `formats="ARA"`.
 
 **Return payload:** Markdown summary containing the created plugin directory, template and style preset used, root `CMakeLists.txt` registration status, `~/.apc-mcp/deps/` cache initialization status, and the scaffolded file tree.
 
@@ -175,7 +188,7 @@ dist/<PluginName>-<Version>-<macOS|Windows|Linux>/
 ### Known Limitations
 
 - **macOS Ad-Hoc Signing vs. Public Notarization:** `audio_plugin_ship` and the CMake `package` target run `codesign --force --deep --sign -` on macOS bundles so they load locally without Gatekeeper quarantine failures. Public commercial distribution on macOS requires an Apple **Developer ID Application** certificate, hardened runtime signing, and `notarytool` notarization; Windows public installers should be signed with an **Authenticode** certificate.
-- **ARA2 Stub Status:** `type="ara"` is not offered yet (removed in 2.0.0 because ARA2 in JUCE requires `IS_ARA_EFFECT` and dedicated `AudioProcessorARAExtension` / `ARADocumentControllerSpecialisation` subclasses rather than a format string). See the [roadmap](docs/roadmap.md).
+- **ARA SDK requirement:** `type="ara"` generates a JUCE ARA effect scaffold, but the ARA SDK is external and is not bundled. Configure with `-DAPC_ARA_SDK_PATH=/absolute/path/to/ARA_SDK` before building; the path must point to a complete SDK root with initialized `ARA_Library` and `ARA_API` headers. ARA is an effect mode (`IS_ARA_EFFECT TRUE`) layered on VST3/AU, never a `FORMATS` value.
 - **Headless Linux Display:** `pluginval` instantiates the plugin GUI editor and requires an X11 display on Linux (wrap headless CI runs in `xvfb-run -a`). Generated JUCE `CMakeLists.txt` files automatically define `JUCE_ALSA=0` when `libasound2-dev` is absent on headless Linux containers.
 
 ---

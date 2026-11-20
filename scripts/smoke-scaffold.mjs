@@ -9,9 +9,10 @@
 //
 // Configure/build dependencies come from the environment, so the script stays
 // useful on a laptop with no toolchain:
-//   APC_JUCE_DIR   path to a JUCE checkout (symlinked to <proj>/_tools/JUCE)
-//   APC_CLAP_DIR   path to a free-audio/clap checkout (symlinked to <proj>/_tools/clap)
-//   APC_LV2_DIR    path to an lv2/lv2 include directory (contains lv2/core/lv2.h)
+//   APC_JUCE_DIR       path to a JUCE checkout (symlinked to <proj>/_tools/JUCE)
+//   APC_ARA_SDK_PATH   path to the external ARA SDK root (initialized ARA_Library/ + ARA_API/)
+//   APC_CLAP_DIR       path to a free-audio/clap checkout (symlinked to <proj>/_tools/clap)
+//   APC_LV2_DIR        path to an lv2/lv2 include directory (contains lv2/core/lv2.h)
 //
 // Usage:
 //   node scripts/smoke-scaffold.mjs                  # structural checks only
@@ -20,13 +21,13 @@
 //   node scripts/smoke-scaffold.mjs --build --install   # + `cmake --install --prefix` (S-4)
 //   node scripts/smoke-scaffold.mjs --build --lv2lint   # + lv2lint on the built bundles (S-13)
 //   node scripts/smoke-scaffold.mjs --build --clang-tidy  # + clang-tidy over the C/C++ sources
-//   node scripts/smoke-scaffold.mjs --build --family=lv2  # only the LV2 cases
+//   node scripts/smoke-scaffold.mjs --build --family=ara  # only the ARA case (JUCE + ARA SDK required)
 //
 // The extra flags each need a tool on PATH and every one of them FAILS when the
 // tool is missing — a validation step that silently does nothing is worse than
 // no step, because the job stays green. For the same reason a --build run fails
-// when a family it was asked for has no SDK: use --family=<clap|juce|lv2> (once
-// per family, or not at all for all three) when the machine has only some SDKs.
+// when a family it was asked for has no SDK: use --family=<clap|juce|ara|lv2> (once
+// per family, or not at all for all four) when the machine has only some SDKs.
 //
 // Exit code is non-zero if any check fails.
 
@@ -45,6 +46,7 @@ const CLANG_TIDY = process.argv.includes('--clang-tidy');
 const BUILD_TARGETS = process.argv.includes('--build') || INSTALL || LV2_LINT || CLANG_TIDY;
 const CONFIGURE = BUILD_TARGETS || process.argv.includes('--configure');
 const JUCE_DIR = process.env.APC_JUCE_DIR || '';
+const ARA_SDK_PATH = process.env.APC_ARA_SDK_PATH || '';
 const JIVE_DIR = process.env.APC_JIVE_DIR || '';
 const CLAP_DIR = process.env.APC_CLAP_DIR || '';
 const LV2_DIR = process.env.APC_LV2_DIR || '';
@@ -63,6 +65,7 @@ const CASES = [
   { name: 'SmokeVst3Gen',   type: 'vst3', ui: 'generic', family: 'juce' },
   { name: 'SmokeVst3Wv',    type: 'vst3', ui: 'webview', family: 'juce' },
   { name: 'SmokeVst3Jive',  type: 'vst3', ui: 'jive',    family: 'juce' },
+  { name: 'SmokeARA',       type: 'ara',  ui: 'generic', family: 'ara' },
   { name: 'smoke-kebab',    type: 'clap', ui: 'generic', family: 'clap' },
   // A standalone application. `family` stays 'juce' because that is what
   // groups it for the optional cmake configure/build step — it needs JUCE, just
@@ -82,6 +85,7 @@ const CMAKE_COMMAND_FOR_TYPE = {
   clap: 'add_library',            // a MODULE library against free-audio/clap
   juce: 'juce_add_plugin',
   vst3: 'juce_add_plugin',
+  ara: 'juce_add_plugin',
   standalone: 'juce_add_gui_app', // an executable, not a plugin library
   lv2: 'add_library',             // a MODULE library, dlopen'd by the host
 };
@@ -168,7 +172,7 @@ function verifyBuiltArtefacts(c, buildDir) {
     ok(`${c.name}: built LV2 bundle verified (.so + manifest.ttl + plugin.ttl)`);
     return;
   }
-  if (c.type === 'vst3' || c.type === 'juce') {
+  if (c.type === 'vst3' || c.type === 'juce' || c.type === 'ara') {
     const vst3Dir = path.join(artBase, 'VST3');
     const vst3s = fs.existsSync(vst3Dir)
       ? fs.readdirSync(vst3Dir).filter(n => n.toLowerCase().endsWith('.vst3'))
@@ -425,19 +429,27 @@ try {
       const juceReady = JUCE_DIR !== '' && fs.existsSync(JUCE_DIR);
       const clapReady = CLAP_DIR !== '' && fs.existsSync(CLAP_DIR);
       const lv2Ready = LV2_DIR !== '' && fs.existsSync(LV2_DIR);
+      const araSdkReady = ARA_SDK_PATH !== ''
+        && fs.existsSync(path.join(ARA_SDK_PATH, 'ARA_Library', 'PlugIn', 'ARAPlug.h'))
+        && fs.existsSync(path.join(ARA_SDK_PATH, 'ARA_API', 'ARAInterface.h'));
+      const araReady = juceReady && araSdkReady;
 
-      const extraArgsFor = family =>
-        family === 'lv2' ? [`-DLV2_INCLUDE_DIR=${LV2_DIR}`] : [];
+      const extraArgsFor = family => {
+        if (family === 'lv2') return [`-DLV2_INCLUDE_DIR=${LV2_DIR}`];
+        if (family === 'ara') return [`-DAPC_ARA_SDK_PATH=${ARA_SDK_PATH}`];
+        return [];
+      };
 
       for (const family of FAMILIES) {
-        if (!['clap', 'juce', 'lv2'].includes(family)) {
-          fail('--family', `unknown family "${family}" (expected clap, juce or lv2)`);
+        if (!['clap', 'juce', 'ara', 'lv2'].includes(family)) {
+          fail('--family', `unknown family "${family}" (expected clap, juce, ara or lv2)`);
         }
       }
 
       /** @type {Array<[string, boolean, string]>} */
       const FAMILY_DEPS = [['clap', clapReady, 'APC_CLAP_DIR'],
                            ['juce', juceReady, 'APC_JUCE_DIR'],
+                           ['ara', araReady, 'APC_JUCE_DIR + APC_ARA_SDK_PATH'],
                            ['lv2', lv2Ready, 'APC_LV2_DIR']];
       for (const [family, ready, depName] of FAMILY_DEPS) {
         if (FAMILIES.length && !FAMILIES.includes(family)) continue;
@@ -449,9 +461,12 @@ try {
           // never did. In CI each job sets its own SDK and names its family with
           // --family=, so a missing one is always a misconfiguration.
           if (BUILD_TARGETS) {
-            fail(`${family}: ${depName} not set`, `cannot build the ${family} family without it — set ${depName}`);
+            const reason = family === 'ara'
+              ? 'ARA build needs APC_JUCE_DIR and APC_ARA_SDK_PATH; the ARA SDK root must contain initialized ARA_Library/ and ARA_API/ submodules'
+              : `cannot build the ${family} family without it — set ${depName}`;
+            fail(`${family}: ${depName} missing or invalid`, reason);
           } else {
-            console.log(`  skip ${family}: ${depName} not set (configure-only run)`);
+            console.log(`  skip ${family}: ${depName} missing or invalid (configure-only run)`);
           }
           continue;
         }

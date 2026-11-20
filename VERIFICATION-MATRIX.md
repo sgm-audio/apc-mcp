@@ -4,6 +4,12 @@
 
 **Verdicts:** **Verified** = supported by implementation and/or a targeted observed test, within the stated scope; **Partial** = implemented for some cases but broader coverage or proof is missing; **Failed** = an observed counterexample or direct contradiction; **Unverifiable** = only asserted in prose, historical state was not independently established, or the necessary platform/host test was not performed. A green mock test is not evidence of real SDK/host compatibility. None of these results establishes absolute security.
 
+## Follow-up implementation note — 2026-11-20
+
+This matrix remains a snapshot of the reviewed base commit above; its row-level line references and verdicts describe that earlier tree, not the current branch. Since the review, `type="ara"` has been implemented as a dedicated JUCE effect scaffold: actual `VST3 AU` formats, `IS_ARA_EFFECT TRUE`, processor/editor ARA extensions, source-audio playback, a document-controller factory, and early unset/empty/incomplete SDK-root checks. Current support and verification are maintained in [docs/project-status.md](docs/project-status.md) and [docs/roadmap.md](docs/roadmap.md).
+
+The ARA source files passed strict syntax-only compilation against upstream JUCE 9.0.3 headers and real ARA SDK headers, and the repository's stub compile/link and CMake SDK-guard tests pass. A full JUCE CMake configure/build was attempted but stopped while building `juceaide` because this environment lacks the Linux FreeType development header `ft2build.h`; no real DAW-host load was performed. See the current [verification baseline](docs/project-status.md#verification-baseline) and [ARA limitation](docs/project-status.md#known-limitations) rather than treating the historical ARA verdict below as current.
+
 ## Executive findings (prioritized)
 
 1. **High — containment is not a sandbox.** `docs/security.md:47` promises no arbitrary outside reads/writes. A real configure call with `options=-DCMAKE_PROJECT_INCLUDE=/tmp/.../outside/payload.cmake` executed an outside CMake script that wrote a marker outside the project. This is ordinary CMake capability, not shell-string injection. Even without that option, untrusted project CMake/build/test scripts and validators can execute code. Trust projects and toolchains; do not use this server as an isolation boundary. There is a separate direct artefact-symlink escape below. See F1.

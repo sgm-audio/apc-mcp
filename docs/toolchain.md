@@ -29,12 +29,13 @@ If a binary is missing, the tool names it, explains what it is for and prints an
 
 ## SDK discovery
 
-Pick the SDK for the format you scaffold. The templates resolve it in this order (`CMAKE_SOURCE_DIR` is the **project root**, so the first hop works no matter how deep or customised `pluginsDir` is; the second is the legacy fixed-depth fallback):
+Pick the SDKs required by the scaffold you build. The templates resolve them in this order (`CMAKE_SOURCE_DIR` is the **project root**, so the first hop works no matter how deep or customised `pluginsDir` is; the second is the legacy fixed-depth fallback):
 
 | Scaffold `type` | SDK | Resolution order |
 |---|---|---|
 | `clap` | [CLAP](https://github.com/free-audio/clap) — header-only C API | `find_package(clap CONFIG QUIET)` (i.e. `clap-config.cmake` on `CMAKE_PREFIX_PATH`) → `${CMAKE_SOURCE_DIR}/_tools/clap/CMakeLists.txt` via `add_subdirectory(…, EXCLUDE_FROM_ALL)` → legacy two-up fallback → clear `FATAL_ERROR`. The imported target is `clap`, not `CLAP::clap`. |
 | `juce`, `vst3`, `standalone` | [JUCE 9](https://github.com/juce-framework/JUCE) — C++ framework | If `juce::juce_audio_utils` is not already a target: `-DJUCE_DIR=/path/to/JUCE` or `$ENV{JUCE_DIR}` → `${CMAKE_SOURCE_DIR}/_tools/JUCE` → plugin `_tools/JUCE` → legacy two-up fallback → global cache `~/.apc-mcp/deps/JUCE` → pinned `FetchContent` fallback (`9.0.3` commit `be29c81492b6151c8ea8d14c840e1311963b3a83`, populated into `~/.apc-mcp/deps/` and respecting `FETCHCONTENT_FULLY_DISCONNECTED`). Alternatively call `add_subdirectory(JUCE)` yourself from the root `CMakeLists.txt` before the plugin; the guard prevents adding JUCE twice. JUCE supplies VST3 and LV2 wrappers, so no separate [Steinberg VST3 SDK](https://github.com/steinbergmedia/vst3sdk) is needed; the [Avid AAX SDK](https://developer.avid.com/aax/) is only needed if `formats` includes `AAX`. |
+| `ara` | JUCE 9 plus the external [ARA SDK](https://github.com/Celemony/ARA_SDK) | Clone the SDK with its submodules initialized; configure with `-DAPC_ARA_SDK_PATH=/absolute/path/to/ARA_SDK` pointing at its root containing `ARA_Library/PlugIn/ARAPlug.h` and `ARA_API/ARAInterface.h`. The generated CMake fails with `FATAL_ERROR` for an unset, empty, or incomplete SDK path, then calls `juce_set_ara_sdk_path(...)` after JUCE is available and before `juce_add_plugin(...)`. The plugin uses `FORMATS VST3 AU` and `IS_ARA_EFFECT TRUE`; ARA is an effect mode, not a plugin format. `audio_plugin_create` defers auto-configuration for this type. |
 | `juce` / `vst3` with `ui="jive"` | [JIVE](https://github.com/ImJimmi/JIVE) — declarative XML/JSON UI | Resolved only when `APC_USE_JIVE=ON` and `jive::jive_layouts` is not already a target: `-DJIVE_DIR=/path/to/JIVE` or `$ENV{JIVE_DIR}` → plugin `_tools/JIVE` → `${CMAKE_SOURCE_DIR}/_tools/JIVE` → legacy two-up fallback → global cache `~/.apc-mcp/deps/JIVE` → pinned `FetchContent` fallback (`v2.0.1` commit `693788a539eb42b9c15848706f9ceae43ee60084`, populated into `~/.apc-mcp/deps/` and respecting `FETCHCONTENT_FULLY_DISCONNECTED`). Links `jive::jive_layouts` and `jive::jive_style_sheets` privately on the plugin target. |
 | `lv2` | [LV2](https://github.com/lv2/lv2) — header-only C11 spec | `find_path(LV2_INCLUDE_DIR NAMES lv2/core/lv2.h …)` with hints `LV2_DIR`, `LV2_INCLUDE_DIR`, env `APC_LV2_DIR` / `LV2_DIR` → `${CMAKE_SOURCE_DIR}/_tools/lv2/include` → legacy two-up fallback → clear `FATAL_ERROR`. System packages (`apt install lv2-dev`, `brew install lv2`) normally satisfy `find_path`. |
 
@@ -45,12 +46,16 @@ git clone --depth 1 https://github.com/free-audio/clap.git _tools/clap
 # git clone --depth 1 --branch 9.0.3 https://github.com/juce-framework/JUCE.git _tools/JUCE
 # git clone --depth 1 --branch v2.0.1 https://github.com/ImJimmi/JIVE.git _tools/JIVE
 # git clone --depth 1 https://github.com/lv2/lv2.git _tools/lv2
+# ARA's umbrella SDK relies on submodules; initialize them when cloning:
+git clone --depth 1 --recurse-submodules --branch releases/2.1.0 https://github.com/Celemony/ARA_SDK.git _tools/ARA_SDK
 ```
 
 Or pass flags to `audio_plugin_configure`:
 
 ```text
 audio_plugin_configure(options="-DJUCE_DIR=/path/to/JUCE -DJIVE_DIR=/path/to/JIVE -DLV2_INCLUDE_DIR=/path/to/lv2/include")
+# For type="ara", pass the SDK root containing initialized ARA_Library/ and ARA_API/:
+audio_plugin_configure(options="-DAPC_ARA_SDK_PATH=/path/to/ARA_SDK")
 ```
 
 ## Platform notes

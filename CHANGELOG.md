@@ -8,14 +8,13 @@
 
 ## [Unreleased] — 2.0.0
 
-> **Release note — two breaking changes**, so this ships as **2.0.0**, not 1.5.1:
+> **2.0.0 release note:** `engines.node` is now `>=22`. Node 18 ended 2025-04-30 and Node 20 ended
+> 2026-04-30, so neither receives security patches. Installations still on Node 20 must upgrade.
 >
-> 1. `ara` was removed from the `audio_plugin_create` `type` enum. It scaffolded
->    `FORMATS ARA`, which `juce_add_plugin` rejects, from a plain
->    `juce::AudioProcessor` — a plugin that could never configure.
-> 2. `engines.node` is now `>=22`. Node 18 ended 2025-04-30 and Node 20 ended
->    2026-04-30, so neither receives security patches. Installations still on
->    Node 20 must upgrade.
+> During the 2.0.0 hardening work, `ara` was temporarily removed after the old generator was found
+> to emit invalid `FORMATS ARA`. It is now reintroduced as a JUCE ARA effect scaffold using
+> `IS_ARA_EFFECT TRUE` and real plugin formats; the intermediate removal is not part of the final
+> supported type list. See **JUCE ARA effect template** below.
 >
 > The version now lives **only** in `package.json`; `index.js` reads it at startup
 > (OPS-03), so the two cannot drift. Several tools also now return `isError` in
@@ -24,6 +23,12 @@
 >
 > `audio_plugin_create` also **gains** `type: "standalone"` and `type: "lv2"` —
 > additive enum values, not breaking ones.
+
+### JUCE ARA effect template
+
+- **`type="ara"` is reintroduced with a dedicated JUCE effect scaffold.** The generated target uses `FORMATS VST3 AU`, `IS_ARA_EFFECT TRUE`, stable ARA factory/archive IDs, an `AudioProcessorARAExtension` processor, an `AudioProcessorEditorARAExtension` editor, a playback renderer that reads ARA source regions, and an `ARADocumentControllerSpecialisation` with `createARAFactory()`.
+- **External ARA SDK is required.** CMake fails early with `FATAL_ERROR` when `APC_ARA_SDK_PATH` is unset, empty, or does not point to an initialized SDK root containing `ARA_Library/PlugIn/ARAPlug.h` and `ARA_API/ARAInterface.h`; it calls `juce_set_ara_sdk_path(...)` before `juce_add_plugin(...)`. `audio_plugin_create` defers auto-configuration and reports the configure option; `formats` overrides are rejected for ARA. This supersedes the historical removal notes below, which describe the invalid intermediate scaffold.
+- Added structural, C++ compile/link fixture and CMake missing-SDK integration coverage for the ARA template.
 
 ### Security
 
