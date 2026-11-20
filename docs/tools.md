@@ -1,6 +1,6 @@
 # Tool reference
 
-apc-mcp registers **ten** MCP tools and **four** native MCP Prompts (`prompts/list` & `prompts/get` slash commands). All tools accept an optional `projectPath`; when omitted, the server walks up from its working directory (max 20 levels) looking for `apc-mcp.json` or `CMakeLists.txt`. A project root must exist and carry one of those markers — see [Configuration](configuration.md#project-root-detection).
+apc-mcp registers **ten** canonical MCP tools plus deprecated `audio_plugin_*` compatibility aliases, and **four** native MCP Prompts (`prompts/list` & `prompts/get` slash commands). Use the short names in new clients and workflows; aliases delegate to the same schemas and handlers. All tools accept an optional `projectPath`; when omitted, the server walks up from its working directory (max 20 levels) looking for `apc-mcp.json` or `CMakeLists.txt`. A project root must exist and carry one of those markers — see [Configuration](configuration.md#project-root-detection).
 
 Tools fail **honestly**: if the underlying command failed, emitted compiler errors, had failing tests, or a build/test step had to be skipped, the result carries `isError: true` and says why. A skipped validation is never reported as a clean one, and a check that was never attempted is reported as `NOT CHECKABLE` rather than passed off as success (see [`apc-val`](#apc-val)).
 

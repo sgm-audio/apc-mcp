@@ -88,7 +88,7 @@ Generated `CMakeLists.txt` files never fetch unpinned `main`/`master` branches. 
 
 ## Manual Tool Reference
 
-See the full [Tool reference](docs/tools.md) for all 10 tools (`apc`, `apc-add-param`, `apc-ship`, `apc-doctor`, `apc-cfg`, `apc-build`, `apc-test`, `apc-lint`, `apc-val`, `apc-list`).
+See the full [Tool reference](docs/tools.md) for the 10 canonical tools (`apc`, `apc-add-param`, `apc-ship`, `apc-doctor`, `apc-cfg`, `apc-build`, `apc-test`, `apc-lint`, `apc-val`, `apc-list`). The former `audio_plugin_*` names remain available as deprecated compatibility aliases.
 
 ### `apc`
 
@@ -185,7 +185,7 @@ dist/<PluginName>-<Version>-<macOS|Windows|Linux>/
 | Guide | What it covers |
 |---|---|
 | [Getting started](docs/getting-started.md) | Client setup, first plugin, artefacts |
-| [Tool reference](docs/tools.md) | All 10 tools, native slash commands, arguments, scaffold types |
+| [Tool reference](docs/tools.md) | All 10 canonical tools, deprecated aliases, native slash commands, arguments, scaffold types |
 | [Configuration](docs/configuration.md) | `apc-mcp.json`, project layout, precedence |
 | [Toolchain & SDKs](docs/toolchain.md) | Prerequisites, SDK discovery, platform notes, quirks |
 | [Troubleshooting](docs/troubleshooting.md) | FAQ and common errors |

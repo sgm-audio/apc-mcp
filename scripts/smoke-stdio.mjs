@@ -32,6 +32,16 @@ const EXPECTED = [
   'apc-ship',
   'apc-test',
   'apc-val',
+  'audio_plugin_create',
+  'audio_plugin_add_param',
+  'audio_plugin_ship',
+  'audio_plugin_doctor',
+  'audio_plugin_configure',
+  'audio_plugin_build',
+  'audio_plugin_test',
+  'audio_plugin_lint',
+  'audio_plugin_validate',
+  'audio_plugin_plugins',
 ];
 
 const messages = [
@@ -79,5 +89,5 @@ child.on('exit', code => {
   if (untitled.length) fail(`tools without a title: ${untitled.join(', ')}`);
 
   if (code !== 0) fail(`server exited ${code} on stdin EOF (a stdio server must exit 0)`);
-  console.log(`smoke-stdio: PASS (${names.length} tools registered, all titled)`);
+  console.log(`smoke-stdio: PASS (${names.length} canonical and alias tools registered, all titled)`);
 });

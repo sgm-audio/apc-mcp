@@ -19,18 +19,24 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { call, listTools, PROJECT_ROOT } from './helpers/mcp-client.mjs';
 
-const TOOL_NAMES = [
-  'apc',
-  'apc-add-param',
-  'apc-build',
-  'apc-cfg',
-  'apc-doctor',
-  'apc-lint',
-  'apc-list',
-  'apc-ship',
-  'apc-test',
-  'apc-val',
+const LEGACY_ALIASES = [
+  ['audio_plugin_create', 'apc'],
+  ['audio_plugin_add_param', 'apc-add-param'],
+  ['audio_plugin_ship', 'apc-ship'],
+  ['audio_plugin_doctor', 'apc-doctor'],
+  ['audio_plugin_configure', 'apc-cfg'],
+  ['audio_plugin_build', 'apc-build'],
+  ['audio_plugin_test', 'apc-test'],
+  ['audio_plugin_lint', 'apc-lint'],
+  ['audio_plugin_validate', 'apc-val'],
+  ['audio_plugin_plugins', 'apc-list'],
 ];
+
+const TOOL_NAMES = [
+  'apc', 'apc-add-param', 'apc-build', 'apc-cfg', 'apc-doctor',
+  'apc-lint', 'apc-list', 'apc-ship', 'apc-test', 'apc-val',
+  ...LEGACY_ALIASES.map(([alias]) => alias),
+].sort();
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'apc-server-'));
 
@@ -53,7 +59,7 @@ after(() => { fs.rmSync(ROOT, { recursive: true, force: true }); });
 
 describe('apc-mcp MCP server', () => {
   describe('tools/list', () => {
-    it('advertises all 10 tools', async () => {
+    it('advertises all 10 canonical tools and their 10 legacy aliases', async () => {
       const tools = await listTools();
       assert.ok(Array.isArray(tools) && tools.length > 0,
         `expected a tools array, got: ${JSON.stringify(tools)?.slice(0, 200)}`);
@@ -99,6 +105,53 @@ describe('apc-mcp MCP server', () => {
         assert.ok(tool?.inputSchema, `${tool?.name} is missing inputSchema`);
         assert.ok(tool?.inputSchema?.properties, `${tool?.name} is missing inputSchema.properties`);
       }
+    });
+
+    it('registers each legacy alias with its canonical schema, title, and annotations', async () => {
+      const tools = Object.fromEntries((await listTools()).map(tool => [tool.name, tool]));
+      for (const [alias, canonical] of LEGACY_ALIASES) {
+        assert.deepEqual(tools[alias].inputSchema, tools[canonical].inputSchema,
+          `${alias} must share ${canonical}'s input schema`);
+        assert.equal(tools[alias].title, tools[canonical].title,
+          `${alias} must share ${canonical}'s title`);
+        assert.deepEqual(tools[alias].annotations, tools[canonical].annotations,
+          `${alias} must share ${canonical}'s safety annotations`);
+      }
+    });
+
+    it('delegates every legacy alias to the same canonical handler and error path', async () => {
+      const missingProject = path.join(ROOT, 'missing-alias-project');
+      const argsByCanonical = {
+        apc: { projectPath: missingProject, name: 'AliasSmoke' },
+        'apc-add-param': { projectPath: missingProject, id: 'aliasParam', name: 'Alias Param' },
+        'apc-ship': { projectPath: missingProject },
+        'apc-doctor': { projectPath: missingProject },
+        'apc-cfg': { projectPath: missingProject },
+        'apc-build': { projectPath: missingProject },
+        'apc-test': { projectPath: missingProject },
+        'apc-lint': { projectPath: missingProject },
+        'apc-val': { projectPath: missingProject },
+        'apc-list': { projectPath: missingProject },
+      };
+      for (const [alias, canonical] of LEGACY_ALIASES) {
+        const args = argsByCanonical[canonical];
+        const canonicalResult = await call(canonical, args);
+        const aliasResult = await call(alias, args);
+        assert.deepEqual(aliasResult, canonicalResult,
+          `${alias} must produce the same result and isError status as ${canonical}`);
+        assert.equal(aliasResult.isError, canonicalResult.isError,
+          `${alias} must preserve ${canonical}'s isError status`);
+      }
+    });
+
+    it('applies canonical path-traversal validation through the legacy lint alias', async () => {
+      const projectPath = withProject('alias-path-guard');
+      const args = { projectPath, target: '../outside' };
+      const canonicalResult = await call('apc-lint', args);
+      const aliasResult = await call('audio_plugin_lint', args);
+      assert.deepEqual(aliasResult, canonicalResult);
+      assert.equal(aliasResult.isError, true);
+      assert.match(aliasResult.text, /\\.\\.|within the project root/i);
     });
   });
 

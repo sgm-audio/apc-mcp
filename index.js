@@ -1210,29 +1210,69 @@ const TOOL_META = {
   },
 };
 
+const LEGACY_TOOL_ALIASES = [
+  ['audio_plugin_create', 'apc'],
+  ['audio_plugin_add_param', 'apc-add-param'],
+  ['audio_plugin_ship', 'apc-ship'],
+  ['audio_plugin_doctor', 'apc-doctor'],
+  ['audio_plugin_configure', 'apc-cfg'],
+  ['audio_plugin_build', 'apc-build'],
+  ['audio_plugin_test', 'apc-test'],
+  ['audio_plugin_lint', 'apc-lint'],
+  ['audio_plugin_validate', 'apc-val'],
+  ['audio_plugin_plugins', 'apc-list'],
+];
+
 // Every handler runs inside this wrapper so that a thrown Error becomes a
 // readable isError tool result rather than a bare JSON-RPC protocol error.
 // MCP clients surface tool results to the model; protocol errors are often
 // shown opaquely, which defeats the actionable install/path messages below.
+const TOOL_DEFINITIONS = new Map();
+
 function registerTool(name, schema, handler) {
   const meta = TOOL_META[name];
   if (!meta) throw new Error(`registerTool: no TOOL_META entry for "${name}"`);
 
+  const definition = {
+    schema,
+    meta,
+    callback: async (params) => {
+      try {
+        return await handler(params);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: 'text', text: `## ${name} failed\n${message}` }],
+          isError: true,
+        };
+      }
+    },
+  };
+  TOOL_DEFINITIONS.set(name, definition);
   server.registerTool(name, {
     title: meta.title,
     inputSchema: schema,
     annotations: meta.annotations,
-  }, async (params) => {
-    try {
-      return await handler(params);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text', text: `## ${name} failed\n${message}` }],
-        isError: true,
-      };
-    }
-  });
+  }, definition.callback);
+}
+
+// Legacy names register the canonical tool's exact schema, metadata, and
+// callback, so validation, execution, path guards, and isError handling cannot
+// drift between the alias and its target.
+function registerToolAlias(alias, canonicalName) {
+  const definition = TOOL_DEFINITIONS.get(canonicalName);
+  if (!definition) {
+    throw new Error(`registerToolAlias: canonical tool "${canonicalName}" is not registered`);
+  }
+  if (TOOL_DEFINITIONS.has(alias)) {
+    throw new Error(`registerToolAlias: tool name "${alias}" is already registered`);
+  }
+  server.registerTool(alias, {
+    title: definition.meta.title,
+    inputSchema: definition.schema,
+    annotations: definition.meta.annotations,
+  }, definition.callback);
+  TOOL_DEFINITIONS.set(alias, definition);
 }
 
 // ─── CMake cache trust ──────────────────────────────────────────────
@@ -2862,6 +2902,11 @@ registerTool(
     return { content: [{ type: 'text', text }] };
   }
 );
+
+// Register deprecated full-name aliases only after every canonical handler exists.
+for (const [alias, canonicalName] of LEGACY_TOOL_ALIASES) {
+  registerToolAlias(alias, canonicalName);
+}
 
 // ─── Native MCP Slash Commands (prompts/list & prompts/get) ────────
 server.registerPrompt(
