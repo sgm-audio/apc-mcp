@@ -22,5 +22,8 @@ description: "Ableton Live-specific gotchas for JUCE plugins. Use when a plugin 
 - Delay the first `setLatencySamples` call or avoid certain VST3 restart flags.
 
 ## Verification
-- Plugin loads and runs in Live with the editor closed and open.
-- Automation survives a project reload.
+1. Load multiple instances in Ableton Live with all editors closed — Live UI remains responsive (no crawl).
+2. Pure MIDI plugin instantiates on a MIDI track in Live.
+3. Existing AU automation survives project reload after the change.
+4. Project containing the plugin loads in Live 10/11/12 without crash when latency is reported.
+5. No `MessageManagerLock` appears in processor code (grep confirmation).

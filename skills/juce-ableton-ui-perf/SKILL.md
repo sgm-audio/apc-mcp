@@ -25,4 +25,7 @@ Override `visibilityChanged()` to create or destroy heavy child components and s
 - DSP or file work on the message thread from the editor.
 
 ## Verification
-- Live remains responsive with multiple instances loaded and editors closed.
+1. Load ≥8 instances in Ableton Live with all editors closed — CPU and UI thread remain responsive (no visible lag when clicking tracks or transport).
+2. Open and close the editor repeatedly; no accumulating timers or retained heavy components (Instruments or Activity Monitor check).
+3. Grep confirms every `timerCallback` and expensive constructor path is guarded by `isShowing()` or `visibilityChanged()`.
+4. pluginval UI tests pass without host freezes.

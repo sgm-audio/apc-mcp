@@ -16,5 +16,7 @@ description: "Keep JUCE parameter IDs stable so Ableton Live (especially AU) doe
 3. Call `setValueNotifyingHost` only when the value actually changed; batch with `updateHostDisplay` on preset load.
 
 ## Verification
-- Existing Ableton AU automation still works after the update.
-- Meta-parameter gestures are not overwritten on the next host update.
+1. Load a saved Ableton Live set that contains automation on the plugin; automation lanes still drive the parameters after the JUCE update or parameter addition.
+2. Gesture a meta-parameter in Live VST3; the dependent parameters stay at the new values and are not overwritten on the next host update.
+3. `pluginval` automation and parameter tests pass at strictness ≥5.
+4. Diff of parameter IDs before/after shows no unexpected renames for existing parameters.

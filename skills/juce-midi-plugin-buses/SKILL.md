@@ -30,5 +30,7 @@ if (juce::PluginHostType().isAbletonLive())
 Do not set the “MIDI Effect Plugin” flag if the plugin must also appear as a normal instrument or effect.
 
 ## Verification
-- Plugin instantiates in a fresh Ableton Live set and in Reaper.
-- No empty-bus assertion or load failure.
+1. Plugin instantiates without error in a fresh Ableton Live set (MIDI track and instrument track).
+2. Same binary loads in Reaper with no empty-bus or “could not be opened” message.
+3. `pluginval --strictness-level 5` completes the bus-layout tests without failure.
+4. No host log entries about rejected empty output buses.
