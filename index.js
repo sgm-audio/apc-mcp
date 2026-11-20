@@ -2860,6 +2860,144 @@ registerTool(
   }
 );
 
+// ─── Native MCP Slash Commands (prompts/list & prompts/get) ────────
+server.registerPrompt(
+  'apc:new',
+  {
+    title: 'Create a new JUCE + JIVE audio plugin',
+    description: 'Scaffold a zero-friction JUCE + JIVE audio plugin with automatic dependency cache readiness and hot-reload UI.',
+    argsSchema: {
+      name: z.string().min(1).max(64).regex(SAFE_PLUGIN_NAME)
+        .describe('Plugin name (e.g. "TapeSaturation", "PolySynth", "GainTrim").'),
+      style: z.enum(['fx', 'synth', 'utility']).optional()
+        .describe('Initial DSP & JIVE control preset: "fx" (default), "synth", or "utility".'),
+    },
+  },
+  ({ name, style }) => {
+    const resolvedStyle = style || 'fx';
+    const text = [
+      `# Workflow: Create JUCE + JIVE Plugin (${name})`,
+      '',
+      'Execute the following steps in order:',
+      '1. **Verify Toolchain & Cache Readiness:** If the global dependency cache (`~/.apc-mcp/deps/`) is cold or unverified, call `audio_plugin_doctor` first to initialize `~/.apc-mcp/deps/` and confirm CMake, C++20 compiler, JUCE, and JIVE readiness.',
+      `2. **Scaffold Plugin:** Call \`audio_plugin_create\` with \`name="${name}"\`, \`type="juce"\`, \`ui="jive"\`, and \`style="${resolvedStyle}"\`.`,
+      '3. **Summarize & Guide:** Report back to the user with:',
+      '   - The generated APVTS parameters in `Source/PluginProcessor.cpp` (`createParameterLayout()`) and their bound JIVE controls.',
+      `   - The live Debug hot-reload paths: \`plugins/${name}/Source/UI/MainView.xml\` and \`plugins/${name}/Source/UI/Styles.json\` (monitored by \`jive::SourceRoot\` in Debug builds, embedded via \`juce_add_binary_data\` in Release builds).`,
+      '   - Next steps: use `/apc:ui` (`audio_plugin_add_param`) to add parameters/controls or `/apc:ship` (`audio_plugin_ship`) to build, validate, package, and install locally.',
+    ].join('\n');
+
+    return {
+      description: `Scaffold JUCE + JIVE plugin "${name}" (style="${resolvedStyle}")`,
+      messages: [
+        {
+          role: 'user',
+          content: { type: 'text', text },
+        },
+      ],
+    };
+  }
+);
+
+server.registerPrompt(
+  'apc:ui',
+  {
+    title: 'Design or update a JUCE + JIVE plugin UI and parameters',
+    description: 'Synchronize C++ APVTS parameters with JIVE declarative XML layout and JSON stylesheet rules.',
+    argsSchema: {
+      design: z.string().min(1).max(4096)
+        .describe('Natural language description of the UI layout, styling, and parameters to add or update.'),
+    },
+  },
+  ({ design }) => {
+    const text = [
+      '# Workflow: Update JUCE + JIVE UI & Parameters',
+      '',
+      `## Requested Design`,
+      design,
+      '',
+      'Execute the following steps in order:',
+      '1. **Inspect Existing Plugin Sources:** Read `Source/UI/MainView.xml`, `Source/UI/Styles.json`, and `Source/PluginProcessor.cpp` for the target plugin.',
+      '2. **Atomic Parameter Sync:** For every new automatable parameter needed by the design, call `audio_plugin_add_param` (`id`, `name`, `min`, `max`, `default`, `unit`, `controlType`: `"knob" | "slider" | "toggle"`) so `Source/PluginProcessor.cpp`, `Source/UI/MainView.xml`, and `Source/UI/Styles.json` stay atomically synchronized.',
+      '3. **Refine JIVE Layout & Styles:** Update the declarative Flexbox/Grid layout in `Source/UI/MainView.xml` and visual properties in `Source/UI/Styles.json` using `Source/UI/Presets/` primitives and valid JIVE components (`<Component>`, `<Text>`, `<Knob>`, `<Slider>`, `<Checkbox>`, `<ComboBox>`).',
+      '4. **Verify Hot-Reload Readiness:** Run `audio_plugin_build` with `config="Debug"` to run a Debug compile check and confirm zero compiler warnings/errors (`-Wall -Wextra -Werror` / `/W4 /WX`) and hot-reload readiness.',
+    ].join('\n');
+
+    return {
+      description: `Update JIVE UI and APVTS parameters: ${design.slice(0, 80)}`,
+      messages: [
+        {
+          role: 'user',
+          content: { type: 'text', text },
+        },
+      ],
+    };
+  }
+);
+
+server.registerPrompt(
+  'apc:ship',
+  {
+    title: 'Build, validate, package, and install a release-ready plugin',
+    description: 'Run the end-to-end commercial release pipeline (Release build, lint, pluginval strictness 5, dist/ package, and local VST3 install) with automatic self-healing.',
+    argsSchema: {
+      version: z.string().min(1).max(32).regex(/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/).optional()
+        .describe('Semantic version for the packaged distribution (default: "0.1.0").'),
+    },
+  },
+  ({ version }) => {
+    const resolvedVersion = version || '0.1.0';
+    const text = [
+      `# Workflow: Ship Release Plugin (v${resolvedVersion})`,
+      '',
+      'Execute the following steps in order:',
+      `1. **Run Composite Ship Pipeline:** Call \`audio_plugin_ship\` with \`version="${resolvedVersion}"\` and \`installLocal=true\`.`,
+      '2. **Self-Healing Gate (Up to 3 Retries):** If any `Release` build, `clang-format` lint, or `pluginval --strictness-level 5 --validate-in-process` gate fails, inspect the structured compiler/validator error lines returned by `audio_plugin_ship`, automatically diagnose and patch the root C++/XML/JSON error, and re-run `audio_plugin_ship(installLocal=true)` up to 3 times.',
+      '3. **Report Final Distribution & DAW Rescan Instructions:** Once `audio_plugin_ship` succeeds, report:',
+      `   - The final packaged \`dist/<Name>-${resolvedVersion}-<OS>/\` directory path and \`INSTALL.txt\` location.`,
+      '   - The local OS VST3 installation path (`~/Library/Audio/Plug-Ins/VST3`, `%COMMONPROGRAMFILES%\\VST3`, or `~/.vst3`) and instructions to trigger a plugin rescan in the user\'s DAW (REAPER, Ableton Live, Logic Pro, Bitwig, Cubase).',
+    ].join('\n');
+
+    return {
+      description: `Build, validate, package, and install plugin v${resolvedVersion}`,
+      messages: [
+        {
+          role: 'user',
+          content: { type: 'text', text },
+        },
+      ],
+    };
+  }
+);
+
+server.registerPrompt(
+  'apc:doctor',
+  {
+    title: 'Diagnose audio plugin build toolchain and SDK cache',
+    description: 'Check CMake, C++20 compiler, JUCE, JIVE, pluginval, and OS plugin directories, and output a readiness matrix.',
+  },
+  () => {
+    const text = [
+      '# Workflow: Environment & Toolchain Doctor',
+      '',
+      'Execute the following steps in order:',
+      '1. **Run Diagnostic Tool:** Call `audio_plugin_doctor` to inspect `cmake`, the C++20 compiler, `JUCE`, `JIVE`, `pluginval`, `~/.apc-mcp/deps/`, and OS plugin directories.',
+      '2. **Resolve Cache & Environment Gaps:** Ensure missing cache directories (`~/.apc-mcp/deps/`) or environment variables (`JUCE_DIR`, `JIVE_DIR`, `PATH`) are initialized or have exact remediation commands.',
+      '3. **Output Readiness Matrix:** Present a concise Markdown readiness matrix summarizing the status (`READY` / `AUTO-CACHED` / `ACTION REQUIRED`), detected version/path, and fix command for each component.',
+    ].join('\n');
+
+    return {
+      description: 'Diagnose CMake, C++20 compiler, JUCE, JIVE, pluginval, and ~/.apc-mcp/deps/ readiness',
+      messages: [
+        {
+          role: 'user',
+          content: { type: 'text', text },
+        },
+      ],
+    };
+  }
+);
+
 // ─── Start ─────────────────────────────────────────────────────────
 async function main() {
   const argv = process.argv.slice(2);

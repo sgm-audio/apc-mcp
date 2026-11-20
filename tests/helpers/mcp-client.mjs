@@ -97,6 +97,25 @@ export async function listTools(opts = {}) {
   return msg.result?.tools ?? [];
 }
 
+export async function listPrompts(opts = {}) {
+  const { msg } = await rpc('prompts/list', {}, opts);
+  return msg.result?.prompts ?? [];
+}
+
+export async function getPrompt(name, args, opts = {}) {
+  const params = args !== undefined ? { name, arguments: args } : { name };
+  const { msg, stderr } = await rpc('prompts/get', params, opts);
+  if (msg.error) return { protocolError: msg.error, isError: true, messages: [], description: '', stderr };
+  const res = msg.result || {};
+  return {
+    isError: false,
+    description: res.description ?? '',
+    messages: res.messages ?? [],
+    text: (res.messages ?? []).map(m => m.content?.text ?? '').join('\n'),
+    stderr,
+  };
+}
+
 // Returns the server's `initialize` result (serverInfo, protocolVersion,
 // capabilities). rpc() resolves on the *second* request, so this drives the
 // handshake separately and stops at the initialize response.
