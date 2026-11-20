@@ -100,6 +100,10 @@ before(() => {
     process.exit(0);
   `);
 
+  // These bundles contain stub bytes, not signable Mach-O binaries.
+  writeExe(FAKE_BIN, 'codesign', 'process.exit(0);');
+  fs.writeFileSync(path.join(FAKE_BIN, 'xvfb-run'),
+    '#!/bin/sh\n[ "$1" = -a ] || exit 2\nshift\nexec "$@"\n', { mode: 0o755 });
   writeExe(FAKE_BIN, 'pluginval', `
     const fs = require('fs');
     const args = process.argv.slice(2);

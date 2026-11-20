@@ -25,7 +25,7 @@
 // Requirements:
 //   build phase:    cmake (+ ninja optional), the SDK checkout named by the env var
 //   validate phase: `clap-validator` / `pluginval` on PATH
-//   juce + Linux:   a display (`xvfb-run -a …`: pluginval is a GUI application)
+//   juce + Linux:   xvfb + xauth for `xvfb-run -a pluginval` on headless/CI hosts
 
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';

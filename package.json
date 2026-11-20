@@ -8,6 +8,7 @@
   },
   "files": [
     "index.js",
+    "pluginval.js",
     "templates/"
   ],
   "scripts": {
