@@ -27,5 +27,7 @@ void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
 ```
 
 ## Verification
-- Plugin survives long stress tests at small buffer sizes with no dropouts.
-- Thread sanitizer or manual review finds zero audio-thread violations.
+1. Grep `processBlock` and any helpers it calls for `new `, `malloc`, `std::vector`, `CriticalSection`, `std::mutex`, `File::`, `DBG`, and `String` constructions that can allocate — zero hits on the audio path.
+2. Build with ThreadSanitizer (`-fsanitize=thread`) and run a stress test (small buffers, high CPU load, rapid parameter changes) for ≥10 minutes with no races or dropouts.
+3. `pluginval` at strictness ≥5 completes without audio-thread violations or crashes.
+4. Manual review or static analysis confirms all buffers and state are sized in `prepareToPlay` only.

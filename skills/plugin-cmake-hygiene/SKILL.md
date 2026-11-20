@@ -26,5 +26,8 @@ FetchContent_Declare(JUCE
 ```
 
 ## Verification
-- `cmake --build build --config Release` succeeds with zero warnings.
-- The same commit produces identical artifacts on a clean machine.
+1. `rg -n "GIT_TAG (main|master)|FetchContent_Declare" CMakeLists.txt` — no unpinned tags.
+2. `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release` succeeds with no network errors when offline after cache is populated.
+3. `cmake --build build --config Release` exits 0 and produces zero compiler warnings.
+4. On macOS, `file build/**/*.vst3/**/*.dylib` (or equivalent) shows both arm64 and x86_64 when universal is requested.
+5. Same commit on a second clean machine produces identical binary hashes for the non-timestamped artifacts.

@@ -17,7 +17,7 @@ description: "Package, validate, codesign, and distribute CLAP, VST3, and LV2 pl
 3. Run `pluginval --strictness-level 5 --validate-in-process` (and clap-validator for CLAP).
 4. Package into `dist/<Name>-<Version>-<OS>/` with INSTALL.txt.
 5. On macOS run ad-hoc `codesign --force --deep -s -` so the bundle loads locally.
-6. Install to the OS user folder (`~/Library/Audio/Plug-Ins/VST3`, `%COMMONPROGRAMFILES%\\VST3`, `~/.vst3`).
+6. Install to the OS user folder (`~/Library/Audio/Plug-Ins/VST3`, `%COMMONPROGRAMFILES%\VST3`, `~/.vst3`).
 
 ## Common failures
 - Empty audio buses → pure MIDI plugins rejected by some hosts.
@@ -25,5 +25,8 @@ description: "Package, validate, codesign, and distribute CLAP, VST3, and LV2 pl
 - pluginval strictness ≥5 runs auval; filters that assume ≥48 kHz or multi-channel fail.
 
 ## Verification
-- Plugin loads in Reaper and Ableton Live after local install.
-- clap-validator and pluginval both pass at the target strictness.
+1. `pluginval --strictness-level 5 --validate-in-process <path-to.vst3>` exits 0 with no failures.
+2. For CLAP: `clap-validator validate <path-to.clap>` exits 0.
+3. Dist folder contains the binary, INSTALL.txt, and (on macOS) a valid ad-hoc signature (`codesign -dv --verbose=4`).
+4. After local install the plugin appears and loads in both Reaper and Ableton Live with a fresh project.
+5. On macOS, `spctl --assess --type execute` or Gatekeeper does not quarantine the ad-hoc-signed bundle for local use.
