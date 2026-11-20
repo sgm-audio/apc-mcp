@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// End-to-end proof that `audio_plugin_validate` works against a REAL validator.
+// End-to-end proof that `apc-val` works against a REAL validator.
 //
 // The rest of the suite drives PATH shims, which proves the argv shape and the
 // reporting logic but says nothing about whether upstream's binary accepts the
 // invocation, or whether a freshly scaffolded plugin actually passes. This
 // script closes that gap: it scaffolds one plugin, builds it with real cmake,
-// then calls the real audio_plugin_validate and requires a PASS.
+// then calls the real apc-val and requires a PASS.
 //
 // It FAILS (exit 1) when a dependency is missing rather than skipping — a silent
 // skip reading as a pass is the exact anti-pattern the 2.0.0 audit was written
@@ -25,7 +25,7 @@
 // Requirements:
 //   build phase:    cmake (+ ninja optional), the SDK checkout named by the env var
 //   validate phase: `clap-validator` / `pluginval` on PATH
-//   juce + Linux:   a display (`xvfb-run -a …`: pluginval is a GUI application)
+//   juce + Linux:   xvfb + xauth for `xvfb-run -a pluginval` on headless/CI hosts
 
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -117,10 +117,10 @@ if (problems.length) {
 const ownsDir = !EXPLICIT_DIR;
 const root = EXPLICIT_DIR ? path.resolve(EXPLICIT_DIR) : fs.mkdtempSync(path.join(os.tmpdir(), `apc-validate-${TYPE}-`));
 const proj = path.join(root, 'proj');
-// The build tree must live *inside* the project root: audio_plugin_validate
+// The build tree must live *inside* the project root: apc-val
 // resolves `buildDir` relative to it (default "build"), and a sibling directory
 // is invisible to the tool — which then honestly reports "build directory not
-// found — run audio_plugin_build first".
+// found — run apc-build first".
 const build = path.join(proj, 'build');
 const name = TYPE === 'clap' ? 'ValidateClap' : 'ValidateJuce';
 
@@ -144,11 +144,11 @@ async function doBuild() {
 
   console.log(`smoke-validate: ${TYPE} build\nproject: ${proj}`);
 
-  const create = await call('audio_plugin_create', {
+  const create = await call('apc', {
     projectPath: proj, name, type: CONFIG.pluginType, ui: 'generic',
     vendor: 'validator-smoke', description: 'validator smoke test',
   }, { timeoutMs: 60000 });
-  if (create.isError) throw new Error(`audio_plugin_create failed:\n${create.text}`);
+  if (create.isError) throw new Error(`apc failed:\n${create.text}`);
   ok(`scaffolded ${name} (${CONFIG.pluginType})`);
 
   fs.writeFileSync(path.join(proj, 'CMakeLists.txt'),
@@ -197,14 +197,14 @@ async function doValidate() {
     console.log(`clap-validator --version → ${(v.stdout || v.stderr || '').trim().split('\n')[0] || '(none)'}`);
   }
 
-  const res = await call('audio_plugin_validate',
+  const res = await call('apc-val',
     { projectPath: proj, config: 'Debug', format: CONFIG.format },
     { timeoutMs: 300000 });
 
-  console.log(`\n----- audio_plugin_validate (${CONFIG.format}) -----\n${res.text}\n-----`);
+  console.log(`\n----- apc-val (${CONFIG.format}) -----\n${res.text}\n-----`);
 
-  if (res.isError) fail('audio_plugin_validate reported isError', res.text);
-  else ok('audio_plugin_validate reported isError=false');
+  if (res.isError) fail('apc-val reported isError', res.text);
+  else ok('apc-val reported isError=false');
 
   if (/—\s*PASS/m.test(res.text)) ok('a real validator run is reported as PASS');
   else fail('no PASS in the validation report', res.text);

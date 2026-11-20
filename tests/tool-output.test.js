@@ -29,7 +29,7 @@ const LOG = path.join(ROOT, 'argv.log');
 const SHIM_OUT = path.join(ROOT, 'shim-stdout.txt');
 const SHIM_ERR = path.join(ROOT, 'shim-stderr.txt');
 
-const TOOLS = ['cmake', 'ctest', 'clang-format', 'pluginval', 'clap-validator'];
+const TOOLS = ['cmake', 'ctest', 'clang-format', 'pluginval', 'clap-validator', 'xvfb-run'];
 
 // One shim shape for every tool: record argv (tagged with the tool name), echo
 // the canned stdout/stderr files, exit with the requested code.
@@ -39,6 +39,7 @@ function writeShim(dir, name) {
   fs.writeFileSync(p, [
     '#!/bin/sh',
     `printf '%s ARGS: %s\\n' "$name" "$*" >> "$APC_SHIM_LOG"`.replace('$name', name),
+    ...(name === 'xvfb-run' ? ['[ "$1" = -a ] || exit 2', 'shift', 'exec "$@"'] : []),
     'if [ -n "$APC_SHIM_STDOUT" ] && [ -s "$APC_SHIM_STDOUT" ]; then cat "$APC_SHIM_STDOUT"; fi',
     'if [ -n "$APC_SHIM_STDERR" ] && [ -s "$APC_SHIM_STDERR" ]; then cat "$APC_SHIM_STDERR" >&2; fi',
     'exit "${APC_SHIM_EXIT:-0}"',
@@ -64,6 +65,7 @@ function shimEnv(dir = FAKE_BIN, { stdout = '', stderr = '', exit = 0 } = {}) {
   fs.writeFileSync(SHIM_ERR, stderr);
   return {
     PATH: dir + path.delimiter + SYS_PATH,
+    DISPLAY: '',
     APC_SHIM_LOG: LOG,
     APC_SHIM_STDOUT: SHIM_OUT,
     APC_SHIM_STDERR: SHIM_ERR,
@@ -80,7 +82,7 @@ function writeProjectConfig(obj) {
   fs.writeFileSync(path.join(PROJ, 'apc-mcp.json'), JSON.stringify(obj, null, 2));
 }
 
-// audio_plugin_build auto-configures when build/CMakeCache.txt is missing and
+// apc-build auto-configures when build/CMakeCache.txt is missing and
 // returns early if that fails. Tests that target the --build invocation must
 // plant the cache first, otherwise the shim's exit code is consumed by the
 // configure step instead.
@@ -90,7 +92,7 @@ function plantCache() {
     'CMAKE_BUILD_TYPE:STRING=Debug\nCMAKE_CONFIGURATION_TYPES:STRING=\n');
 }
 
-// Plant the artefacts audio_plugin_validate looks for.
+// Plant the artefacts apc-val looks for.
 function plantArtefacts(config, { vst3 = true, clap = true } = {}) {
   const art = path.join(BUILD, 'plugins', 'Foo', 'Foo_artefacts', config);
   if (vst3) {
@@ -126,10 +128,10 @@ after(() => { fs.rmSync(ROOT, { recursive: true, force: true }); });
 // so params.config is ALWAYS set and `params.config || cfg.config` never falls
 // through to the project file. The `config` key of apc-mcp.json is dead.
 describe('FUNC-06 · config from apc-mcp.json must be honoured', () => {
-  it('audio_plugin_build uses the project config when the caller omits it', async () => {
+  it('apc-build uses the project config when the caller omits it', async () => {
     writeProjectConfig({ config: 'Release' });
     // No CMakeCache.txt, so build auto-configures and passes the build type.
-    const r = await call('audio_plugin_build', { projectPath: PROJ }, { env: shimEnv() });
+    const r = await call('apc-build', { projectPath: PROJ }, { env: shimEnv() });
     assert.equal(r.isError, false, r.text);
     const configureArgs = argvOf('cmake').find(a => a.includes('-DCMAKE_BUILD_TYPE'));
     assert.ok(configureArgs, `cmake was never asked to configure. argv log:\n${log()}`);
@@ -137,35 +139,35 @@ describe('FUNC-06 · config from apc-mcp.json must be honoured', () => {
       `apc-mcp.json says Release but cmake got: ${configureArgs}`);
   });
 
-  it('audio_plugin_configure uses the project config', async () => {
+  it('apc-cfg uses the project config', async () => {
     writeProjectConfig({ config: 'Release' });
-    const r = await call('audio_plugin_configure', { projectPath: PROJ }, { env: shimEnv() });
+    const r = await call('apc-cfg', { projectPath: PROJ }, { env: shimEnv() });
     assert.equal(r.isError, false, r.text);
     const args = argvOf('cmake')[0] ?? '';
     assert.ok(args.includes('-DCMAKE_BUILD_TYPE=Release'),
       `apc-mcp.json says Release but cmake got: ${args}`);
   });
 
-  it('audio_plugin_test passes the project config to ctest -C', async () => {
+  it('apc-test passes the project config to ctest -C', async () => {
     writeProjectConfig({ config: 'Release' });
-    const r = await call('audio_plugin_test', { projectPath: PROJ }, { env: shimEnv() });
+    const r = await call('apc-test', { projectPath: PROJ }, { env: shimEnv() });
     assert.equal(r.isError, false, r.text);
     const args = argvOf('ctest')[0] ?? '';
     assert.ok(/(^|\s)-C Release(\s|$)/.test(args),
       `apc-mcp.json says Release but ctest got: ${args}`);
   });
 
-  it('audio_plugin_validate looks in the project config\'s artefact dir', async () => {
+  it('apc-val looks in the project config\'s artefact dir', async () => {
     writeProjectConfig({ config: 'Release' });
     plantArtefacts('Release');
-    const r = await call('audio_plugin_validate', { projectPath: PROJ }, { env: shimEnv() });
+    const r = await call('apc-val', { projectPath: PROJ }, { env: shimEnv() });
     assert.ok(!/No plugin binaries found/.test(r.text),
       `Release artefacts exist but validate did not find them: ${r.text}`);
   });
 
   it('an explicit argument still wins over the project config', async () => {
     writeProjectConfig({ config: 'Release' });
-    const r = await call('audio_plugin_configure',
+    const r = await call('apc-cfg',
       { projectPath: PROJ, config: 'Debug' }, { env: shimEnv() });
     assert.equal(r.isError, false, r.text);
     const args = argvOf('cmake')[0] ?? '';
@@ -174,14 +176,14 @@ describe('FUNC-06 · config from apc-mcp.json must be honoured', () => {
   });
 
   it('falls back to Debug when neither the argument nor the file sets it', async () => {
-    const r = await call('audio_plugin_configure', { projectPath: PROJ }, { env: shimEnv() });
+    const r = await call('apc-cfg', { projectPath: PROJ }, { env: shimEnv() });
     assert.equal(r.isError, false, r.text);
     assert.ok((argvOf('cmake')[0] ?? '').includes('-DCMAKE_BUILD_TYPE=Debug'));
   });
 
-  it('audio_plugin_build passes --config for multi-config generators', async () => {
+  it('apc-build passes --config for multi-config generators', async () => {
     plantCache();
-    const r = await call('audio_plugin_build',
+    const r = await call('apc-build',
       { projectPath: PROJ, config: 'Release' }, { env: shimEnv() });
     assert.equal(r.isError, false, r.text);
     const buildArgs = argvOf('cmake').find(a => a.includes('--build')) ?? '';
@@ -193,7 +195,7 @@ describe('FUNC-06 · config from apc-mcp.json must be honoured', () => {
     plantCache();
     fs.writeFileSync(path.join(BUILD, 'CMakeCache.txt'),
       'CMAKE_BUILD_TYPE:STRING=Debug\nCMAKE_CONFIGURATION_TYPES:STRING=\n');
-    const r = await call('audio_plugin_build',
+    const r = await call('apc-build',
       { projectPath: PROJ, config: 'Release' }, { env: shimEnv() });
     assert.equal(r.isError, false, r.text);
     const configureArgs = argvOf('cmake').find(a => a.includes('-DCMAKE_BUILD_TYPE')) ?? '';
@@ -205,7 +207,7 @@ describe('FUNC-06 · config from apc-mcp.json must be honoured', () => {
     plantCache();
     fs.writeFileSync(path.join(BUILD, 'CMakeCache.txt'),
       'CMAKE_BUILD_TYPE:STRING=Debug\nCMAKE_CONFIGURATION_TYPES:STRING=Debug;Release\n');
-    const r = await call('audio_plugin_build',
+    const r = await call('apc-build',
       { projectPath: PROJ, config: 'Release' }, { env: shimEnv() });
     assert.equal(r.isError, false, r.text);
     assert.equal(argvOf('cmake').filter(a => a.includes('-DCMAKE_BUILD_TYPE')).length, 0, log());
@@ -218,7 +220,7 @@ describe('FUNC-06 · config from apc-mcp.json must be honoured', () => {
 // crashing formatter reports "No formatting issues".
 describe('QA-01 · lint(fix=true) must report a failing clang-format', () => {
   it('reports failure when clang-format exits non-zero', async () => {
-    const r = await call('audio_plugin_lint', { projectPath: PROJ, fix: true },
+    const r = await call('apc-lint', { projectPath: PROJ, fix: true },
       { env: shimEnv(FAKE_BIN, { stderr: 'error: invalid style file\n', exit: 1 }) });
     assert.equal(r.isError, true, `clang-format failed but lint reported: ${r.text}`);
     assert.ok(!/No formatting issues/.test(r.text),
@@ -226,7 +228,7 @@ describe('QA-01 · lint(fix=true) must report a failing clang-format', () => {
   });
 
   it('still reports success when clang-format exits zero', async () => {
-    const r = await call('audio_plugin_lint', { projectPath: PROJ, fix: true },
+    const r = await call('apc-lint', { projectPath: PROJ, fix: true },
       { env: shimEnv(FAKE_BIN, { exit: 0 }) });
     assert.equal(r.isError, false, r.text);
     assert.match(r.text, /No formatting issues/);
@@ -263,7 +265,7 @@ const CTEST_ONE_FAIL = [
 
 describe('QA-02 · the ctest parser must not count its own summary prose', () => {
   it('reports 3/0/3 for an all-passing run', async () => {
-    const r = await call('audio_plugin_test', { projectPath: PROJ },
+    const r = await call('apc-test', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: CTEST_ALL_PASS }) });
     assert.equal(r.isError, false, r.text);
     assert.match(r.text, /Passed: 3, Failed: 0, Total: 3/,
@@ -271,7 +273,7 @@ describe('QA-02 · the ctest parser must not count its own summary prose', () =>
   });
 
   it('reports 2/1/3 when one test fails', async () => {
-    const r = await call('audio_plugin_test', { projectPath: PROJ },
+    const r = await call('apc-test', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: CTEST_ONE_FAIL, exit: 8 }) });
     assert.equal(r.isError, true, 'ctest exited 8, so the tool must report failure');
     assert.match(r.text, /Passed: 2, Failed: 1, Total: 3/, `got: ${r.text}`);
@@ -282,20 +284,20 @@ describe('QA-02 · the ctest parser must not count its own summary prose', () =>
       '1/2 Test #1: A ...   Passed    0.01 sec',
       '2/2 Test #2: B ...***Failed    0.01 sec',
     ].join('\n');
-    const r = await call('audio_plugin_test', { projectPath: PROJ },
+    const r = await call('apc-test', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: partial, exit: 8 }) });
     assert.match(r.text, /Passed: 1, Failed: 1, Total: 2/, `got: ${r.text}`);
   });
 
   it('does not report success when parsed tests failed despite exit zero', async () => {
-    const r = await call('audio_plugin_test', { projectPath: PROJ },
+    const r = await call('apc-test', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: CTEST_ONE_FAIL, exit: 0 }) });
     assert.equal(r.isError, true, r.text);
     assert.match(r.text, /Passed: 2, Failed: 1, Total: 3/);
   });
 
   it('includes ctest stderr in failure details', async () => {
-    const r = await call('audio_plugin_test', { projectPath: PROJ },
+    const r = await call('apc-test', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stderr: 'ctest crashed before producing a summary', exit: 2 }) });
     assert.equal(r.isError, true);
     assert.match(r.text, /ctest crashed before producing a summary/, r.text);
@@ -315,7 +317,7 @@ const MSVC_ERRORS = [
 describe('QA-03 · MSVC diagnostics must be counted as errors', () => {
   it('counts both "error C2065" lines', async () => {
     plantCache();
-    const r = await call('audio_plugin_build', { projectPath: PROJ },
+    const r = await call('apc-build', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: MSVC_ERRORS, exit: 1 }) });
     assert.match(r.text, /Errors: 2/,
       `MSVC's "error C2065:" shape is unmatched, so only the clang-style line counts. got: ${r.text}`);
@@ -323,7 +325,7 @@ describe('QA-03 · MSVC diagnostics must be counted as errors', () => {
 
   it('counts the MSVC "warning C4244" line', async () => {
     plantCache();
-    const r = await call('audio_plugin_build', { projectPath: PROJ },
+    const r = await call('apc-build', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: MSVC_ERRORS, exit: 1 }) });
     assert.match(r.text, /Warnings: 1/, `got: ${r.text}`);
   });
@@ -341,7 +343,7 @@ describe('QA-04 · summary prose must not be counted as a warning', () => {
       '    const char *msg = "warning: benign, see #1234";',
       '            ^',
     ].join('\n');
-    const r = await call('audio_plugin_build', { projectPath: PROJ },
+    const r = await call('apc-build', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: clean }) });
     assert.equal(r.isError, false, r.text);
     assert.match(r.text, /Errors: 0, Warnings: 0/,
@@ -351,7 +353,7 @@ describe('QA-04 · summary prose must not be counted as a warning', () => {
   it('still counts a real clang warning', async () => {
     plantCache();
     const withWarning = '/src/Foo.cpp:3:7: warning: unused variable \'x\' [-Wunused-variable]';
-    const r = await call('audio_plugin_build', { projectPath: PROJ },
+    const r = await call('apc-build', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: withWarning }) });
     assert.match(r.text, /Warnings: 1/, `got: ${r.text}`);
   });
@@ -359,7 +361,7 @@ describe('QA-04 · summary prose must not be counted as a warning', () => {
   it('counts warnings written to stderr during a successful build', async () => {
     plantCache();
     const withWarning = '/src/Foo.cpp:3:7: warning: unused variable \'x\' [-Wunused-variable]';
-    const r = await call('audio_plugin_build', { projectPath: PROJ },
+    const r = await call('apc-build', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stderr: withWarning, exit: 0 }) });
     assert.equal(r.isError, false, r.text);
     assert.match(r.text, /Errors: 0, Warnings: 1/,
@@ -368,7 +370,7 @@ describe('QA-04 · summary prose must not be counted as a warning', () => {
 
   it('counts a gcc-style warning (no column number)', async () => {
     plantCache();
-    const r = await call('audio_plugin_build', { projectPath: PROJ },
+    const r = await call('apc-build', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: "/src/Foo.cpp:3:7: warning: unused variable 'x' [-Wunused-variable]" }) });
     assert.match(r.text, /Warnings: 1/, `got: ${r.text}`);
   });
@@ -376,7 +378,7 @@ describe('QA-04 · summary prose must not be counted as a warning', () => {
   it('still counts a real clang error', async () => {
     plantCache();
     const withError = '/src/Foo.cpp:9:3: error: use of undeclared identifier \'x\'';
-    const r = await call('audio_plugin_build', { projectPath: PROJ },
+    const r = await call('apc-build', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: withError, exit: 1 }) });
     assert.match(r.text, /Errors: 1/, `got: ${r.text}`);
   });
@@ -389,7 +391,7 @@ describe('QA-04 · summary prose must not be counted as a warning', () => {
 describe('QA-07 · compiler diagnostics on stderr must be parsed', () => {
   it('reports errors that cmake forwarded to stderr', async () => {
     plantCache();
-    const r = await call('audio_plugin_build', { projectPath: PROJ },
+    const r = await call('apc-build', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, {
         stdout: '[ 50%] Building CXX object CMakeFiles/Foo.dir/Foo.cpp.o\n',
         stderr: '/src/Foo.cpp:9:3: error: use of undeclared identifier \'x\'\n',
@@ -408,7 +410,7 @@ describe('QA-07 · compiler diagnostics on stderr must be parsed', () => {
 describe('HYG-12 · a build that emitted errors is not a success', () => {
   it('reports isError when cmake exits 0 but errors were emitted', async () => {
     plantCache();
-    const r = await call('audio_plugin_build', { projectPath: PROJ },
+    const r = await call('apc-build', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, {
         stdout: '/src/Foo.cpp:9:3: error: use of undeclared identifier \'x\'\n[100%] Built target Foo\n',
         exit: 0,
@@ -427,7 +429,7 @@ describe('QA-06 · a missing optional validator must not abort the report', () =
     writeProjectConfig({ validateFormats: ['VST3', 'CLAP'] });
     plantArtefacts('Debug');
     // PATH has pluginval but no clap-validator.
-    const r = await call('audio_plugin_validate', { projectPath: PROJ },
+    const r = await call('apc-val', { projectPath: PROJ },
       { env: shimEnv(NO_CLAPVAL_BIN) });
 
     assert.match(r.text, /Foo \[VST3\]/,
@@ -441,7 +443,7 @@ describe('QA-06 · a missing optional validator must not abort the report', () =
   it('does not claim success when a validator was missing', async () => {
     writeProjectConfig({ validateFormats: ['VST3', 'CLAP'] });
     plantArtefacts('Debug');
-    const r = await call('audio_plugin_validate', { projectPath: PROJ },
+    const r = await call('apc-val', { projectPath: PROJ },
       { env: shimEnv(NO_CLAPVAL_BIN) });
     assert.equal(r.isError, true,
       `validation was incomplete, so it must not report success: ${r.text}`);
@@ -450,12 +452,15 @@ describe('QA-06 · a missing optional validator must not abort the report', () =
   it('validates cleanly when both validators are present, passing valid upstream CLI flags', async () => {
     writeProjectConfig({ validateFormats: ['VST3', 'CLAP'] });
     plantArtefacts('Debug');
-    const r = await call('audio_plugin_validate', { projectPath: PROJ }, { env: shimEnv() });
+    const r = await call('apc-val', { projectPath: PROJ }, { env: shimEnv() });
     assert.equal(r.isError, false, r.text);
     assert.match(r.text, /2 passed, 0 failed/);
 
     const pvArgs = argvOf('pluginval')[0] ?? '';
-    assert.match(pvArgs, /^--strictness-level 10 /,
+    if (process.platform === 'linux') {
+      assert.deepEqual(argvOf('xvfb-run'), [`-a pluginval ${pvArgs}`]);
+    }
+    assert.match(pvArgs, /^--strictness-level 10 --validate /,
       `pluginval requires --strictness-level, got: ${pvArgs}`);
     assert.doesNotMatch(pvArgs, /--validate-in-new-process/,
       `--validate-in-new-process is not a real pluginval flag: ${pvArgs}`);
@@ -468,7 +473,7 @@ describe('QA-06 · a missing optional validator must not abort the report', () =
   it('points missing clap-validator install hint to free-audio/clap-validator, not dead 404 CLAP-Workspace', async () => {
     writeProjectConfig({ validateFormats: ['CLAP'] });
     plantArtefacts('Debug', { vst3: false, clap: true });
-    const r = await call('audio_plugin_validate', { projectPath: PROJ },
+    const r = await call('apc-val', { projectPath: PROJ },
       { env: shimEnv(NO_CLAPVAL_BIN) });
     assert.match(r.text, /free-audio\/clap-validator/);
     assert.doesNotMatch(r.text, /CLAP-Workspace/);
@@ -477,7 +482,7 @@ describe('QA-06 · a missing optional validator must not abort the report', () =
 
 describe('lint, build, and test edge cases', () => {
   it('lints a single file when target points to a file', async () => {
-    const r = await call('audio_plugin_lint',
+    const r = await call('apc-lint',
       { projectPath: PROJ, target: 'plugins/Foo/Source/Foo.cpp' },
       { env: shimEnv() });
     assert.equal(r.isError, false, r.text);
@@ -493,7 +498,7 @@ describe('lint, build, and test edge cases', () => {
     fs.mkdirSync(path.join(PROJ, '_tools', 'JUCE'), { recursive: true });
     fs.writeFileSync(path.join(PROJ, '_tools', 'JUCE', 'juce_core.cpp'), 'int vendor = 0;\n');
 
-    const r = await call('audio_plugin_lint', { projectPath: PROJ }, { env: shimEnv() });
+    const r = await call('apc-lint', { projectPath: PROJ }, { env: shimEnv() });
     assert.equal(r.isError, false, r.text);
     const args = argvOf('clang-format')[0] ?? '';
     assert.match(args, /plugin\.c/, `LV2 .c file was ignored by lint: ${args}`);
@@ -504,7 +509,7 @@ describe('lint, build, and test edge cases', () => {
   it('build passes --config, reconfigures on CMAKE_BUILD_TYPE change, parses LINK LNK errors, and shows raw output when errorCount is 0', async () => {
     fs.mkdirSync(BUILD, { recursive: true });
     fs.writeFileSync(path.join(BUILD, 'CMakeCache.txt'), 'CMAKE_BUILD_TYPE:STRING=Debug\n');
-    const rCfg = await call('audio_plugin_build',
+    const rCfg = await call('apc-build',
       { projectPath: PROJ, config: 'Release' }, { env: shimEnv() });
     assert.equal(rCfg.isError, false, rCfg.text);
     const cmakeCalls = argvOf('cmake');
@@ -516,14 +521,14 @@ describe('lint, build, and test edge cases', () => {
       `expected --config Release on cmake --build: ${cmakeCalls.join(' | ')}`);
 
     plantCache();
-    const rLnk = await call('audio_plugin_build', { projectPath: PROJ },
+    const rLnk = await call('apc-build', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stderr: "LINK : fatal error LNK1181: cannot open input file 'x.lib'\n", exit: 2 }) });
     assert.equal(rLnk.isError, true);
     assert.match(rLnk.text, /Errors: 1/, `MSVC LINK fatal error was missed: ${rLnk.text}`);
     assert.match(rLnk.text, /LNK1181/);
 
     plantCache();
-    const rMake = await call('audio_plugin_build', { projectPath: PROJ },
+    const rMake = await call('apc-build', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stderr: "gmake: *** No rule to make target 'Missing'.  Stop.\n", exit: 2 }) });
     assert.equal(rMake.isError, true);
     assert.match(rMake.text, /No rule to make target/, `unparsed build failure dropped raw output: ${rMake.text}`);
@@ -534,12 +539,12 @@ describe('lint, build, and test edge cases', () => {
       '1/2 Test #1: OkTest ..........   Passed    0.01 sec',
       '2/2 Test #2: HangTest ........***Timeout   5.00 sec',
     ].join('\n');
-    const r1 = await call('audio_plugin_test', { projectPath: PROJ },
+    const r1 = await call('apc-test', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: timeoutOut, exit: 8 }) });
     assert.equal(r1.isError, true);
     assert.match(r1.text, /Passed: 1, Failed: 1, Total: 2/, `***Timeout was missed: ${r1.text}`);
 
-    const r2 = await call('audio_plugin_test', { projectPath: PROJ },
+    const r2 = await call('apc-test', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stderr: 'CMake Error: Cannot find test directory\n', exit: 8 }) });
     assert.equal(r2.isError, true);
     assert.match(r2.text, /Cannot find test directory/, `ctest stderr was dropped: ${r2.text}`);
@@ -548,7 +553,7 @@ describe('lint, build, and test edge cases', () => {
       '1/2 Test #1: OkTest ..........   Passed    0.01 sec',
       '2/2 Test #2: CrashTest .......***SegFault  0.02 sec',
     ].join('\n');
-    const r3 = await call('audio_plugin_test', { projectPath: PROJ },
+    const r3 = await call('apc-test', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: segOut, exit: 8 }) });
     assert.equal(r3.isError, true);
     assert.match(r3.text, /Passed: 1, Failed: 1, Total: 2/, `***SegFault was missed: ${r3.text}`);
@@ -563,14 +568,14 @@ describe('lint, build, and test edge cases', () => {
     fs.writeFileSync(gainH, 'int clean = 1;\n');
     fs.writeFileSync(gainHpp, 'int dirty=1;\n');
 
-    const rDot = await call('audio_plugin_lint', { projectPath: PROJ, target: '.' }, { env: shimEnv() });
+    const rDot = await call('apc-lint', { projectPath: PROJ, target: '.' }, { env: shimEnv() });
     assert.equal(rDot.isError, false, rDot.text);
     const args = argvOf('clang-format')[0] ?? '';
     assert.doesNotMatch(args, /juce_core\.cpp/, `target="." walked into _tools/: ${args}`);
     assert.doesNotMatch(args, /CMakeCXXCompilerId\.cpp/, `target="." walked into root build/: ${args}`);
     assert.match(args, /Nested\.cpp/, `nested Source/build/Nested.cpp should still be linted: ${args}`);
 
-    const rDiag = await call('audio_plugin_lint',
+    const rDiag = await call('apc-lint',
       { projectPath: PROJ, target: 'plugins/Foo/Source' },
       { env: shimEnv(FAKE_BIN, { stderr: `${gainHpp}:1:10: error: code should be clang-formatted\n`, exit: 1 }) });
     assert.equal(rDiag.isError, true);
@@ -579,12 +584,12 @@ describe('lint, build, and test edge cases', () => {
     assert.doesNotMatch(rDiag.text, /Gain\.h\n/);
   });
 
-  it('NODE-02: audio_plugin_configure omits default -G when CMakeCache.txt already exists unless generator is explicit', async () => {
+  it('NODE-02: apc-cfg omits default -G when CMakeCache.txt already exists unless generator is explicit', async () => {
     fs.mkdirSync(BUILD, { recursive: true });
     fs.writeFileSync(path.join(BUILD, 'CMakeCache.txt'),
       'CMAKE_GENERATOR:INTERNAL=Ninja\nCMAKE_BUILD_TYPE:STRING=Debug\n');
 
-    const rExisting = await call('audio_plugin_configure',
+    const rExisting = await call('apc-cfg',
       { projectPath: PROJ, config: 'Release' }, { env: shimEnv() });
     assert.equal(rExisting.isError, false, rExisting.text);
     const argsExisting = argvOf('cmake')[0] ?? '';
@@ -592,7 +597,7 @@ describe('lint, build, and test edge cases', () => {
       `existing CMakeCache.txt must not receive default -G flag: ${argsExisting}`);
 
     fs.writeFileSync(LOG, '');
-    const rExplicit = await call('audio_plugin_configure',
+    const rExplicit = await call('apc-cfg',
       { projectPath: PROJ, generator: 'Ninja', config: 'Release' }, { env: shimEnv() });
     assert.equal(rExplicit.isError, false, rExplicit.text);
     const argsExplicit = argvOf('cmake')[0] ?? '';
@@ -628,7 +633,7 @@ describe('F2 · ctest skips are counted, not silently dropped', () => {
       '2/3 Test #2: BadTest .........***Failed    0.01 sec',
       '3/3 Test #3: SkipTest ........***Skipped   0.00 sec',
     ].join('\n');
-    const r = await call('audio_plugin_test', { projectPath: PROJ },
+    const r = await call('apc-test', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: out, exit: 8 }) });
     assert.equal(r.isError, true);
     assert.match(r.text, /Passed: 1, Failed: 1, Skipped: 1, Total: 3/,
@@ -637,7 +642,7 @@ describe('F2 · ctest skips are counted, not silently dropped', () => {
 
   it('a run whose every test was skipped is not reported as "Tests passed"', async () => {
     const out = '1/1 Test #1: SkipTest ........***Skipped   0.00 sec\n';
-    const r = await call('audio_plugin_test', { projectPath: PROJ },
+    const r = await call('apc-test', { projectPath: PROJ },
       { env: shimEnv(FAKE_BIN, { stdout: out, exit: 0 }) });
     // ctest exits 0 for skips, so isError alone cannot carry this: the header
     // must say what actually happened instead of claiming the tests passed.
@@ -651,7 +656,7 @@ describe('F2 · ctest skips are counted, not silently dropped', () => {
 describe('F3 · diagnostics from paths containing spaces are still errors', () => {
   it('clang/gcc: exit-0 build with a space-in-path error is isError', async () => {
     plantCache();
-    const r = await call('audio_plugin_build', { projectPath: PROJ }, {
+    const r = await call('apc-build', { projectPath: PROJ }, {
       env: shimEnv(FAKE_BIN, {
         stdout: '/home/dev/My Project/plugins/Foo.cpp:12:3: error: use of undeclared identifier \'x\'\n[100%] Built target Foo\n',
         exit: 0,
@@ -663,7 +668,7 @@ describe('F3 · diagnostics from paths containing spaces are still errors', () =
 
   it('MSVC: exit-0 build with a space-in-path error is isError', async () => {
     plantCache();
-    const r = await call('audio_plugin_build', { projectPath: PROJ }, {
+    const r = await call('apc-build', { projectPath: PROJ }, {
       env: shimEnv(FAKE_BIN, {
         stdout: 'C:\\My Plugins\\Foo\\Foo.cpp(12): error C2065: \'x\': undeclared identifier\nFoo.vcxproj -> Foo.dll\n',
         exit: 0,
@@ -676,7 +681,7 @@ describe('F3 · diagnostics from paths containing spaces are still errors', () =
 
 describe('DEF-1 · a failed lint run is not a formatting verdict', () => {
   it('reports the clang-format failure cause and never advises fix=true', async () => {
-    const r = await call('audio_plugin_lint', { projectPath: PROJ }, {
+    const r = await call('apc-lint', { projectPath: PROJ }, {
       env: shimEnv(FAKE_BIN, {
         stderr: 'clang-format: error while loading shared libraries: libclang-format.so.19: cannot open shared object file\n',
         exit: 127,
@@ -693,7 +698,7 @@ describe('DEF-1 · a failed lint run is not a formatting verdict', () => {
 
   it('still reports per-file issues when diagnostics ARE present', async () => {
     const foo = path.join(PROJ, 'plugins', 'Foo', 'Source', 'Foo.cpp');
-    const r = await call('audio_plugin_lint', { projectPath: PROJ }, {
+    const r = await call('apc-lint', { projectPath: PROJ }, {
       env: shimEnv(FAKE_BIN, { stderr: `${foo}:1:10: error: code should be clang-formatted\n`, exit: 1 }) });
     assert.equal(r.isError, true);
     assert.match(r.text, /Lint found issues/);
@@ -707,7 +712,7 @@ describe('SUB-5 · validator commands come from config and are schema-bound', ()
     writeShim(FAKE_BIN, 'my-clap-check');
     writeProjectConfig({ validateFormats: ['CLAP'], clapValidatorCommand: 'my-clap-check' });
     plantArtefacts('Debug', { vst3: false, clap: true });
-    const r = await call('audio_plugin_validate', { projectPath: PROJ }, { env: shimEnv() });
+    const r = await call('apc-val', { projectPath: PROJ }, { env: shimEnv() });
     assert.equal(r.isError, false, r.text);
     assert.match(r.text, /1 passed, 0 failed/);
     const args = argvOf('my-clap-check')[0] ?? '';
@@ -722,7 +727,7 @@ describe('SUB-5 · validator commands come from config and are schema-bound', ()
       writeProjectConfig({ validateCommand: bad, clapValidatorCommand: bad });
       plantArtefacts('Debug');
       fs.writeFileSync(LOG, ''); // one validate call per iteration
-      const r = await call('audio_plugin_validate', { projectPath: PROJ }, { env: shimEnv() });
+      const r = await call('apc-val', { projectPath: PROJ }, { env: shimEnv() });
       assert.equal(r.isError, false, `config value "${bad}" broke validation: ${r.text}`);
       assert.match(r.text, /2 passed, 0 failed/, `got: ${r.text}`);
       assert.ok(argvOf('pluginval').length === 1 && argvOf('clap-validator').length === 1,
@@ -742,7 +747,7 @@ describe('SUB-4 · artefact symlinks cannot redirect validation outside the proj
     fs.mkdirSync(artDir, { recursive: true });
     fs.symlinkSync(stolenDir, path.join(artDir, 'CLAP'), 'dir');
 
-    const r = await call('audio_plugin_validate', { projectPath: PROJ }, { env: shimEnv() });
+    const r = await call('apc-val', { projectPath: PROJ }, { env: shimEnv() });
     assert.equal(r.isError, true,
       `an artefact escaping via symlink must fail the run: ${r.text}`);
     assert.match(r.text, /## Validation refused/, `got: ${r.text}`);
@@ -763,7 +768,7 @@ describe('SUB-4 · artefact symlinks cannot redirect validation outside the proj
     fs.writeFileSync(path.join(artDir, 'VST3', 'Foo.vst3'), 'stub');
     fs.symlinkSync(stolenDir, path.join(artDir, 'CLAP'), 'dir');
 
-    const r = await call('audio_plugin_validate', { projectPath: PROJ }, { env: shimEnv() });
+    const r = await call('apc-val', { projectPath: PROJ }, { env: shimEnv() });
     assert.equal(r.isError, true, `the refused artefact must fail the run: ${r.text}`);
     assert.match(r.text, /1 passed, 0 failed, 1 refused/, `got: ${r.text}`);
     assert.ok(argvOf('pluginval').length === 1,

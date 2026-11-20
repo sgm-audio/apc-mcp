@@ -1,0 +1,9 @@
+{
+  "skill": "juce-parameter-id-stability",
+  "test_cases": [
+    {"input": "Ableton AU automation died after JUCE upgrade", "should_trigger": true},
+    {"input": "meta parameter gets stomped in Live", "should_trigger": true},
+    {"input": "preset load is slow in Ableton VST3", "should_trigger": true},
+    {"input": "write a compressor DSP", "should_trigger": false}
+  ]
+}

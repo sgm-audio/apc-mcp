@@ -1,13 +1,13 @@
 // Step 1 TDD suite: Zero-Friction Composite Tools & Atomic Parameter Sync
 //
 // Tests:
-// 1. Default inference in audio_plugin_create (omitting type and ui defaults to type="juce", ui="jive",
+// 1. Default inference in apc (omitting type and ui defaults to type="juce", ui="jive",
 //    optional style="fx" | "synth" | "utility" seeding initial DSP + JIVE controls, global cache init).
-// 2. audio_plugin_add_param atomically updating C++ APVTS (PluginProcessor.cpp) + MainView.xml + Styles.json
+// 2. apc-add-param atomically updating C++ APVTS (PluginProcessor.cpp) + MainView.xml + Styles.json
 //    with XML well-formedness and JSON validity checks.
-// 3. audio_plugin_ship executing Release Build -> Lint -> Validate -> Package -> Local Install in one call,
+// 3. apc-ship executing Release Build -> Lint -> Validate -> Package -> Local Install in one call,
 //    and returning structured diagnostics on failure.
-// 4. audio_plugin_doctor detecting toolchain, C++20 compiler, JUCE/JIVE SDK paths, pluginval, and OS plugin
+// 4. apc-doctor detecting toolchain, C++20 compiler, JUCE/JIVE SDK paths, pluginval, and OS plugin
 //    directories, plus auto-initializing ~/.apc-mcp/deps/.
 
 import { describe, it, before, after } from 'node:test';
@@ -100,6 +100,10 @@ before(() => {
     process.exit(0);
   `);
 
+  // These bundles contain stub bytes, not signable Mach-O binaries.
+  writeExe(FAKE_BIN, 'codesign', 'process.exit(0);');
+  fs.writeFileSync(path.join(FAKE_BIN, 'xvfb-run'),
+    '#!/bin/sh\n[ "$1" = -a ] || exit 2\nshift\nexec "$@"\n', { mode: 0o755 });
   writeExe(FAKE_BIN, 'pluginval', `
     const fs = require('fs');
     const args = process.argv.slice(2);
@@ -126,11 +130,11 @@ after(() => {
   fs.rmSync(ROOT, { recursive: true, force: true });
 });
 
-describe('Step 1.1 · audio_plugin_create defaults & style presets', () => {
+describe('Step 1.1 · apc defaults & style presets', () => {
   it('defaults to type="juce" and ui="jive" when type and ui are omitted', async () => {
     const tools = await listTools();
-    const createTool = tools.find(t => t.name === 'audio_plugin_create');
-    assert.ok(createTool, 'audio_plugin_create must be registered');
+    const createTool = tools.find(t => t.name === 'apc');
+    assert.ok(createTool, 'apc must be registered');
     assert.equal(createTool.inputSchema.properties.type.default, 'juce',
       'type default must be "juce"');
     assert.equal(createTool.inputSchema.properties.ui.default, 'jive',
@@ -140,7 +144,7 @@ describe('Step 1.1 · audio_plugin_create defaults & style presets', () => {
     assert.equal(createTool.inputSchema.properties.style?.default, 'fx',
       'style default must be "fx"');
 
-    const r = await call('audio_plugin_create', {
+    const r = await call('apc', {
       projectPath: PROJ,
       name: 'ZeroFrictionDefault',
     }, { env: { PATH: `${FAKE_BIN}${path.delimiter}${process.env.PATH}` } });
@@ -158,7 +162,7 @@ describe('Step 1.1 · audio_plugin_create defaults & style presets', () => {
 
   it('supports style="fx" | "synth" | "utility" presets with distinct DSP/JIVE controls', async () => {
     const env = { PATH: `${FAKE_BIN}${path.delimiter}${process.env.PATH}` };
-    const rSynth = await call('audio_plugin_create', {
+    const rSynth = await call('apc', {
       projectPath: PROJ,
       name: 'PolyLead',
       style: 'synth',
@@ -168,7 +172,7 @@ describe('Step 1.1 · audio_plugin_create defaults & style presets', () => {
     assert.match(synthCm, /IS_SYNTH\s+TRUE/, 'style="synth" must configure IS_SYNTH TRUE in CMakeLists.txt');
     assert.match(synthCm, /NEEDS_MIDI_INPUT\s+TRUE/, 'style="synth" must configure NEEDS_MIDI_INPUT TRUE');
 
-    const rUtil = await call('audio_plugin_create', {
+    const rUtil = await call('apc', {
       projectPath: PROJ,
       name: 'TrimTool',
       style: 'utility',
@@ -180,18 +184,18 @@ describe('Step 1.1 · audio_plugin_create defaults & style presets', () => {
   });
 });
 
-describe('Step 1.2 · audio_plugin_add_param atomic C++ APVTS + MainView.xml + Styles.json sync', () => {
-  it('registers audio_plugin_add_param and atomically updates PluginProcessor.cpp, MainView.xml, and Styles.json', async () => {
+describe('Step 1.2 · apc-add-param atomic C++ APVTS + MainView.xml + Styles.json sync', () => {
+  it('registers apc-add-param and atomically updates PluginProcessor.cpp, MainView.xml, and Styles.json', async () => {
     const tools = await listTools();
-    const addParam = tools.find(t => t.name === 'audio_plugin_add_param');
-    assert.ok(addParam, 'audio_plugin_add_param tool must be registered');
+    const addParam = tools.find(t => t.name === 'apc-add-param');
+    assert.ok(addParam, 'apc-add-param tool must be registered');
 
     for (const [id, name, min, max, def, unit, controlType, expectedTag] of [
       ['cutoff', 'Filter Cutoff', 20, 20000, 1000, 'Hz', 'knob', 'Knob'],
       ['mix', 'Dry/Wet Mix', 0, 100, 50, '%', 'slider', 'Slider'],
       ['bypass', 'Hard Bypass', 0, 1, 0, '', 'toggle', 'Checkbox'],
     ]) {
-      const r = await call('audio_plugin_add_param', {
+      const r = await call('apc-add-param', {
         projectPath: PROJ,
         pluginName: 'ZeroFrictionDefault',
         id,
@@ -202,7 +206,7 @@ describe('Step 1.2 · audio_plugin_add_param atomic C++ APVTS + MainView.xml + S
         unit,
         controlType,
       });
-      assert.equal(r.isError, false, `audio_plugin_add_param (${id}) failed: ${r.text}`);
+      assert.equal(r.isError, false, `apc-add-param (${id}) failed: ${r.text}`);
 
       const pluginDir = path.join(PLUGINS, 'ZeroFrictionDefault');
       const cpp = fs.readFileSync(path.join(pluginDir, 'Source', 'PluginProcessor.cpp'), 'utf8');
@@ -221,7 +225,7 @@ describe('Step 1.2 · audio_plugin_add_param atomic C++ APVTS + MainView.xml + S
   });
 
   it('rejects duplicate parameter IDs without corrupting files', async () => {
-    const r = await call('audio_plugin_add_param', {
+    const r = await call('apc-add-param', {
       projectPath: PROJ,
       pluginName: 'ZeroFrictionDefault',
       id: 'cutoff',
@@ -237,16 +241,16 @@ describe('Step 1.2 · audio_plugin_add_param atomic C++ APVTS + MainView.xml + S
   });
 });
 
-describe('Step 1.3 · audio_plugin_ship composite pipeline (Build -> Lint -> Validate -> Package -> Local Install)', () => {
+describe('Step 1.3 · apc-ship composite pipeline (Build -> Lint -> Validate -> Package -> Local Install)', () => {
   it('executes Release build, lint, pluginval strictness 5, dist/ packaging, and local VST3 install in one call', async () => {
     const tools = await listTools();
-    const shipTool = tools.find(t => t.name === 'audio_plugin_ship');
-    assert.ok(shipTool, 'audio_plugin_ship tool must be registered');
+    const shipTool = tools.find(t => t.name === 'apc-ship');
+    assert.ok(shipTool, 'apc-ship tool must be registered');
 
     const logFile = path.join(ROOT, 'pipeline.log');
     fs.writeFileSync(logFile, '');
 
-    const r = await call('audio_plugin_ship', {
+    const r = await call('apc-ship', {
       projectPath: PROJ,
       version: '1.2.0',
       installLocal: true,
@@ -257,7 +261,7 @@ describe('Step 1.3 · audio_plugin_ship composite pipeline (Build -> Lint -> Val
         USERPROFILE: HOME_DIR,
       },
     });
-    assert.equal(r.isError, false, `audio_plugin_ship failed: ${r.text}`);
+    assert.equal(r.isError, false, `apc-ship failed: ${r.text}`);
 
     const log = fs.readFileSync(logFile, 'utf8');
     assert.match(log, /cmake --build .* --config Release/, 'must run Release build');
@@ -284,7 +288,7 @@ describe('Step 1.3 · audio_plugin_ship composite pipeline (Build -> Lint -> Val
   });
 
   it('returns structured compiler/validator error lines immediately when any stage fails', async () => {
-    const rFailBuild = await call('audio_plugin_ship', {
+    const rFailBuild = await call('apc-ship', {
       projectPath: PROJ,
       version: '1.2.0',
       installLocal: false,
@@ -295,20 +299,20 @@ describe('Step 1.3 · audio_plugin_ship composite pipeline (Build -> Lint -> Val
         FAKE_CMAKE_FAIL: '1',
       },
     });
-    assert.equal(rFailBuild.isError, true, 'failing build stage must fail audio_plugin_ship');
+    assert.equal(rFailBuild.isError, true, 'failing build stage must fail apc-ship');
     assert.match(rFailBuild.text, /undeclared identifier "brokenSymbol"/,
       'must surface structured compiler error line for self-healing');
   });
 });
 
-describe('Step 1.4 · audio_plugin_doctor environment & SDK diagnostic tool', () => {
+describe('Step 1.4 · apc-doctor environment & SDK diagnostic tool', () => {
   it('checks cmake, C++20 compiler, JUCE, JIVE, pluginval, OS plugin dirs, and auto-creates ~/.apc-mcp/deps/', async () => {
     const tools = await listTools();
-    const docTool = tools.find(t => t.name === 'audio_plugin_doctor');
-    assert.ok(docTool, 'audio_plugin_doctor tool must be registered');
+    const docTool = tools.find(t => t.name === 'apc-doctor');
+    assert.ok(docTool, 'apc-doctor tool must be registered');
 
     const freshHome = path.join(ROOT, 'doctor-home');
-    const r = await call('audio_plugin_doctor', {
+    const r = await call('apc-doctor', {
       projectPath: PROJ,
     }, {
       env: {
@@ -317,13 +321,13 @@ describe('Step 1.4 · audio_plugin_doctor environment & SDK diagnostic tool', ()
         USERPROFILE: freshHome,
       },
     });
-    assert.equal(r.isError, false, `audio_plugin_doctor failed: ${r.text}`);
+    assert.equal(r.isError, false, `apc-doctor failed: ${r.text}`);
     assert.match(r.text, /cmake/i, 'must report cmake status');
     assert.match(r.text, /C\+\+20|compiler/i, 'must report C++20 compiler status');
     assert.match(r.text, /JUCE/i, 'must report JUCE status');
     assert.match(r.text, /JIVE/i, 'must report JIVE status');
     assert.match(r.text, /pluginval/i, 'must report pluginval status');
     assert.ok(fs.existsSync(path.join(freshHome, '.apc-mcp', 'deps')),
-      'audio_plugin_doctor must auto-create ~/.apc-mcp/deps/');
+      'apc-doctor must auto-create ~/.apc-mcp/deps/');
   });
 });

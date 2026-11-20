@@ -1,0 +1,20 @@
+{
+  "skill": "juce-dsp-safety",
+  "test_cases": [
+    {
+      "name": "flag_allocation",
+      "input": "Review this processBlock that does std::vector push_back on the audio thread",
+      "assertions": ["Flags the allocation", "Suggests pre-allocation in prepareToPlay"]
+    },
+    {
+      "name": "allow_smoothed",
+      "input": "Is juce::SmoothedValue safe to use in processBlock?",
+      "assertions": ["Confirms it is realtime-safe", "Does not flag it as a problem"]
+    },
+    {
+      "name": "lock_violation",
+      "input": "This code takes a CriticalSection inside processBlock to read parameters",
+      "assertions": ["Flags the lock", "Suggests atomic or lock-free parameter copy"]
+    }
+  ]
+}

@@ -159,7 +159,7 @@ describe('QA-08 · every static-analysis gate is wired into CI', () => {
 
 // ═══════════════════════════════════════════════════════════════════
 describe('QA-07 · the validators are exercised for real, not only through shims', () => {
-  // Every audio_plugin_validate test in tool-output.test.js installs a PATH
+  // Every apc-val test in tool-output.test.js installs a PATH
   // shim. Shims prove the argv shape and the reporting logic; they cannot prove
   // that upstream's binary accepts the invocation, or that a scaffolded plugin
   // passes. Until CI ran a real one, "pluginval / clap-validator support" was

@@ -176,7 +176,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ninja-build pkg-config xvfb \
+            ninja-build pkg-config xvfb xauth \
             libasound2-dev libjack-jackd2-dev ladspa-sdk \
             libcurl4-openssl-dev \
             libfreetype-dev libfontconfig1-dev \
@@ -201,7 +201,7 @@ jobs:
   # *annotation* on the check run, which is readable over the API even when the
   # job log is not.
   scaffold-clap-validate:
-    name: audio_plugin_validate against real clap-validator
+    name: apc-val against real clap-validator
     timeout-minutes: 25
     runs-on: ubuntu-latest
     permissions:
@@ -265,7 +265,7 @@ jobs:
             || { echo "::error title=smoke-validate validate::$(sed 's/%/%25/g' "${RUNNER_TEMP}/validate.log" | tail -c 3000 | awk 'BEGIN{ORS=""}{printf "%s%%0A",$0}')"; exit 1; }
 
   scaffold-juce-validate:
-    name: audio_plugin_validate against real pluginval
+    name: apc-val against real pluginval
     timeout-minutes: 45
     runs-on: ubuntu-latest
     permissions:
@@ -281,7 +281,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ninja-build pkg-config xvfb unzip file \
+            ninja-build pkg-config xvfb xauth unzip file \
             libasound2-dev libjack-jackd2-dev ladspa-sdk \
             libcurl4-openssl-dev \
             libfreetype-dev libfontconfig1-dev \
@@ -317,10 +317,11 @@ jobs:
             | tee "${RUNNER_TEMP}/build.log" \
             || { echo "::error title=smoke-validate build::$(sed 's/%/%25/g' "${RUNNER_TEMP}/build.log" | tail -c 3000 | awk 'BEGIN{ORS=""}{printf "%s%%0A",$0}')"; exit 1; }
       - name: Validate it with the real pluginval
-        # pluginval is a JUCE GUI application: it needs a display even in CI.
+        # The MCP server invokes xvfb-run -a pluginval; ALSA falls back to JUCE_ALSA=0
+        # if the scaffold cannot find the development package.
         run: |
           set -o pipefail
-          xvfb-run -a node scripts/smoke-validate.mjs --type=juce --phase=validate --dir="${RUNNER_TEMP}/sv-juce" 2>&1 \
+          node scripts/smoke-validate.mjs --type=juce --phase=validate --dir="${RUNNER_TEMP}/sv-juce" 2>&1 \
             | tee "${RUNNER_TEMP}/validate.log" \
             || { echo "::error title=smoke-validate validate::$(sed 's/%/%25/g' "${RUNNER_TEMP}/validate.log" | tail -c 3000 | awk 'BEGIN{ORS=""}{printf "%s%%0A",$0}')"; exit 1; }
 

@@ -23,21 +23,21 @@ Verified on **2026-11-20** in this checkout (Node v22.22.3 / npm 10.9.8, Linux):
 |---|---|
 | `npm run lint` | PASS — ESLint (incl. `eslint-plugin-n`) + `node --check index.js` |
 | `npm run typecheck` | PASS — `tsc -p tsconfig.json`, 0 errors |
-| `npm test` | **317 tests**, 309 pass, 0 fail, **8 skipped** — the CLAP/LV2 compile+link checks skip when `APC_CLAP_INCLUDE` / `APC_LV2_INCLUDE` are unset. The ARA stub compile/link tests pass. |
+| `npm test` | **320 tests**, 312 pass, 0 fail, **8 skipped** — the CLAP/LV2 compile+link checks skip when `APC_CLAP_INCLUDE` / `APC_LV2_INCLUDE` are unset. The ARA stub compile/link tests pass. |
 | `npm run smoke` | PASS — 13/13 scaffold cases (structural only; full JUCE `--configure` / `--build` requires system dependencies and SDKs) |
 | `npm audit` | PASS — 0 vulnerabilities, with **no** `--audit-level` flag: the gate is plain `npm audit`, and CI runs that same command (`npm run audit`) rather than a laxer threshold |
 | `npm run licenses` | PASS — 199 lockfile packages checked against `license_decisions.yml` |
-| `npm run docs:check` | PASS — 27 Markdown files, 144 relative paths, 55 anchors, 10 indexed docs |
+| `npm run docs:check` | PASS — 47 Markdown files, 144 relative paths, 55 anchors, 10 indexed docs |
 | `npm run check` | PASS (exit 0), including lint, typecheck, tests, smoke, audit, licenses and docs checks |
-| `npm run cmake:lint` | Not run — `cmake-lint` is not installed in this sandbox; this checkout has 7 template `CMakeLists.txt` files |
+| `npm run cmake:lint` | PASS — cmakelang 0.6.13, 7 template `CMakeLists.txt` files, 0 findings |
 | `git tag` / npm registry | Latest tag `v1.5.0`; `@sgm-audio/apc-mcp` returns 404 (not published) |
 
-CI on the same work (run `43817093143`, PR #35) reports **11/11 verification jobs green**: configure/compile/link of generated CLAP, LV2 and JUCE targets against real SDKs; `audio_plugin_validate` against a real `clap-validator 0.4.1` and a real `pluginval 1.0.4` on built artefacts; and the whole Node suite on macOS as well as Linux (`publish` is skipped unless the ref is a `v*` tag). Treat the table above as a dated snapshot, not a promise: re-run the commands rather than copying the numbers into other docs.
+The ARA feature branch's first CI run after the CMake-lint fix (run `44827682130`, PR #50) passed the required checks, including cross-platform Node tests, scaffold compile/build and validation jobs, and CMake lint; `publish` was skipped as expected for a pull request. That run predates the merge-base refresh, so consult PR #50's checks for the latest result. Treat the table above as a dated snapshot, not a promise: re-run the commands rather than copying the numbers into other docs.
 
 ## What 2.0.0 changed
 
-- **Security:** path traversal in `audio_plugin_lint` closed with symlink-aware `assertWithinProject()`; `apc-mcp.json` validated per key; per-grammar escaping of `vendor` *and* `description` for C++/CMake/Turtle/HTML, with non-ASCII metadata accepted instead of being rejected by an ASCII-only regex; dependency advisories resolved. See [Security](security.md).
-- **Templates:** CLAP, JUCE/VST3, standalone, native LV2 and JUCE ARA effect scaffolds. The ARA template uses `IS_ARA_EFFECT TRUE`, real `VST3 AU` formats, JUCE ARA processor/editor extensions, a source-region playback renderer and `createARAFactory()`; its external SDK path is required at configure time.
+- **Security:** path traversal in `apc-lint` closed with symlink-aware `assertWithinProject()`; `apc-mcp.json` validated per key; per-grammar escaping of `vendor` *and* `description` for C++/CMake/Turtle/HTML, with non-ASCII metadata accepted instead of being rejected by an ASCII-only regex; dependency advisories resolved. See [Security](security.md).
+- **Templates:** CLAP, JUCE/VST3, standalone, native LV2, and JUCE ARA effect scaffolds. The ARA template uses `IS_ARA_EFFECT TRUE`, real `VST3 AU` formats, JUCE ARA processor/editor extensions, a source-region playback renderer, and `createARAFactory()`; it requires the external SDK at configure time.
 - **Output correctness:** `config` from `apc-mcp.json` is honoured; lint/build/test/validate parsers no longer invent counts or report success on failed commands; missing validators and skips are reported; builds pass `--config` and reconfigure single-config caches when `Debug`/`Release` changes.
 - **Substantiation round (2026-11-17):** an evidence-officer audit ([SUBSTANTIATION-LOG.md](../SUBSTANTIATION-LOG.md)) re-graded every 2.0.0 claim against live reproduction and closed its three blockers and five should-fixes: symlink containment on artefact discovery and the config read, a prototype-key-safe schema lookup, honest lint-failure reporting, space-tolerant compiler diagnostics, ctest skip counting, single-`../` rejection in `-D` values, validator-command regression tests, and the doc-drift batch (including the missing PR #36 changelog entry). Every fix landed with a test proven red on the pre-fix tree.
 - **Release engineering:** version has one source of truth (`package.json`), `npm run ship` guards branch/tree/tag/changelog, CI action pins are immutable with explicit permissions, publish is gated on all verification jobs.

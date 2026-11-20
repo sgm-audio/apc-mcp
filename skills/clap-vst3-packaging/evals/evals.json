@@ -1,0 +1,20 @@
+{
+  "skill": "clap-vst3-packaging",
+  "test_cases": [
+    {
+      "name": "pluginval_command",
+      "input": "How do I validate a VST3 with pluginval?",
+      "assertions": ["Gives the correct pluginval command with strictness"]
+    },
+    {
+      "name": "macos_signing",
+      "input": "My VST3 won't load on macOS because of Gatekeeper",
+      "assertions": ["Mentions ad-hoc codesign for local and notarization for public"]
+    },
+    {
+      "name": "no_false_validation",
+      "input": "The build succeeded but clap-validator was not installed. Is it validated?",
+      "assertions": ["Says no, reports it as not validated"]
+    }
+  ]
+}

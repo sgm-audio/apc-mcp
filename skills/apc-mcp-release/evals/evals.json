@@ -1,0 +1,32 @@
+{
+  "skill": "apc-mcp-release",
+  "test_cases": [
+    {
+      "name": "live_inspection_required",
+      "input": "Polish the README and prepare v2.0.0 release notes for sgm-audio/apc-mcp. Here's a screenshot of the old README.",
+      "assertions": [
+        "Agent fetches live README.md, package.json, and CHANGELOG.md via GitHub tools",
+        "Agent notes discrepancies between screenshot and current live state",
+        "Output includes a Live State Summary based only on fetched content"
+      ]
+    },
+    {
+      "name": "accurate_tool_count",
+      "input": "How many tools does apc-mcp have and what should the release notes say?",
+      "assertions": [
+        "Agent searches or reads index.js or docs/tools.md from the live repo",
+        "Does not invent or rely on a hard-coded '7 tools' claim",
+        "Lists the actual current tools"
+      ]
+    },
+    {
+      "name": "verification_checklist",
+      "input": "Generate the release body and badge updates for the next apc-mcp tag, then tell me how to verify.",
+      "assertions": [
+        "Includes a concrete Verification Checklist referencing live npm scripts",
+        "Release notes only claim features present in the fetched files",
+        "Mentions checking package.json version against the tag"
+      ]
+    }
+  ]
+}

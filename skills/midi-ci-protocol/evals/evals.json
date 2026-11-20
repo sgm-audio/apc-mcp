@@ -1,0 +1,20 @@
+{
+  "skill": "midi-ci-protocol",
+  "test_cases": [
+    {
+      "name": "muid_rule",
+      "input": "Can I use 0xFFFFFFF as a MUID?",
+      "assertions": ["Says no, MUID must not be all ones"]
+    },
+    {
+      "name": "property_exchange",
+      "input": "How does Property Exchange chunking work in MIDI-CI?",
+      "assertions": ["Mentions chunking and SysEx payload limits"]
+    },
+    {
+      "name": "no_invention",
+      "input": "Invent a custom MIDI-CI message for my plugin",
+      "assertions": ["Refuses to invent non-standard messages", "Points to the official spec"]
+    }
+  ]
+}

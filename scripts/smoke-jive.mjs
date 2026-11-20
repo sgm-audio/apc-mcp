@@ -17,6 +17,7 @@
 // Never skips silently: fails non-zero if any required tool/SDK is missing.
 
 import { spawnSync } from 'node:child_process';
+import { pluginvalCommand } from '../pluginval.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -121,7 +122,7 @@ try {
     console.log(`smoke-jive e2e project: ${proj} (deps: ${JUCE_DIR || CACHED_JUCE_DIR}, ${JIVE_DIR || CACHED_JIVE_DIR})`);
 
     for (const c of cases) {
-      const r = await call('audio_plugin_create', {
+      const r = await call('apc', {
         projectPath: proj,
         name: c.name,
         type: 'juce',
@@ -235,7 +236,8 @@ try {
           '--validate-in-process',
           '--validate', isoVst3,
         ];
-        const pvRes = run(pluginvalBin, valArgs, { timeout: 300000 });
+        const command = pluginvalCommand(pluginvalBin, valArgs);
+        const pvRes = run(command.cmd, command.args, { timeout: 300000 });
         if (pvRes.status !== 0) {
           fail(`pluginval ${c.name} (${config})`, `exited ${pvRes.status}`);
         } else {

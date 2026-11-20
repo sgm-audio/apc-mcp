@@ -21,18 +21,25 @@
 > cases where they previously reported success — see *Tool output & failure
 > reporting* below.
 >
-> `audio_plugin_create` also **gains** `type: "standalone"` and `type: "lv2"` —
-> additive enum values, not breaking ones.
+> `apc` also **gains** `type: "standalone"` and `type: "lv2"` — additive enum
+> values, not breaking ones.
 
 ### JUCE ARA effect template
 
 - **`type="ara"` is reintroduced with a dedicated JUCE effect scaffold.** The generated target uses `FORMATS VST3 AU`, `IS_ARA_EFFECT TRUE`, stable ARA factory/archive IDs, an `AudioProcessorARAExtension` processor, an `AudioProcessorEditorARAExtension` editor, a playback renderer that reads ARA source regions, and an `ARADocumentControllerSpecialisation` with `createARAFactory()`.
-- **External ARA SDK is required.** CMake fails early with `FATAL_ERROR` when `APC_ARA_SDK_PATH` is unset, empty, or does not point to an initialized SDK root containing `ARA_Library/PlugIn/ARAPlug.h` and `ARA_API/ARAInterface.h`; it calls `juce_set_ara_sdk_path(...)` before `juce_add_plugin(...)`. `audio_plugin_create` defers auto-configuration and reports the configure option; `formats` overrides are rejected for ARA. This supersedes the historical removal notes below, which describe the invalid intermediate scaffold.
+- **External ARA SDK is required.** CMake fails early with `FATAL_ERROR` when `APC_ARA_SDK_PATH` is unset, empty, or does not point to an initialized SDK root containing `ARA_Library/PlugIn/ARAPlug.h` and `ARA_API/ARAInterface.h`; it calls `juce_set_ara_sdk_path(...)` before `juce_add_plugin(...)`. `apc` defers auto-configuration and reports the configure option; `formats` overrides are rejected for ARA. This supersedes the historical removal notes below, which describe the invalid intermediate scaffold.
 - Added structural, C++ compile/link fixture and CMake missing-SDK integration coverage for the ARA template.
+
+### Tool names
+
+- The short names are canonical and preferred: `apc`, `apc-add-param`, `apc-ship`,
+  `apc-doctor`, `apc-cfg`, `apc-build`, `apc-test`, `apc-lint`, `apc-val`, and
+  `apc-list`. The previous `audio_plugin_*` names are registered as deprecated
+  compatibility aliases and share the canonical handlers.
 
 ### Security
 
-- **Path traversal in `audio_plugin_lint` closed (critical).** `target` was validated
+- **Path traversal in `apc-lint` closed (critical).** `target` was validated
   only against `SAFE_PATH`, which permits `.`, so `../x` passed and was joined onto the
   project root before being handed to `clang-format -i`. A single tool argument could
   rewrite any `.cpp/.cc/.cxx/.h/.hpp` file the user could write. `target` now rejects

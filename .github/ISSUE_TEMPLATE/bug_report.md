@@ -14,7 +14,7 @@ assignees: ''
 (e.g. Claude Code, OpenCode, VS Code, Continue.dev)
 
 **Tool**
-Which tool? `audio_plugin_build` / `audio_plugin_test` / etc.
+Which tool? `apc-build` / `apc-test` / etc.
 
 **What happened**
 ```

@@ -47,14 +47,14 @@ after(() => {
   fs.rmSync(ROOT, { recursive: true, force: true });
 });
 
-describe('audio_plugin_create JIVE tool schema', () => {
-  it('advertises ui="jive" in the audio_plugin_create inputSchema', async () => {
+describe('apc JIVE tool schema', () => {
+  it('advertises ui="jive" in the apc inputSchema', async () => {
     const tools = await listTools();
-    const create = tools.find(t => t.name === 'audio_plugin_create');
-    assert.ok(create, 'audio_plugin_create tool missing');
+    const create = tools.find(t => t.name === 'apc');
+    assert.ok(create, 'apc tool missing');
     const uiEnum = create.inputSchema?.properties?.ui?.enum ?? [];
     assert.ok(uiEnum.includes('jive'),
-      `audio_plugin_create ui enum must include "jive", got: ${JSON.stringify(uiEnum)}`);
+      `apc ui enum must include "jive", got: ${JSON.stringify(uiEnum)}`);
     assert.ok(uiEnum.includes('generic') && uiEnum.includes('webview'),
       `existing ui options must remain intact, got: ${JSON.stringify(uiEnum)}`);
   });
@@ -65,7 +65,7 @@ describe('plain JUCE scaffold: deterministic deps, warnings-as-errors, portabili
   let files;
 
   before(async () => {
-    const r = await call('audio_plugin_create', {
+    const r = await call('apc', {
       projectPath: PROJ, name: 'PlainJucePkg', type: 'juce', ui: 'generic', vendor: 'Acme',
     });
     assert.equal(r.isError, false, `plain JUCE scaffold failed: ${r.text}`);
@@ -124,7 +124,7 @@ describe('JUCE + JIVE scaffold (ui="jive"): template files, CMake plumbing, hot-
   let files;
 
   before(async () => {
-    const r = await call('audio_plugin_create', {
+    const r = await call('apc', {
       projectPath: PROJ,
       name: 'JiveGain',
       type: 'juce',

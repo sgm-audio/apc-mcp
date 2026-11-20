@@ -12,6 +12,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { spawnSync } from 'node:child_process';
+import { pluginvalCommand } from './pluginval.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -43,7 +44,7 @@ const SAFE_TARGET = /^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/;
 const SAFE_GENERATOR = /^[a-zA-Z][a-zA-Z0-9_ -]*$/;
 // CMake options flags: -DNAME=VALUE, space-separated (allows Windows `\` paths)
 // `;` is allowed because it is the documented option separator (see the split
-// in audio_plugin_configure); it can never reach cmake — every token is checked
+// in apc-cfg); it can never reach cmake — every token is checked
 // against SAFE_CMAKE_OPTION_TOKEN, which has no `;` in any of its branches.
 const SAFE_OPTIONS = /^[a-zA-Z0-9_= /.\-\\+:@,;]+$/;
 // Allowed individual CMake configure option token (-DVAR[:TYPE]=VAL, -UVAR, -W[no-]dev/deprecated)
@@ -871,7 +872,7 @@ function findFilesByExt(dir, exts, skipNames = new Set(), skipPaths = new Set())
 //    name and turns `_`/`-` into spaces. So `name="my_verb"` builds
 //    `My Verb.vst3` inside a directory called `my_verb`. Constructing
 //    `<dir>/<dir>.vst3` found nothing and the tool then told the user to run
-//    `audio_plugin_build` again — advice that was simply wrong.
+//    `apc-build` again — advice that was simply wrong.
 //
 // Artefacts are therefore found by scanning for the format's suffix, never by
 // constructing a filename. `AudioUnit` is kept as the user-facing name in
@@ -1163,85 +1164,125 @@ const server = new McpServer({
 
 // Title + MCP behaviour hints for every tool. These are what a client uses to
 // decide whether to confirm a call with the user, so a tool that writes files
-// must not present itself as harmless: `create` appends to the project's
-// CMakeLists.txt, `lint` rewrites sources in place when fix=true, and `build`
-// writes a whole build tree. Centralised so a new tool cannot be registered
+// must not present itself as harmless: `apc` appends to the project's
+// CMakeLists.txt, `apc-lint` rewrites sources in place when fix=true, and
+// `apc-build` writes a whole build tree. Centralised so a new tool cannot be registered
 // without declaring them — registerTool() throws if one is missing.
 //
-// openWorldHint is false for all seven: nothing here talks to the network.
+// openWorldHint is false for all ten: nothing here talks to the network.
 const TOOL_META = {
-  audio_plugin_configure: {
+  'apc-cfg': {
     title: 'Configure a CMake audio plugin project',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
-  audio_plugin_build: {
+  'apc-build': {
     title: 'Build a CMake audio plugin project',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   },
-  audio_plugin_test: {
+  'apc-test': {
     title: 'Run a project\'s ctest suite',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
-  audio_plugin_lint: {
+  'apc-lint': {
     title: 'Check or apply clang-format (fix=true rewrites files in place)',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
-  audio_plugin_plugins: {
+  'apc-list': {
     title: 'List scaffolded plugins in a project',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
-  audio_plugin_validate: {
+  'apc-val': {
     title: 'Validate built plugins with pluginval / clap-validator',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
-  audio_plugin_create: {
+  'apc': {
     title: 'Scaffold a new plugin or app (defaults to type="juce", ui="jive", style="fx"; slash command /apc:new)',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   },
-  audio_plugin_add_param: {
+  'apc-add-param': {
     title: 'Atomically add an APVTS parameter and JIVE UI control + style rule (slash command /apc:ui)',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   },
-  audio_plugin_ship: {
+  'apc-ship': {
     title: 'Composite Release build, lint, pluginval (strictness 5), dist/ package, and local VST3 install (slash command /apc:ship)',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   },
-  audio_plugin_doctor: {
+  'apc-doctor': {
     title: 'Diagnose CMake, C++20 compiler, JUCE, JIVE, pluginval, ~/.apc-mcp/deps/, and OS plugin directories (slash command /apc:doctor)',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
 };
 
+const LEGACY_TOOL_ALIASES = [
+  ['audio_plugin_create', 'apc'],
+  ['audio_plugin_add_param', 'apc-add-param'],
+  ['audio_plugin_ship', 'apc-ship'],
+  ['audio_plugin_doctor', 'apc-doctor'],
+  ['audio_plugin_configure', 'apc-cfg'],
+  ['audio_plugin_build', 'apc-build'],
+  ['audio_plugin_test', 'apc-test'],
+  ['audio_plugin_lint', 'apc-lint'],
+  ['audio_plugin_validate', 'apc-val'],
+  ['audio_plugin_plugins', 'apc-list'],
+];
+
 // Every handler runs inside this wrapper so that a thrown Error becomes a
 // readable isError tool result rather than a bare JSON-RPC protocol error.
 // MCP clients surface tool results to the model; protocol errors are often
 // shown opaquely, which defeats the actionable install/path messages below.
+const TOOL_DEFINITIONS = new Map();
+
 function registerTool(name, schema, handler) {
   const meta = TOOL_META[name];
   if (!meta) throw new Error(`registerTool: no TOOL_META entry for "${name}"`);
 
+  const definition = {
+    schema,
+    meta,
+    callback: async (params) => {
+      try {
+        return await handler(params);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: 'text', text: `## ${name} failed\n${message}` }],
+          isError: true,
+        };
+      }
+    },
+  };
+  TOOL_DEFINITIONS.set(name, definition);
   server.registerTool(name, {
     title: meta.title,
     inputSchema: schema,
     annotations: meta.annotations,
-  }, async (params) => {
-    try {
-      return await handler(params);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text', text: `## ${name} failed\n${message}` }],
-        isError: true,
-      };
-    }
-  });
+  }, definition.callback);
+}
+
+// Legacy names register the canonical tool's exact schema, metadata, and
+// callback, so validation, execution, path guards, and isError handling cannot
+// drift between the alias and its target.
+function registerToolAlias(alias, canonicalName) {
+  const definition = TOOL_DEFINITIONS.get(canonicalName);
+  if (!definition) {
+    throw new Error(`registerToolAlias: canonical tool "${canonicalName}" is not registered`);
+  }
+  if (TOOL_DEFINITIONS.has(alias)) {
+    throw new Error(`registerToolAlias: tool name "${alias}" is already registered`);
+  }
+  server.registerTool(alias, {
+    title: definition.meta.title,
+    inputSchema: definition.schema,
+    annotations: definition.meta.annotations,
+  }, definition.callback);
+  TOOL_DEFINITIONS.set(alias, definition);
 }
 
 // ─── CMake cache trust ──────────────────────────────────────────────
 // A CMakeCache.txt is project state that CMake reads before anything else, and it
 // can carry the same code-loading variables that configure's -D options are not
 // allowed to set. A repository that commits one therefore turned a plain
-// `configure` — or the auto-configure inside `build` — into code execution
+// `apc-cfg` — or the auto-configure inside `apc-build` — into code execution
 // (AUDIT SEC-NEW-06, reproduction 3). A cache that belongs to another source tree,
 // or that carries a code-loading mark, is not trusted: it is deleted and the
 // configure starts clean.
@@ -1298,9 +1339,9 @@ function buildNeedsConfigure(buildDir, config) {
   return configured !== config;
 }
 
-// ─── audio_plugin_build ────────────────────────────────────────────
+// ─── apc-build ────────────────────────────────────────────
 registerTool(
-  'audio_plugin_build',
+  'apc-build',
   {
     projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD if you have apc-mcp.json or CMakeLists.txt in a parent directory.'),
@@ -1376,9 +1417,9 @@ registerTool(
   }
 );
 
-// ─── audio_plugin_configure ────────────────────────────────────────
+// ─── apc-cfg ────────────────────────────────────────
 registerTool(
-  'audio_plugin_configure',
+  'apc-cfg',
   {
     projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
@@ -1455,9 +1496,9 @@ registerTool(
   }
 );
 
-// ─── audio_plugin_test ─────────────────────────────────────────────
+// ─── apc-test ─────────────────────────────────────────────
 registerTool(
-  'audio_plugin_test',
+  'apc-test',
   {
     projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
@@ -1528,9 +1569,9 @@ registerTool(
   }
 );
 
-// ─── audio_plugin_lint ─────────────────────────────────────────────
+// ─── apc-lint ─────────────────────────────────────────────
 registerTool(
-  'audio_plugin_lint',
+  'apc-lint',
   {
     projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
@@ -1556,7 +1597,7 @@ registerTool(
       if (hasDotDot(params.target)) {
         return {
           content: [{ type: 'text', text:
-            `## audio_plugin_lint failed\nInvalid target: ".." segments are not allowed — ` +
+            `## apc-lint failed\nInvalid target: ".." segments are not allowed — ` +
             `the path must stay within the project root. Rejected: ${params.target}` }],
           isError: true,
         };
@@ -1564,7 +1605,7 @@ registerTool(
       try {
         searchRoot = assertWithinProject(proj, params.target, 'Lint target');
       } catch (e) {
-        return { content: [{ type: 'text', text: `## audio_plugin_lint failed\n${e.message}` }], isError: true };
+        return { content: [{ type: 'text', text: `## apc-lint failed\n${e.message}` }], isError: true };
       }
     }
 
@@ -1709,9 +1750,9 @@ registerTool(
   }
 );
 
-// ─── audio_plugin_plugins ──────────────────────────────────────────
+// ─── apc-list ──────────────────────────────────────────
 registerTool(
-  'audio_plugin_plugins',
+  'apc-list',
   {
     projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
@@ -1789,9 +1830,9 @@ registerTool(
   }
 );
 
-// ─── audio_plugin_validate ─────────────────────────────────────────
+// ─── apc-val ─────────────────────────────────────────
 registerTool(
-  'audio_plugin_validate',
+  'apc-val',
   {
     projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
@@ -1851,7 +1892,7 @@ registerTool(
     }
 
     if (!binaries.length) {
-      const hint = fs.existsSync(buildDir) ? '' : ' (build directory not found — run audio_plugin_build first)';
+      const hint = fs.existsSync(buildDir) ? '' : ' (build directory not found — run apc-build first)';
       return {
         content: [{ type: 'text', text: `No plugin binaries found for format(s): ${formats.join(', ')}.${hint}` }],
         isError: true,
@@ -1896,11 +1937,12 @@ registerTool(
       // Tracktion/pluginval uses --strictness-level (out-of-process is already
       // default); free-audio/clap-validator requires the `validate` subcommand.
       const args = b.format === 'VST3'
-        ? ['--strictness-level', String(cfg.strictnessLevel ?? 10), b.path]
+        ? ['--strictness-level', String(cfg.strictnessLevel ?? 10), '--validate', b.path]
         : ['validate', b.path];
       // cwd: validators write logs; without this they land wherever the MCP
       // client happened to spawn the server, i.e. outside the project.
-      const r = trySpawn(bin, args, { cwd: proj, timeout: 120 });
+      const command = b.format === 'VST3' ? pluginvalCommand(bin, args) : { cmd: bin, args };
+      const r = trySpawn(command.cmd, command.args, { cwd: proj, timeout: 120 });
       results.push({
         ...b,
         status: r.ok ? 'pass' : 'fail',
@@ -2223,9 +2265,9 @@ function applyParamToPluginDir(proj, pluginDir, paramSpec) {
   writeFileInside(proj, stylesPath, updatedStyles);
 }
 
-// ─── audio_plugin_create ───────────────────────────────────────────
+// ─── apc ───────────────────────────────────────────
 registerTool(
-  'audio_plugin_create',
+  'apc',
   {
     projectPath: z.string().max(4096).optional()
       .describe('Parent project root where the plugins/ directory lives. Auto-detected from CWD.'),
@@ -2249,7 +2291,7 @@ registerTool(
     if (RESERVED_CMAKE_TARGETS.has(params.name.toLowerCase())) {
       return {
         content: [{ type: 'text', text:
-          `## audio_plugin_create failed\n"${params.name}" is a reserved CMake target name. Choose a distinct plugin name.` }],
+          `## apc failed\n"${params.name}" is a reserved CMake target name. Choose a distinct plugin name.` }],
         isError: true,
       };
     }
@@ -2273,7 +2315,7 @@ registerTool(
     if (RESERVED_CXX_KEYWORDS.has(params.name) || RESERVED_CXX_KEYWORDS.has(id)) {
       return {
         content: [{ type: 'text', text:
-          `## audio_plugin_create failed\n"${params.name}" collides with a C/C++ reserved keyword (${id}). Choose a distinct plugin name.` }],
+          `## apc failed\n"${params.name}" collides with a C/C++ reserved keyword (${id}). Choose a distinct plugin name.` }],
         isError: true,
       };
     }
@@ -2292,12 +2334,12 @@ registerTool(
     // configure-time failure the user would otherwise discover much later.
     if (typeInfo.formats === null && params.formats) {
       return { content: [{ type: 'text', text:
-        `## audio_plugin_create failed\n${typeInfo.formatsRejection}` }],
+        `## apc failed\n${typeInfo.formatsRejection}` }],
         isError: true };
     }
     if (typeInfo.template === 'clap' && params.formats) {
       return { content: [{ type: 'text', text:
-        `## audio_plugin_create failed\n${typeInfo.formatsRejection}` }],
+        `## apc failed\n${typeInfo.formatsRejection}` }],
         isError: true };
     }
 
@@ -2306,13 +2348,13 @@ registerTool(
       const requested = String(formats).split(';').map(s => s.trim()).filter(Boolean);
       if (requested.length === 0) {
         return { content: [{ type: 'text', text:
-          `## audio_plugin_create failed\nformats must list at least one format. Valid: ${JUCE_FORMATS.join(', ')}` }],
+          `## apc failed\nformats must list at least one format. Valid: ${JUCE_FORMATS.join(', ')}` }],
           isError: true };
       }
       const unknown = requested.filter(f => !JUCE_FORMATS.includes(f));
       if (unknown.length) {
         return { content: [{ type: 'text', text:
-          `## audio_plugin_create failed\nUnknown JUCE format${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}.\n` +
+          `## apc failed\nUnknown JUCE format${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}.\n` +
           `Valid formats: ${JUCE_FORMATS.join(', ')}.` }], isError: true };
       }
     }
@@ -2444,7 +2486,7 @@ registerTool(
       const unreplaced = cmContent.match(/\{\{[^}]+\}\}/g);
       if (unreplaced) {
         return {
-          content: [{ type: 'text', text: `## audio_plugin_create failed\nUnresolved template placeholders in CMakeLists.txt: ${unreplaced.join(', ')}` }],
+          content: [{ type: 'text', text: `## apc failed\nUnresolved template placeholders in CMakeLists.txt: ${unreplaced.join(', ')}` }],
           isError: true,
         };
       }
@@ -2502,9 +2544,9 @@ registerTool(
   }
 );
 
-// ─── audio_plugin_add_param ────────────────────────────────────────
+// ─── apc-add-param ────────────────────────────────────────
 registerTool(
-  'audio_plugin_add_param',
+  'apc-add-param',
   {
     projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
@@ -2533,13 +2575,13 @@ registerTool(
 
     if (params.controlType !== 'toggle' && params.min >= params.max) {
       return {
-        content: [{ type: 'text', text: `## audio_plugin_add_param failed\nmin (${params.min}) must be strictly less than max (${params.max}).` }],
+        content: [{ type: 'text', text: `## apc-add-param failed\nmin (${params.min}) must be strictly less than max (${params.max}).` }],
         isError: true,
       };
     }
     if (params.controlType !== 'toggle' && (params.default < params.min || params.default > params.max)) {
       return {
-        content: [{ type: 'text', text: `## audio_plugin_add_param failed\ndefault (${params.default}) must be between min (${params.min}) and max (${params.max}).` }],
+        content: [{ type: 'text', text: `## apc-add-param failed\ndefault (${params.default}) must be between min (${params.min}) and max (${params.max}).` }],
         isError: true,
       };
     }
@@ -2548,7 +2590,7 @@ registerTool(
     if (!targetPlugin) {
       if (!fs.existsSync(pluginsDir)) {
         return {
-          content: [{ type: 'text', text: `## audio_plugin_add_param failed\nNo ${cfg.pluginsDir}/ directory found in project.` }],
+          content: [{ type: 'text', text: `## apc-add-param failed\nNo ${cfg.pluginsDir}/ directory found in project.` }],
           isError: true,
         };
       }
@@ -2557,13 +2599,13 @@ registerTool(
         .map(e => e.name);
       if (candidates.length === 0) {
         return {
-          content: [{ type: 'text', text: `## audio_plugin_add_param failed\nNo JUCE + JIVE plugin found under ${cfg.pluginsDir}/.` }],
+          content: [{ type: 'text', text: `## apc-add-param failed\nNo JUCE + JIVE plugin found under ${cfg.pluginsDir}/.` }],
           isError: true,
         };
       }
       if (candidates.length > 1) {
         return {
-          content: [{ type: 'text', text: `## audio_plugin_add_param failed\nMultiple JIVE plugins found (${candidates.join(', ')}). Pass pluginName explicitly.` }],
+          content: [{ type: 'text', text: `## apc-add-param failed\nMultiple JIVE plugins found (${candidates.join(', ')}). Pass pluginName explicitly.` }],
           isError: true,
         };
       }
@@ -2573,7 +2615,7 @@ registerTool(
     const pluginDir = assertWithinProject(proj, path.join(pluginsDir, targetPlugin), 'Plugin directory');
     if (!fs.existsSync(pluginDir)) {
       return {
-        content: [{ type: 'text', text: `## audio_plugin_add_param failed\nPlugin directory not found: ${pluginDir}` }],
+        content: [{ type: 'text', text: `## apc-add-param failed\nPlugin directory not found: ${pluginDir}` }],
         isError: true,
       };
     }
@@ -2599,9 +2641,9 @@ registerTool(
   }
 );
 
-// ─── audio_plugin_ship ─────────────────────────────────────────────
+// ─── apc-ship ─────────────────────────────────────────────
 registerTool(
-  'audio_plugin_ship',
+  'apc-ship',
   {
     projectPath: z.string().max(4096).optional()
       .describe('Root of a CMake audio plugin project. Auto-detected from CWD.'),
@@ -2697,7 +2739,8 @@ registerTool(
     for (const b of binaries) {
       if (b.format === 'VST3' || (process.platform === 'darwin' && b.format === 'AudioUnit')) {
         const pvArgs = ['--strictness-level', '5', '--validate-in-process', '--validate', b.path];
-        const pvRes = trySpawn(pluginvalBin, pvArgs, { cwd: proj, timeout: 180 });
+        const command = pluginvalCommand(pluginvalBin, pvArgs);
+        const pvRes = trySpawn(command.cmd, command.args, { cwd: proj, timeout: 180 });
         if (!pvRes.ok) {
           const text = [
             `## Ship failed at Stage 3 (pluginval --strictness-level 5): ${b.plugin} [${b.format}]`,
@@ -2795,9 +2838,9 @@ registerTool(
   }
 );
 
-// ─── audio_plugin_doctor ───────────────────────────────────────────
+// ─── apc-doctor ───────────────────────────────────────────
 registerTool(
-  'audio_plugin_doctor',
+  'apc-doctor',
   {
     projectPath: z.string().max(4096).optional()
       .describe('Optional CMake audio plugin project root to inspect project-local _tools/JUCE and _tools/JIVE.'),
@@ -2869,7 +2912,7 @@ registerTool(
       `- **JUCE SDK:** ${juceStatus}`,
       `- **JIVE Framework:** ${jiveStatus}`,
       `- **pluginval:** ${pluginvalStatus}`,
-      `- **OS VST3 Directory:** \`${vst3Dir}\` (${vst3DirExists ? 'exists' : 'will be created on audio_plugin_ship'})`,
+      `- **OS VST3 Directory:** \`${vst3Dir}\` (${vst3DirExists ? 'exists' : 'will be created on apc-ship'})`,
       ...(fixes.length ? ['', '### Actionable Fixes', ...fixes] : ['', 'All core build tools Ready.']),
     ].join('\n');
 
@@ -2877,12 +2920,17 @@ registerTool(
   }
 );
 
+// Register deprecated full-name aliases only after every canonical handler exists.
+for (const [alias, canonicalName] of LEGACY_TOOL_ALIASES) {
+  registerToolAlias(alias, canonicalName);
+}
+
 // ─── Native MCP Slash Commands (prompts/list & prompts/get) ────────
 server.registerPrompt(
   'apc:new',
   {
     title: 'Create a new JUCE + JIVE audio plugin',
-    description: 'Scaffold a zero-friction JUCE + JIVE audio plugin with automatic dependency cache readiness and hot-reload UI.',
+    description: 'Use apc-doctor when needed, then call apc to scaffold a JUCE + JIVE audio plugin with hot-reload UI.',
     argsSchema: {
       name: z.string().min(1).max(64).regex(SAFE_PLUGIN_NAME)
         .describe('Plugin name (e.g. "TapeSaturation", "PolySynth", "GainTrim").'),
@@ -2896,12 +2944,12 @@ server.registerPrompt(
       `# Workflow: Create JUCE + JIVE Plugin (${name})`,
       '',
       'Execute the following steps in order:',
-      '1. **Verify Toolchain & Cache Readiness:** If the global dependency cache (`~/.apc-mcp/deps/`) is cold or unverified, call `audio_plugin_doctor` first to initialize `~/.apc-mcp/deps/` and confirm CMake, C++20 compiler, JUCE, and JIVE readiness.',
-      `2. **Scaffold Plugin:** Call \`audio_plugin_create\` with \`name="${name}"\`, \`type="juce"\`, \`ui="jive"\`, and \`style="${resolvedStyle}"\`.`,
+      '1. **Verify Toolchain & Cache Readiness:** If the global dependency cache (`~/.apc-mcp/deps/`) is cold or unverified, call `apc-doctor` first to initialize `~/.apc-mcp/deps/` and confirm CMake, C++20 compiler, JUCE, and JIVE readiness.',
+      `2. **Scaffold Plugin:** Call \`apc\` with \`name="${name}"\`, \`type="juce"\`, \`ui="jive"\`, and \`style="${resolvedStyle}"\`.`,
       '3. **Summarize & Guide:** Report back to the user with:',
       '   - The generated APVTS parameters in `Source/PluginProcessor.cpp` (`createParameterLayout()`) and their bound JIVE controls.',
       `   - The live Debug hot-reload paths: \`plugins/${name}/Source/UI/MainView.xml\` and \`plugins/${name}/Source/UI/Styles.json\` (monitored by \`jive::SourceRoot\` in Debug builds, embedded via \`juce_add_binary_data\` in Release builds).`,
-      '   - Next steps: use `/apc:ui` (`audio_plugin_add_param`) to add parameters/controls or `/apc:ship` (`audio_plugin_ship`) to build, validate, package, and install locally.',
+      '   - Next steps: use `/apc:ui` (`apc-add-param`) to add parameters/controls or `/apc:ship` (`apc-ship`) to build, validate, package, and install locally.',
     ].join('\n');
 
     return {
@@ -2920,7 +2968,7 @@ server.registerPrompt(
   'apc:ui',
   {
     title: 'Design or update a JUCE + JIVE plugin UI and parameters',
-    description: 'Synchronize C++ APVTS parameters with JIVE declarative XML layout and JSON stylesheet rules.',
+    description: 'Use apc-add-param to synchronize C++ APVTS parameters with JIVE XML layout and JSON stylesheet rules.',
     argsSchema: {
       design: z.string().min(1).max(4096)
         .describe('Natural language description of the UI layout, styling, and parameters to add or update.'),
@@ -2935,9 +2983,9 @@ server.registerPrompt(
       '',
       'Execute the following steps in order:',
       '1. **Inspect Existing Plugin Sources:** Read `Source/UI/MainView.xml`, `Source/UI/Styles.json`, and `Source/PluginProcessor.cpp` for the target plugin.',
-      '2. **Atomic Parameter Sync:** For every new automatable parameter needed by the design, call `audio_plugin_add_param` (`id`, `name`, `min`, `max`, `default`, `unit`, `controlType`: `"knob" | "slider" | "toggle"`) so `Source/PluginProcessor.cpp`, `Source/UI/MainView.xml`, and `Source/UI/Styles.json` stay atomically synchronized.',
+      '2. **Atomic Parameter Sync:** For every new automatable parameter needed by the design, call `apc-add-param` (`id`, `name`, `min`, `max`, `default`, `unit`, `controlType`: `"knob" | "slider" | "toggle"`) so `Source/PluginProcessor.cpp`, `Source/UI/MainView.xml`, and `Source/UI/Styles.json` stay atomically synchronized.',
       '3. **Refine JIVE Layout & Styles:** Update the declarative Flexbox/Grid layout in `Source/UI/MainView.xml` and visual properties in `Source/UI/Styles.json` using `Source/UI/Presets/` primitives and valid JIVE components (`<Component>`, `<Text>`, `<Knob>`, `<Slider>`, `<Checkbox>`, `<ComboBox>`).',
-      '4. **Verify Hot-Reload Readiness:** Run `audio_plugin_build` with `config="Debug"` to run a Debug compile check and confirm zero compiler warnings/errors (`-Wall -Wextra -Werror` / `/W4 /WX`) and hot-reload readiness.',
+      '4. **Verify Hot-Reload Readiness:** Run `apc-build` with `config="Debug"` to run a Debug compile check and confirm zero compiler warnings/errors (`-Wall -Wextra -Werror` / `/W4 /WX`) and hot-reload readiness.',
     ].join('\n');
 
     return {
@@ -2956,7 +3004,7 @@ server.registerPrompt(
   'apc:ship',
   {
     title: 'Build, validate, package, and install a release-ready plugin',
-    description: 'Run the end-to-end commercial release pipeline (Release build, lint, pluginval strictness 5, dist/ package, and local VST3 install) with automatic self-healing.',
+    description: 'Call apc-ship for the release pipeline: Release build, lint, pluginval strictness 5, dist/ package, and local VST3 install.',
     argsSchema: {
       version: z.string().min(1).max(32).regex(/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/).optional()
         .describe('Semantic version for the packaged distribution (default: "0.1.0").'),
@@ -2968,9 +3016,9 @@ server.registerPrompt(
       `# Workflow: Ship Release Plugin (v${resolvedVersion})`,
       '',
       'Execute the following steps in order:',
-      `1. **Run Composite Ship Pipeline:** Call \`audio_plugin_ship\` with \`version="${resolvedVersion}"\` and \`installLocal=true\`.`,
-      '2. **Self-Healing Gate (Up to 3 Retries):** If any `Release` build, `clang-format` lint, or `pluginval --strictness-level 5 --validate-in-process` gate fails, inspect the structured compiler/validator error lines returned by `audio_plugin_ship`, automatically diagnose and patch the root C++/XML/JSON error, and re-run `audio_plugin_ship(installLocal=true)` up to 3 times.',
-      '3. **Report Final Distribution & DAW Rescan Instructions:** Once `audio_plugin_ship` succeeds, report:',
+      `1. **Run Composite Ship Pipeline:** Call \`apc-ship\` with \`version="${resolvedVersion}"\` and \`installLocal=true\`.`,
+      '2. **Self-Healing Gate (Up to 3 Retries):** If any `Release` build, `clang-format` lint, or `pluginval --strictness-level 5 --validate-in-process` gate fails, inspect the structured compiler/validator error lines returned by `apc-ship`, automatically diagnose and patch the root C++/XML/JSON error, and re-run `apc-ship(installLocal=true)` up to 3 times.',
+      '3. **Report Final Distribution & DAW Rescan Instructions:** Once `apc-ship` succeeds, report:',
       `   - The final packaged \`dist/<Name>-${resolvedVersion}-<OS>/\` directory path and \`INSTALL.txt\` location.`,
       '   - The local OS VST3 installation path (`~/Library/Audio/Plug-Ins/VST3`, `%COMMONPROGRAMFILES%\\VST3`, or `~/.vst3`) and instructions to trigger a plugin rescan in the user\'s DAW (REAPER, Ableton Live, Logic Pro, Bitwig, Cubase).',
     ].join('\n');
@@ -2991,14 +3039,14 @@ server.registerPrompt(
   'apc:doctor',
   {
     title: 'Diagnose audio plugin build toolchain and SDK cache',
-    description: 'Check CMake, C++20 compiler, JUCE, JIVE, pluginval, and OS plugin directories, and output a readiness matrix.',
+    description: 'Call apc-doctor to check CMake, C++20 compiler, JUCE, JIVE, pluginval, and OS plugin directories.',
   },
   () => {
     const text = [
       '# Workflow: Environment & Toolchain Doctor',
       '',
       'Execute the following steps in order:',
-      '1. **Run Diagnostic Tool:** Call `audio_plugin_doctor` to inspect `cmake`, the C++20 compiler, `JUCE`, `JIVE`, `pluginval`, `~/.apc-mcp/deps/`, and OS plugin directories.',
+      '1. **Run Diagnostic Tool:** Call `apc-doctor` to inspect `cmake`, the C++20 compiler, `JUCE`, `JIVE`, `pluginval`, `~/.apc-mcp/deps/`, and OS plugin directories.',
       '2. **Resolve Cache & Environment Gaps:** Ensure missing cache directories (`~/.apc-mcp/deps/`) or environment variables (`JUCE_DIR`, `JIVE_DIR`, `PATH`) are initialized or have exact remediation commands.',
       '3. **Output Readiness Matrix:** Present a concise Markdown readiness matrix summarizing the status (`READY` / `AUTO-CACHED` / `ACTION REQUIRED`), detected version/path, and fix command for each component.',
     ].join('\n');

@@ -1,0 +1,9 @@
+{
+  "skill": "apc-mcp-release",
+  "test_cases": [
+    {"input": "prepare the v2.0.0 release for apc-mcp", "should_trigger": true},
+    {"input": "polish the README and badges for sgm-audio/apc-mcp", "should_trigger": true},
+    {"input": "the previous AI didn't look at the repo, fix the system prompt so the coding agent verifies live state", "should_trigger": true},
+    {"input": "write a JUCE plugin processor for a compressor", "should_trigger": false}
+  ]
+}

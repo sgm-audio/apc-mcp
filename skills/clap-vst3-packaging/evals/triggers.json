@@ -1,0 +1,9 @@
+{
+  "skill": "clap-vst3-packaging",
+  "test_cases": [
+    {"input": "validate my CLAP plugin", "should_trigger": true},
+    {"input": "how to package a VST3 for distribution", "should_trigger": true},
+    {"input": "codesign my plugin for macOS", "should_trigger": true},
+    {"input": "write a Python web scraper", "should_trigger": false}
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "skill": "juce-ableton-ui-perf",
+  "test_cases": [
+    {"input": "Ableton UI crawls with my plugin editor closed", "should_trigger": true},
+    {"input": "timerCallback is expensive in Live", "should_trigger": true},
+    {"input": "how to stop UI work when plugin window is hidden", "should_trigger": true},
+    {"input": "optimize my processBlock", "should_trigger": false}
+  ]
+}

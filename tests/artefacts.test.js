@@ -1,4 +1,4 @@
-// Artefact discovery — what `audio_plugin_validate` can actually find in a build
+// Artefact discovery — what `apc-val` can actually find in a build
 // tree.
 //
 // The defect this covers is easy to miss because the README's own examples all
@@ -11,7 +11,7 @@
 //     build/plugins/my_verb/my_verb_artefacts/Release/VST3/My Verb.vst3
 //
 // `findPluginBinaries()` looked for `${dir}.vst3` — `my_verb.vst3` — and found
-// nothing, then told the user "No plugin binaries found … run audio_plugin_build
+// nothing, then told the user "No plugin binaries found … run apc-build
 // first". The build was fine; the search was wrong. 4 of 6 plausible names are
 // affected (`MyVerb` and `Phaser9000` are not, because displayName() is the
 // identity for them).
@@ -76,9 +76,9 @@ function plantProject(name, entries) {
   return proj;
 }
 
-// Run audio_plugin_validate over a planted project and return its text.
+// Run apc-val over a planted project and return its text.
 async function validate(proj) {
-  const r = await call('audio_plugin_validate',
+  const r = await call('apc-val',
     { projectPath: proj, config: 'Release', format: 'all' },
     { env: { ...process.env, PATH: EMPTY_BIN + path.delimiter + SYS_PATH } });
   assert.equal(r.protocolError, undefined,

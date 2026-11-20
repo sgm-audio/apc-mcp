@@ -1,0 +1,9 @@
+{
+  "skill": "midi-ci-protocol",
+  "test_cases": [
+    {"input": "implement MIDI-CI discovery in Rust", "should_trigger": true},
+    {"input": "MIDI 2.0 property exchange chunking", "should_trigger": true},
+    {"input": "MUID generation rules", "should_trigger": true},
+    {"input": "write a JUCE compressor", "should_trigger": false}
+  ]
+}
