@@ -130,12 +130,20 @@ if (!/^https?:\/\//i.test(TIMESTAMP_URL)) {
 
 /** @type {string[]} */
 const CERT_ARGS = [];
+/** Echo of the certificate arguments with the PFX password replaced by '***'.
+ *  Built alongside CERT_ARGS so the password never needs to enter the echo. */
+let CERT_DISPLAY;
 /** @type {string} */
 let certDescription;
 if (PFX) {
   if (!fs.existsSync(PFX)) fail(`--pfx file not found: ${PFX}`);
   CERT_ARGS.push('/f', PFX);
-  if (PFX_PASSWORD) CERT_ARGS.push('/p', PFX_PASSWORD);
+  if (PFX_PASSWORD) {
+    CERT_ARGS.push('/p', PFX_PASSWORD);
+    CERT_DISPLAY = `/f ${PFX} /p ***`;
+  } else {
+    CERT_DISPLAY = `/f ${PFX}`;
+  }
   certDescription = `.pfx file "${PFX}"`;
 } else if (CERT_SHA1) {
   const normalized = CERT_SHA1.replace(/[^0-9a-f]/gi, '');
@@ -143,14 +151,17 @@ if (PFX) {
     fail(`--cert-sha1 "${CERT_SHA1}" is not a 40-hex-character SHA-1 thumbprint.`);
   }
   CERT_ARGS.push('/sha1', normalized);
+  CERT_DISPLAY = `/sha1 ${normalized}`;
   certDescription = `certificate store thumbprint ${normalized}`;
 } else if (CERT_NAME) {
   CERT_ARGS.push('/n', CERT_NAME);
+  CERT_DISPLAY = `/n ${CERT_NAME}`;
   certDescription = `certificate store subject "${CERT_NAME}"`;
 } else {
   // signtool /a auto-selects the best certificate in the store; an EV
   // certificate is preferred when several are valid for code signing.
   CERT_ARGS.push('/a');
+  CERT_DISPLAY = '/a';
   certDescription = 'best certificate in the Windows store (/a; an EV cert wins when present)';
 }
 
@@ -237,18 +248,24 @@ function signArgs(file) {
   return args;
 }
 
+/** Echoed command line for a signtool sign call: non-secret tokens only. */
+function signDisplay(file) {
+  let display = `sign /fd sha256 /tr ${TIMESTAMP_URL} /td sha256 ${CERT_DISPLAY}`;
+  if (DESCRIPTION) display += ` /d ${DESCRIPTION}`;
+  return `${display} ${file}`;
+}
+
 /**
  * @param {string} label
  * @param {string} cmd
  * @param {string[]} args
- * @param {{ redact?: string[] }} [opts]
+ * @param {{ display?: string }} [opts]
  */
 function step(label, cmd, args, opts = {}) {
-  // Redact secret-bearing arguments from the echoed command line; the process
-  // list and any captured log of this run must not carry them either.
-  const redact = new Set(opts.redact ?? []);
-  const shown = args.map(a => redact.has(a) ? '***' : a).join(' ');
-  console.log(`\n$ ${cmd} ${shown}`);
+  // opts.display is the exact text echoed as the command line. Sensitive
+  // arguments are excluded from it by construction — never by filtering the
+  // echoed values at this point — so secrets never reach this line.
+  console.log(`\n$ ${cmd} ${opts.display ?? args.join(' ')}`);
   const result = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   const out = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
   if (out) console.log(out);
@@ -266,9 +283,9 @@ function step(label, cmd, args, opts = {}) {
 console.log(`sign-release-windows: ${files.length} file(s), cert ${certDescription}, timestamp ${TIMESTAMP_URL}`);
 
 for (const file of files) {
-  // The PFX password travels in argv (signtool needs it) but must not land in logs.
-  step('signtool sign', 'signtool', signArgs(file),
-    { redact: PFX_PASSWORD ? [PFX_PASSWORD] : [] });
+  // The PFX password travels in argv (signtool needs it) but the echoed command
+  // line is assembled from non-secret tokens only (see signDisplay).
+  step('signtool sign', 'signtool', signArgs(file), { display: signDisplay(file) });
   // /pa selects the default Authenticode verification policy; an untrusted or
   // untimestamped chain fails here even if the sign call reported success.
   step('signtool verify', 'signtool', ['verify', '/pa', '/v', file]);

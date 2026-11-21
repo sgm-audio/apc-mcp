@@ -166,9 +166,9 @@ if (KEYCHAIN_PROFILE) {
       + '  Check APC_NOTARY_API_KEY_P8 (or --api-key) points at the AuthKey_*.p8 file.');
   }
   NOTARY_ARGS.push('--api-key', API_KEY, '--api-key-id', API_KEY_ID, '--api-issuer', API_ISSUER);
-  // The key ID and issuer UUID are not logged anywhere (they travel in the
-  // argv of notarytool, which is redacted in step()); the line below says only
-  // that the API-key credential set is in use.
+  // The key ID and issuer UUID are not logged anywhere (the echoed notarytool
+  // command line is assembled from non-secret literals; see notaryDisplay);
+  // the line below says only that the API-key credential set is in use.
   notaryDescription = 'App Store Connect API key';
 } else {
   fail('no notarization credentials.\n'
@@ -233,14 +233,13 @@ function errno(error) {
  * @param {string} label
  * @param {string} cmd
  * @param {string[]} args
- * @param {{ capture?: boolean, redact?: string[] }} [opts]
+ * @param {{ capture?: boolean, display?: string }} [opts]
  */
 function step(label, cmd, args, opts = {}) {
-  // Redact secret-bearing arguments from the echoed command line; the process
-  // list and any captured log of this run must not carry them either.
-  const redact = new Set(opts.redact ?? []);
-  const shown = args.map(a => redact.has(a) ? '***' : a).join(' ');
-  console.log(`\n$ ${cmd} ${shown}`);
+  // opts.display is the exact text echoed as the command line. Sensitive
+  // arguments are excluded from it by construction — never by filtering the
+  // echoed values at this point — so secrets never reach this line.
+  console.log(`\n$ ${cmd} ${opts.display ?? args.join(' ')}`);
   const result = spawnSync(cmd, args, {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
@@ -286,11 +285,14 @@ for (const bundle of bundles) {
 
   // --wait blocks until Apple finishes and prints the verdict; the exit code is
   // not a sufficient gate on its own, so the "status: Accepted" line is checked
-  // explicitly below. The credential arguments are redacted from the echo.
-  const submitSecrets = KEYCHAIN_PROFILE ? [] : [API_KEY, API_KEY_ID, API_ISSUER];
+  // explicitly below. The echoed command line contains no credential material at
+  // all — it is assembled from literals and the (non-secret) zip path.
+  const notaryDisplay = (KEYCHAIN_PROFILE
+    ? `notarytool submit ${zipPath} --keychain-profile ${KEYCHAIN_PROFILE} --wait`
+    : `notarytool submit ${zipPath} --api-key *** --api-key-id *** --api-issuer *** --wait`);
   const submitOut = step('notarytool submit', 'xcrun',
     ['notarytool', 'submit', zipPath, ...NOTARY_ARGS, '--wait'],
-    { capture: true, redact: /** @type {string[]} */ (submitSecrets.filter(Boolean)) });
+    { capture: true, display: notaryDisplay });
   process.stdout.write(submitOut.endsWith('\n') ? submitOut : `${submitOut}\n`);
   if (!/status:\s*Accepted/i.test(submitOut)) {
     fail(`notarization did not reach "status: Accepted" for ${path.basename(bundle)}.\n`
