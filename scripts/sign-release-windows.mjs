@@ -259,13 +259,13 @@ function signDisplay(file) {
  * @param {string} label
  * @param {string} cmd
  * @param {string[]} args
- * @param {{ display?: string }} [opts]
+ * @param {{ display: string }} opts
+ *   `display` is the exact text echoed as the command line; the arguments array
+ *   is never printed (it may carry the PFX password), so callers must assemble
+ *   the echo from non-secret tokens only.
  */
-function step(label, cmd, args, opts = {}) {
-  // opts.display is the exact text echoed as the command line. Sensitive
-  // arguments are excluded from it by construction — never by filtering the
-  // echoed values at this point — so secrets never reach this line.
-  console.log(`\n$ ${cmd} ${opts.display ?? args.join(' ')}`);
+function step(label, cmd, args, opts) {
+  console.log(`\n$ ${cmd} ${opts.display}`);
   const result = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   const out = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
   if (out) console.log(out);
@@ -288,7 +288,8 @@ for (const file of files) {
   step('signtool sign', 'signtool', signArgs(file), { display: signDisplay(file) });
   // /pa selects the default Authenticode verification policy; an untrusted or
   // untimestamped chain fails here even if the sign call reported success.
-  step('signtool verify', 'signtool', ['verify', '/pa', '/v', file]);
+  step('signtool verify', 'signtool', ['verify', '/pa', '/v', file],
+    { display: `verify /pa /v ${file}` });
 }
 
 console.log(`\nsign-release-windows: done — ${files.length} file(s) signed with SHA-256 + RFC 3161 timestamp and verified.`);

@@ -233,13 +233,13 @@ function errno(error) {
  * @param {string} label
  * @param {string} cmd
  * @param {string[]} args
- * @param {{ capture?: boolean, display?: string }} [opts]
+ * @param {{ capture?: boolean, display: string }} opts
+ *   `display` is the exact text echoed as the command line; the arguments array
+ *   is never printed (it may carry credential material), so every caller must
+ *   assemble the echo from non-secret tokens only.
  */
-function step(label, cmd, args, opts = {}) {
-  // opts.display is the exact text echoed as the command line. Sensitive
-  // arguments are excluded from it by construction — never by filtering the
-  // echoed values at this point — so secrets never reach this line.
-  console.log(`\n$ ${cmd} ${opts.display ?? args.join(' ')}`);
+function step(label, cmd, args, opts) {
+  console.log(`\n$ ${cmd} ${opts.display}`);
   const result = spawnSync(cmd, args, {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
@@ -273,15 +273,18 @@ for (const bundle of bundles) {
   // for Developer ID distribution; without either, notarization is rejected or
   // the signature rots when the certificate expires.
   step('codesign', 'codesign',
-    ['--force', '--deep', '--options', 'runtime', '--timestamp', '--sign', IDENTITY, bundle]);
+    ['--force', '--deep', '--options', 'runtime', '--timestamp', '--sign', IDENTITY, bundle],
+    { display: `codesign --force --deep --options runtime --timestamp --sign ${IDENTITY} ${bundle}` });
 
   step('codesign --verify', 'codesign',
-    ['--verify', '--deep', '--strict', '--verbose=2', bundle]);
+    ['--verify', '--deep', '--strict', '--verbose=2', bundle],
+    { display: `codesign --verify --deep --strict --verbose=2 ${bundle}` });
 
   // notarytool accepts .zip, .dmg or .pkg — not a bare bundle — so the signed
   // bundle travels as a ditto archive (keeps symlinks and metadata intact).
   const zipPath = path.join(workDir, `${path.basename(bundle)}-${process.pid}.zip`);
-  step('ditto (notarize payload)', 'ditto', ['-c', '-k', '--keepParent', bundle, zipPath]);
+  step('ditto (notarize payload)', 'ditto', ['-c', '-k', '--keepParent', bundle, zipPath],
+    { display: `ditto -c -k --keepParent ${bundle} ${zipPath}` });
 
   // --wait blocks until Apple finishes and prints the verdict; the exit code is
   // not a sufficient gate on its own, so the "status: Accepted" line is checked
@@ -330,7 +333,8 @@ for (const bundle of bundles) {
   }
 
   if (stapled) {
-    step('stapler validate', 'xcrun', ['stapler', 'validate', bundle], { capture: true });
+    step('stapler validate', 'xcrun', ['stapler', 'validate', bundle],
+      { capture: true, display: `stapler validate ${bundle}` });
   }
 
   // spctl semantics for plugin bundles vary; this is printed for the record and
