@@ -160,10 +160,16 @@ if (KEYCHAIN_PROFILE) {
   notaryDescription = `keychain profile "${KEYCHAIN_PROFILE}"`;
 } else if (API_KEY && API_KEY_ID && API_ISSUER) {
   if (!fs.existsSync(API_KEY)) {
-    fail(`App Store Connect API key not found at ${API_KEY}`);
+    // Do not echo the path: it is derived from a secret-bearing variable, and
+    // logs are not a place for it (CodeQL: clear-text sensitive logging).
+    fail('the App Store Connect API key file does not exist.\n'
+      + '  Check APC_NOTARY_API_KEY_P8 (or --api-key) points at the AuthKey_*.p8 file.');
   }
   NOTARY_ARGS.push('--api-key', API_KEY, '--api-key-id', API_KEY_ID, '--api-issuer', API_ISSUER);
-  notaryDescription = `App Store Connect API key ${API_KEY_ID}`;
+  // The key ID and issuer UUID are not logged anywhere (they travel in the
+  // argv of notarytool, which is redacted in step()); the line below says only
+  // that the API-key credential set is in use.
+  notaryDescription = 'App Store Connect API key';
 } else {
   fail('no notarization credentials.\n'
     + '  Either create a keychain profile once:\n'
@@ -227,10 +233,14 @@ function errno(error) {
  * @param {string} label
  * @param {string} cmd
  * @param {string[]} args
- * @param {{ capture?: boolean }} [opts]
+ * @param {{ capture?: boolean, redact?: string[] }} [opts]
  */
 function step(label, cmd, args, opts = {}) {
-  console.log(`\n$ ${cmd} ${args.join(' ')}`);
+  // Redact secret-bearing arguments from the echoed command line; the process
+  // list and any captured log of this run must not carry them either.
+  const redact = new Set(opts.redact ?? []);
+  const shown = args.map(a => redact.has(a) ? '***' : a).join(' ');
+  console.log(`\n$ ${cmd} ${shown}`);
   const result = spawnSync(cmd, args, {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
@@ -276,9 +286,11 @@ for (const bundle of bundles) {
 
   // --wait blocks until Apple finishes and prints the verdict; the exit code is
   // not a sufficient gate on its own, so the "status: Accepted" line is checked
-  // explicitly below.
+  // explicitly below. The credential arguments are redacted from the echo.
+  const submitSecrets = KEYCHAIN_PROFILE ? [] : [API_KEY, API_KEY_ID, API_ISSUER];
   const submitOut = step('notarytool submit', 'xcrun',
-    ['notarytool', 'submit', zipPath, ...NOTARY_ARGS, '--wait'], { capture: true });
+    ['notarytool', 'submit', zipPath, ...NOTARY_ARGS, '--wait'],
+    { capture: true, redact: /** @type {string[]} */ (submitSecrets.filter(Boolean)) });
   process.stdout.write(submitOut.endsWith('\n') ? submitOut : `${submitOut}\n`);
   if (!/status:\s*Accepted/i.test(submitOut)) {
     fail(`notarization did not reach "status: Accepted" for ${path.basename(bundle)}.\n`

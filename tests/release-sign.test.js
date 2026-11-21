@@ -53,7 +53,8 @@ before(() => {
   shim('xcrun', [
     'case "$1" in',
     '  notarytool)',
-    '    echo "notarytool $* :: status: ${FAKE_NOTARY_STATUS:-Accepted}"',
+    '    # Like the real notarytool, the verdict goes to stdout but the arguments do not.',
+    '    echo "status: ${FAKE_NOTARY_STATUS:-Accepted}"',
     '    exit "${FAKE_NOTARY_EXIT:-0}" ;;',
     '  stapler)',
     '    if [ "${FAKE_STAPLE_FAIL:-0}" = "1" ]; then',
@@ -258,6 +259,16 @@ describe('sign-release-macos · the full release sequence', () => {
     const { r, log } = failFastEnv(MACOS_SCRIPT,
       ['--identity', IDENTITY, '--api-key', p8, '--api-key-id', 'TESTKEY123', '--api-issuer', '00000000-0000-0000-0000-000000000000', bundle]);
     assert.equal(r.status, 0, `expected success, got:\n${r.stdout}\n${r.stderr}`);
+    // The credential material must NOT appear in the script's own echo (which is
+    // what lands in CI logs and gets pasted around); redaction happens there,
+    // NOT in the argv handed to notarytool — the process itself needs the real
+    // arguments.
+    assert.match(r.stdout, /--api-key \*\*\*/);
+    assert.match(r.stdout, /--api-key-id \*\*\*/);
+    assert.match(r.stdout, /--api-issuer \*\*\*/);
+    assert.doesNotMatch(r.stdout, /AuthKey_TESTKEY123/);
+    assert.doesNotMatch(r.stdout, /TESTKEY123/);
+    assert.doesNotMatch(r.stdout, /00000000-0000-0000-0000-000000000000/);
     assert.match(log, /--api-key .*AuthKey_TESTKEY123\.p8/);
     assert.match(log, /--api-key-id TESTKEY123/);
     assert.match(log, /--api-issuer 00000000-0000-0000-0000-000000000000/);
@@ -340,6 +351,19 @@ describe('sign-release-windows · the full Authenticode sequence', () => {
     const { r, log } = failFastEnv(WINDOWS_SCRIPT, ['--dist', dist]);
     assert.equal(r.status, 0, `expected success, got:\n${r.stdout}\n${r.stderr}`);
     assert.match(log, / \/a( |$)/m);
+  });
+
+  it('redacts the PFX password from the echo but passes it intact to signtool', () => {
+    const dist = makeWindowsDist(path.join(root, 'pfx'));
+    const pfx = path.join(SCRATCH, 'acme.pfx');
+    fs.writeFileSync(pfx, 'fake-pfx-bytes');
+    const { r, log } = failFastEnv(WINDOWS_SCRIPT,
+      ['--dist', dist, '--pfx', pfx, '--pfx-password', 'hunter2-secret']);
+    assert.equal(r.status, 0, `expected success, got:\n${r.stdout}\n${r.stderr}`);
+    assert.match(r.stdout, /\/p \*\*\*/);
+    assert.doesNotMatch(r.stdout, /hunter2-secret/);
+    // signtool itself still receives the real password — redaction is echo-only.
+    assert.match(log, /\/p hunter2-secret/);
   });
 
   it('fails the release when signtool fails, before any verify step runs for that file', () => {

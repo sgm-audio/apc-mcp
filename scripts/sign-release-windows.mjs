@@ -241,9 +241,14 @@ function signArgs(file) {
  * @param {string} label
  * @param {string} cmd
  * @param {string[]} args
+ * @param {{ redact?: string[] }} [opts]
  */
-function step(label, cmd, args) {
-  console.log(`\n$ ${cmd} ${args.join(' ')}`);
+function step(label, cmd, args, opts = {}) {
+  // Redact secret-bearing arguments from the echoed command line; the process
+  // list and any captured log of this run must not carry them either.
+  const redact = new Set(opts.redact ?? []);
+  const shown = args.map(a => redact.has(a) ? '***' : a).join(' ');
+  console.log(`\n$ ${cmd} ${shown}`);
   const result = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   const out = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
   if (out) console.log(out);
@@ -261,7 +266,9 @@ function step(label, cmd, args) {
 console.log(`sign-release-windows: ${files.length} file(s), cert ${certDescription}, timestamp ${TIMESTAMP_URL}`);
 
 for (const file of files) {
-  step('signtool sign', 'signtool', signArgs(file));
+  // The PFX password travels in argv (signtool needs it) but must not land in logs.
+  step('signtool sign', 'signtool', signArgs(file),
+    { redact: PFX_PASSWORD ? [PFX_PASSWORD] : [] });
   // /pa selects the default Authenticode verification policy; an untrusted or
   // untimestamped chain fails here even if the sign call reported success.
   step('signtool verify', 'signtool', ['verify', '/pa', '/v', file]);
