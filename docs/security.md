@@ -81,6 +81,10 @@ npm run check
 
 Automated scanning: Dependabot, CodeQL on push/PR, plain `npm audit` (CI runs `npm run audit` — deliberately no `--audit-level`, so CI matches the documented local baseline), scaffold smoke tests, real CMake compile+link jobs for CLAP/LV2/JUCE, ESLint, the license gate and the docs link check in GitHub Actions.
 
+## Optional licensing seam (`apc::license`)
+
+The vendored licensing seam in `templates/common/licensing/` (`ApcLicense.h` and `ApcCanonicalJson.h`, MIT) is optional, defaults to `OFF` (`APC_USE_LICENSE_SEAM=OFF`), and never gates the audio path. It is lightweight friction (signed license files, machine binding, trial rollback guard) rather than DRM. Signature verification is injected via `apc::ISignatureVerifier`; `apc-mcp` does not ship or link a cryptography library.
+
 ## Reporting a vulnerability
 
 Open an issue at https://github.com/sgm-audio/apc-mcp/issues with the `security` label. For sensitive disclosures — anything that would let an attacker write outside a project root or execute a command — use GitHub's private vulnerability reporting on the repository, or contact the owner directly, rather than a public issue.

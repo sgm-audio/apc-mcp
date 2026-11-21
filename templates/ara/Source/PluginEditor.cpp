@@ -1,8 +1,8 @@
 #include "PluginEditor.h"
 
-{{PLUGIN_CLASS_NAME}}Editor::{{PLUGIN_CLASS_NAME}}Editor({{PLUGIN_CLASS_NAME}} &processor)
-    : juce::AudioProcessorEditor(&processor),
-      juce::AudioProcessorEditorARAExtension(&processor) {
+{{PLUGIN_CLASS_NAME}}Editor::{{PLUGIN_CLASS_NAME}}Editor({{PLUGIN_CLASS_NAME}} &ownerProcessor)
+    : juce::AudioProcessorEditor(&ownerProcessor),
+      juce::AudioProcessorEditorARAExtension(&ownerProcessor) {
     setResizable(true, false);
     setSize(480, 180);
 }

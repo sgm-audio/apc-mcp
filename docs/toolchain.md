@@ -46,8 +46,8 @@ git clone --depth 1 https://github.com/free-audio/clap.git _tools/clap
 # git clone --depth 1 --branch 9.0.3 https://github.com/juce-framework/JUCE.git _tools/JUCE
 # git clone --depth 1 --branch v2.0.1 https://github.com/ImJimmi/JIVE.git _tools/JIVE
 # git clone --depth 1 https://github.com/lv2/lv2.git _tools/lv2
-# ARA's umbrella SDK relies on submodules; initialize them when cloning:
-git clone --depth 1 --recurse-submodules --branch releases/2.1.0 https://github.com/Celemony/ARA_SDK.git _tools/ARA_SDK
+# ARA's umbrella SDK relies on submodules; initialize them when cloning (JUCE 9.0.3 requires 2.2.0+):
+git clone --depth 1 --recurse-submodules --branch releases/2.3.0 https://github.com/Celemony/ARA_SDK.git _tools/ARA_SDK
 ```
 
 Or pass flags to `apc-cfg`:
@@ -57,6 +57,10 @@ apc-cfg(options="-DJUCE_DIR=/path/to/JUCE -DJIVE_DIR=/path/to/JIVE -DLV2_INCLUDE
 # For type="ara", pass the SDK root containing initialized ARA_Library/ and ARA_API:
 apc-cfg(options="-DAPC_ARA_SDK_PATH=/path/to/ARA_SDK")
 ```
+
+### Optional DSP kit (`apc::dsp`)
+
+Every JUCE plugin scaffold (`juce`, `juce-jive`, `juce-webview`, `ara`) vendors and links the header-only, std-only C++17 `apc::dsp` kit (`APC::dsp`, no JUCE dependency) by default via `APC_USE_DSP_KIT=ON` (defining `APC_HAS_DSP_KIT=1`). The headers enforce strict real-time contracts—no heap allocation and no locks in the audio path. See [the DSP kit README](../templates/common/dsp/README.md) for the component list and usage contracts. Pass `-DAPC_USE_DSP_KIT=OFF` to disable it, or `-DAPC_USE_LICENSE_SEAM=ON` to add the optional licensing seam include path.
 
 ## Platform notes
 

@@ -30,6 +30,11 @@
 - **External ARA SDK is required.** CMake fails early with `FATAL_ERROR` when `APC_ARA_SDK_PATH` is unset, empty, or does not point to an initialized SDK root containing `ARA_Library/PlugIn/ARAPlug.h` and `ARA_API/ARAInterface.h`; it calls `juce_set_ara_sdk_path(...)` before `juce_add_plugin(...)`. `apc` defers auto-configuration and reports the configure option; `formats` overrides are rejected for ARA. This supersedes the historical removal notes below, which describe the invalid intermediate scaffold.
 - Added structural, C++ compile/link fixture and CMake missing-SDK integration coverage for the ARA template.
 
+### DSP kit & optional licensing seam
+
+- **Vendored `apc::dsp` kit and `apc::license` seam from `Noizefield/audio-plugin-coder` (MIT)** into `templates/common/dsp/` and `templates/common/licensing/` with upstream attribution.
+- **CMake & scaffold integration:** All four JUCE plugin templates (`juce`, `juce-jive`, `juce-webview`, `ara`) now expose `APC_USE_DSP_KIT` (default `ON`, linking `APC::dsp` and defining `APC_HAS_DSP_KIT=1`) and `APC_USE_LICENSE_SEAM` (default `OFF`, adding the licensing include path and `APC_HAS_LICENSE_SEAM=1`). `apc` copies `common/dsp/` and `common/licensing/` into newly scaffolded JUCE projects when missing.
+
 ### Lint gate
 
 - **The template house style is now checked by `npm test`, not only by CI.** `npm run cmake:lint`

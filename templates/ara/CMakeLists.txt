@@ -43,6 +43,9 @@ if(APPLE AND APC_MACOS_UNIVERSAL AND NOT CMAKE_OSX_ARCHITECTURES)
         "macOS target architectures" FORCE)
 endif()
 
+option(APC_USE_DSP_KIT "Link the header-only apc::dsp kit" ON)
+option(APC_USE_LICENSE_SEAM "Add the optional apc::license seam include path" OFF)
+
 # Plain JUCE scaffolds do not enable JIVE (never fetched, linked, or added to
 # include paths). Avoid caching a global APC_USE_JIVE=OFF here so sibling
 # ui="jive" plugins in a multi-plugin repository keep their own APC_USE_JIVE=ON.
@@ -235,6 +238,67 @@ target_link_libraries({{PLUGIN_NAME}}
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
 )
+
+if(APC_USE_DSP_KIT)
+    if(NOT TARGET APC::dsp)
+        if(NOT APC_DSP_DIR AND DEFINED ENV{APC_DSP_DIR}
+            AND EXISTS "$ENV{APC_DSP_DIR}/CMakeLists.txt")
+            set(APC_DSP_DIR "$ENV{APC_DSP_DIR}")
+        endif()
+        if(NOT APC_DSP_DIR)
+            if(EXISTS "${CMAKE_SOURCE_DIR}/common/dsp/CMakeLists.txt")
+                set(APC_DSP_DIR "${CMAKE_SOURCE_DIR}/common/dsp")
+            elseif(EXISTS "${CMAKE_SOURCE_DIR}/_tools/apc-dsp/CMakeLists.txt")
+                set(APC_DSP_DIR "${CMAKE_SOURCE_DIR}/_tools/apc-dsp")
+            elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/common/dsp/CMakeLists.txt")
+                set(APC_DSP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/common/dsp")
+            elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../common/dsp/CMakeLists.txt")
+                set(APC_DSP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../common/dsp")
+            elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../common/dsp/CMakeLists.txt")
+                set(APC_DSP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../common/dsp")
+            endif()
+        endif()
+        if(APC_DSP_DIR)
+            add_subdirectory("${APC_DSP_DIR}"
+                "${CMAKE_BINARY_DIR}/_tools/apc_dsp" EXCLUDE_FROM_ALL)
+        else()
+            message(FATAL_ERROR
+                "APC_USE_DSP_KIT is ON but common/dsp/CMakeLists.txt was not found. "
+                "Provide -DAPC_DSP_DIR=/path/to/common/dsp or configure with "
+                "-DAPC_USE_DSP_KIT=OFF.")
+        endif()
+    endif()
+    target_link_libraries({{PLUGIN_NAME}} PRIVATE APC::dsp)
+    target_compile_definitions({{PLUGIN_NAME}} PRIVATE APC_HAS_DSP_KIT=1)
+endif()
+
+if(APC_USE_LICENSE_SEAM)
+    if(NOT APC_LICENSE_DIR AND DEFINED ENV{APC_LICENSE_DIR}
+        AND EXISTS "$ENV{APC_LICENSE_DIR}/ApcLicense.h")
+        set(APC_LICENSE_DIR "$ENV{APC_LICENSE_DIR}")
+    endif()
+    if(NOT APC_LICENSE_DIR)
+        if(EXISTS "${CMAKE_SOURCE_DIR}/common/licensing/ApcLicense.h")
+            set(APC_LICENSE_DIR "${CMAKE_SOURCE_DIR}/common/licensing")
+        elseif(EXISTS "${CMAKE_SOURCE_DIR}/_tools/apc-licensing/ApcLicense.h")
+            set(APC_LICENSE_DIR "${CMAKE_SOURCE_DIR}/_tools/apc-licensing")
+        elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/common/licensing/ApcLicense.h")
+            set(APC_LICENSE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/common/licensing")
+        elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../common/licensing/ApcLicense.h")
+            set(APC_LICENSE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../common/licensing")
+        elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../common/licensing/ApcLicense.h")
+            set(APC_LICENSE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../common/licensing")
+        endif()
+    endif()
+    if(NOT APC_LICENSE_DIR)
+        message(FATAL_ERROR
+            "APC_USE_LICENSE_SEAM is ON but common/licensing/ApcLicense.h was not found. "
+            "Provide -DAPC_LICENSE_DIR=/path/to/common/licensing or configure with "
+            "-DAPC_USE_LICENSE_SEAM=OFF.")
+    endif()
+    target_include_directories({{PLUGIN_NAME}} PRIVATE "${APC_LICENSE_DIR}")
+    target_compile_definitions({{PLUGIN_NAME}} PRIVATE APC_HAS_LICENSE_SEAM=1)
+endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options({{PLUGIN_NAME}} PUBLIC $<$<CONFIG:Release>:-flto=auto>)

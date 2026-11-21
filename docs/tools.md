@@ -192,7 +192,7 @@ ARA is an effect mode, not a format. `apc(type="ara")` does not auto-configure; 
 
 The webview template asks CMake for `NEEDS_WEB_BROWSER TRUE`, `NEEDS_WEBVIEW2 TRUE` and static WebView2 linking — WebView2 on Windows, WebKit on Linux, WKWebView on macOS. `clap` and `lv2` are headless DSP scaffolds; `standalone` ships its own `AudioAppComponent` window. All three ignore `ui`.
 
-`apc` also creates a minimal root `CMakeLists.txt` if needed, appends `add_subdirectory(plugins/<Name>)` once (it detects an existing registration and refuses to modify a symlinked root `CMakeLists.txt`), and initializes the global dependency cache `~/.apc-mcp/deps/`.
+`apc` also creates a minimal root `CMakeLists.txt` if needed, appends `add_subdirectory(plugins/<Name>)` once (it detects an existing registration and refuses to modify a symlinked root `CMakeLists.txt`), and initializes the global dependency cache `~/.apc-mcp/deps/`. Newly scaffolded JUCE plugins also copy `common/dsp/` and `common/licensing/` into the project root and link the header-only `apc::dsp` kit by default; pass `-DAPC_USE_DSP_KIT=OFF` to disable it, or `-DAPC_USE_LICENSE_SEAM=ON` to enable the optional licensing seam include path.
 
 ### apc-add-param
 

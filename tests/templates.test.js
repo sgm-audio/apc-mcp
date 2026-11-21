@@ -631,7 +631,7 @@ describe('JUCE ARA effect template', () => {
       assert.match(s.files.get('Source/PluginProcessor.h'), /juce::AudioProcessorARAExtension/);
       assert.match(s.files.get('Source/PluginProcessor.cpp'), /getARAClientExtensions\s*\(\)\s*\{\s*return this;/);
       assert.match(s.files.get('Source/PluginEditor.h'), /juce::AudioProcessorEditorARAExtension/);
-      assert.match(s.files.get('Source/PluginEditor.cpp'), /juce::AudioProcessorEditorARAExtension\s*\(&processor\)/);
+      assert.match(s.files.get('Source/PluginEditor.cpp'), /juce::AudioProcessorEditorARAExtension\s*\(&ownerProcessor\)/);
       assert.match(s.files.get('Source/PluginDocumentController.h'), /juce::ARADocumentControllerSpecialisation/);
       assert.match(s.files.get('Source/PluginDocumentController.cpp'), /createARAFactory\s*\(\)/);
       assert.match(s.files.get('Source/PluginDocumentController.cpp'), /ARADocumentControllerSpecialisation::createARAFactory/);

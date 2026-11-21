@@ -89,10 +89,10 @@ apc-val(projectPath="/path/to/my-plugins", format="CLAP")
 
 `apc` writes `plugins/MyGain/` and registers `add_subdirectory(plugins/MyGain)` in the root `CMakeLists.txt` (creating a minimal one if you started from `apc-mcp.json` alone). `apc-build` auto-configures `build/` on first use.
 
-For an ARA effect, clone the external SDK with its submodules initialized (JUCE 9 documents ARA SDK 2.1.0) and provide its root path explicitly before building. The root must contain `ARA_Library/PlugIn/ARAPlug.h` and `ARA_API/ARAInterface.h`; `audio_plugin_create` intentionally defers CMake configuration for this type:
+For an ARA effect, clone the external SDK with its submodules initialized (JUCE 9.0.3 requires ARA SDK 2.2.0+; verified with `releases/2.3.0`) and provide its root path explicitly before building. The root must contain `ARA_Library/PlugIn/ARAPlug.h` and `ARA_API/ARAInterface.h`; `audio_plugin_create` intentionally defers CMake configuration for this type:
 
 ```sh
-git clone --depth 1 --recurse-submodules --branch releases/2.1.0 \\
+git clone --depth 1 --recurse-submodules --branch releases/2.3.0 \\
   https://github.com/Celemony/ARA_SDK.git /absolute/path/to/ARA_SDK
 ```
 

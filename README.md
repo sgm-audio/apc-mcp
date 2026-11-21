@@ -5,16 +5,32 @@
   </picture>
 </p>
 
+> Model Context Protocol (MCP) server for commercial audio plugin development — from scaffold to validated, packaged release.
+
 <p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="package.json"><img src="https://img.shields.io/github/package-json/v/sgm-audio/apc-mcp" alt="Version"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-22+-339933?logo=node.js&logoColor=white" alt="Node 22+"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/sgm-audio/apc-mcp" alt="MIT License"></a>
+  <a href="https://juce.com/"><img src="https://img.shields.io/badge/JUCE-9.0.3-blue.svg" alt="JUCE 9.0.3"></a>
+  <a href="https://github.com/sgm-audio/apc-mcp"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4.svg" alt="Platform: Windows | macOS | Linux"></a>
+  <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-stdio-6b4fbb.svg" alt="MCP stdio"></a>
 </p>
 
 # apc-mcp
 
-**apc-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server for commercial audio plugin development. It equips an AI coding agent with **10 MCP tools** and **4 native `/` slash commands** (`prompts/list` & `prompts/get`) to **scaffold, design, synchronize parameters, configure, build, test, lint, validate, package, and locally install** CMake audio plugins for **JUCE + JIVE**, standard **JUCE**, **JUCE ARA effects**, **CLAP**, **VST3**, **LV2**, and **standalone** applications.
+**apc-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io) server for commercial audio plugin development. It equips any MCP-compatible AI coding agent with **10 canonical MCP tools** and **4 native `/` slash commands** (`prompts/list` & `prompts/get`) to **scaffold, design, synchronize parameters, configure, build, test, lint, validate, package, and locally install** CMake audio plugins for **JUCE + JIVE**, standard **JUCE**, **JUCE WebView**, **JUCE ARA effects**, **CLAP**, **VST3**, **LV2**, and **standalone** applications.
 
-> **It wraps your toolchain — it does not ship one.** apc-mcp calls the CMake, C/C++ compiler, `ctest`, `clang-format`, `pluginval` and `clap-validator` binaries on your `PATH`, and caches or resolves JUCE and JIVE deterministically via `_tools/` or `~/.apc-mcp/deps/`. [What you need →](docs/toolchain.md)
+> **It wraps your toolchain — it does not ship one.** apc-mcp invokes `cmake`, your C/C++ compiler, `ctest`, `clang-format`, `pluginval`, and `clap-validator` directly via argument arrays (never a shell), and resolves JUCE and JIVE deterministically via `_tools/` or `~/.apc-mcp/deps/`. [What you need →](docs/toolchain.md)
+
+---
+
+## What's New in v2.0.0
+
+- **End-to-end commercial shipping pipeline (`apc` → `apc-add-param` → `apc-ship`):** Scaffold a JUCE 9 + JIVE v2.0.1 plugin, atomically sync APVTS parameters with XML/JSON UI, and run `Release Build → clang-format → pluginval (strictness 5) → dist/ Package → Local VST3 Install` in one tool call.
+- **Built-in `apc::dsp` header-only DSP kit:** Vendored from [`Noizefield/audio-plugin-coder`](https://github.com/Noizefield/audio-plugin-coder) (MIT) into [`templates/common/dsp/`](templates/common/dsp/README.md) (`ParamSmoother`, `DenormalGuard`, `LockFreeFifo`, `Biquad`, `Svf`, `SoftClipper`, `DryWet`, `Oversampler2x`) and linked by default (`APC_USE_DSP_KIT=ON`) in all JUCE scaffolds.
+- **Optional `apc::license` licensing seam:** Vendored into [`templates/common/licensing/`](templates/common/licensing/README.md) (`ApcLicense.h`, `ApcCanonicalJson.h`), `OFF` by default (`APC_USE_LICENSE_SEAM=OFF`), never gates the audio path, and accepts an injected `ISignatureVerifier`.
+- **Expanded formats & scaffolds:** Dedicated JUCE ARA effect (`type="ara"`), native CLAP (`type="clap"`), pure C11 LV2 (`type="lv2"`), standalone GUI app (`type="standalone"`), and embedded HTML/CSS/JS WebView (`ui="webview"`).
+- **Security & supply-chain hardening:** Symlink-aware project containment (`assertWithinProject()`), `O_NOFOLLOW`/`O_EXCL` file writes, `-D` code-loading variable blocklist, honest `isError` reporting, and an SPDX license gate (`npm run licenses`).
 
 ---
 
@@ -61,6 +77,21 @@ MCP clients automatically expose `apc-mcp`'s registered MCP Prompts as native `/
 
 ---
 
+## Which AI Coding Tools Work with `apc-mcp`?
+
+`apc-mcp` is client-agnostic and communicates over standard **MCP `stdio`**:
+
+| Client / Host | Transport | How `apc-mcp` Integrates |
+|---|---|---|
+| **Claude Desktop / Claude Code** | `stdio` | Native MCP tools + `/apc:*` prompts via `mcpServers` |
+| **Cursor** | `stdio` | Native MCP tools + `/apc:*` prompts via `.cursor/mcp.json` |
+| **VS Code (Copilot / Agent)** | `stdio` | Native MCP tools + prompts via `.vscode/mcp.json` (`servers` key) |
+| **Windsurf / Continue** | `stdio` | Native MCP tools via `mcpServers` |
+| **OpenCode** | `stdio` | Native MCP tools via `opencode.json` (`"type": "local"`) |
+| **Antigravity / Gemini / Codex** | `stdio` | Standard MCP tool calls + bundled `skills/` guidance |
+
+---
+
 ## Creating and Shipping a JUCE + JIVE Plugin
 
 `apc` defaults to `type="juce"` and `ui="jive"` when omitted, generating a deterministic CMake 3.22+ project powered by [JUCE 9.0.3](https://github.com/juce-framework/JUCE) and [JIVE v2.0.1](https://github.com/ImJimmi/JIVE) (declarative XML layouts + JSON stylesheets).
@@ -86,13 +117,35 @@ Generated `CMakeLists.txt` files never fetch unpinned `main`/`master` branches. 
 
 ---
 
+## Built-in DSP Kit (`apc::dsp`) & Optional Licensing Seam (`apc::license`)
+
+Every newly scaffolded JUCE project copies `common/dsp/` and `common/licensing/` into the project root:
+
+- **`APC_USE_DSP_KIT` (default `ON`):** Links `APC::dsp` (header-only, std-only C++17, zero JUCE dependency) and defines `APC_HAS_DSP_KIT=1`. Includes `ParamSmoother.h`, `DenormalGuard.h`, `LockFreeFifo.h`, `Biquad.h`, `Svf.h`, `SoftClipper.h`, `DryWet.h`, `Oversampler2x.h`, and the umbrella `apc_dsp.h`. Pass `-DAPC_USE_DSP_KIT=OFF` to disable. See [the DSP kit README](templates/common/dsp/README.md).
+- **`APC_USE_LICENSE_SEAM` (default `OFF`):** When enabled (`-DAPC_USE_LICENSE_SEAM=ON`), adds `common/licensing/` to the target's private include path and defines `APC_HAS_LICENSE_SEAM=1`. Provides `ApcLicense.h` and `ApcCanonicalJson.h` with an injected `apc::ISignatureVerifier` (no crypto library bundled; never gates the audio path). See [the licensing seam README](templates/common/licensing/README.md).
+
+---
+
+## Supported Plugin Formats & Platforms
+
+| Scaffold `type` | Formats | Windows | macOS | Linux | Notes |
+|---|---|---|---|---|---|
+| `juce` *(default)* | VST3, LV2, Standalone (+ AU on macOS via `formats`) | ✅ | ✅ | ✅ | Supports `ui="jive"`, `ui="generic"`, `ui="webview"` |
+| `vst3` | VST3 | ✅ | ✅ | ✅ | Focused JUCE VST3 target |
+| `ara` | VST3, AU (`IS_ARA_EFFECT TRUE`) | ✅ | ✅ | ✅ (VST3) | Requires external `-DAPC_ARA_SDK_PATH=...` |
+| `clap` | CLAP (`.clap`) | ✅ | ✅ | ✅ | Native C/C++ against `free-audio/clap` |
+| `lv2` | LV2 (`.lv2`) | ✅ | ✅ | ✅ | Zero-dependency pure C11 with Turtle metadata |
+| `standalone` | Standalone GUI app | ✅ | ✅ | ✅ | `juce_add_gui_app` executable |
+
+---
+
 ## Manual Tool Reference
 
 See the full [Tool reference](docs/tools.md) for the 10 canonical tools (`apc`, `apc-add-param`, `apc-ship`, `apc-doctor`, `apc-cfg`, `apc-build`, `apc-test`, `apc-lint`, `apc-val`, `apc-list`). The former `audio_plugin_*` names remain available as deprecated compatibility aliases.
 
 ### `apc`
 
-Scaffolds a new plugin or application into `<pluginsDir>/<name>`, registers `add_subdirectory(...)` in the root `CMakeLists.txt`, and initializes `~/.apc-mcp/deps/`. JUCE projects are auto-configured when their SDKs are available; ARA projects defer configuration until you supply the required external SDK path.
+Scaffolds a new plugin or application into `<pluginsDir>/<name>`, registers `add_subdirectory(...)` in the root `CMakeLists.txt`, copies `common/dsp/` and `common/licensing/` for JUCE projects, and initializes `~/.apc-mcp/deps/`.
 
 | Parameter | Type / Default | Description |
 |---|---|---|
@@ -105,10 +158,10 @@ Scaffolds a new plugin or application into `<pluginsDir>/<name>`, registers `add
 | `description` | `'An audio plugin'` *(default)* | Short plugin description (up to 512 chars, non-ASCII supported). |
 | `formats` | `'VST3;LV2;Standalone'` *(optional)* | Semicolon-separated JUCE format override for `juce`/`vst3` (`AU`, `AUv3`, `AAX`, `LV2`, `Standalone`, `Unity`, `VST`, `VST3`). Rejected for `ara`, which uses fixed VST3 and AU formats; ARA is not a format. |
 
-For `type="ara"`, obtain the external ARA SDK with its submodules initialized, then configure it before building. JUCE 9 documents ARA SDK 2.1.0:
+For `type="ara"`, obtain the external ARA SDK with its submodules initialized, then configure it before building. JUCE 9.0.3 requires ARA SDK 2.2.0+ (verified with `releases/2.3.0`):
 
 ```sh
-git clone --depth 1 --recurse-submodules --branch releases/2.1.0 \\
+git clone --depth 1 --recurse-submodules --branch releases/2.3.0 \
   https://github.com/Celemony/ARA_SDK.git /absolute/path/to/ARA_SDK
 ```
 
@@ -162,6 +215,29 @@ Inspects the local build environment and initializes the global dependency cache
 
 ---
 
+## Repository Architecture
+
+```text
+apc-mcp/
+├── index.js                 # MCP server (10 tools, 4 prompts, containment & validation)
+├── pluginval.js             # Cross-platform pluginval invocation & strictness checks
+├── templates/
+│   ├── juce/                # Standard JUCE 9 plugin template
+│   ├── juce-jive/           # JUCE 9 + JIVE v2.0.1 declarative UI template
+│   ├── juce-webview/        # JUCE 9 + embedded HTML/CSS/JS WebView template
+│   ├── ara/                 # JUCE 9 ARA effect template
+│   ├── clap/                # Native CLAP plugin template
+│   ├── lv2/                 # Pure C11 LV2 plugin template
+│   ├── standalone/          # JUCE 9 standalone GUI application template
+│   └── common/              # Vendored apc::dsp kit + optional apc::license seam
+├── skills/                  # Bundled audio-plugin engineering skills
+├── docs/                    # Architecture, toolchain, security, and release docs
+├── scripts/                 # Smoke builds, docs/license gates, release script
+└── tests/                   # Node test suite (npm test)
+```
+
+---
+
 ## Distribution, OS Install Paths & Limitations
 
 ### Packaging Output (`dist/`)
@@ -189,7 +265,7 @@ dist/<PluginName>-<Version>-<macOS|Windows|Linux>/
 
 - **macOS Ad-Hoc Signing vs. Public Notarization:** `apc-ship` and the CMake `package` target run `codesign --force --deep --sign -` on macOS bundles so they load locally without Gatekeeper quarantine failures. Public commercial distribution on macOS requires an Apple **Developer ID Application** certificate, hardened runtime signing, and `notarytool` notarization; Windows public installers should be signed with an **Authenticode** certificate.
 - **ARA SDK requirement:** `type="ara"` generates a JUCE ARA effect scaffold, but the ARA SDK is external and is not bundled. Configure with `-DAPC_ARA_SDK_PATH=/absolute/path/to/ARA_SDK` before building; the path must point to a complete SDK root with initialized `ARA_Library` and `ARA_API` headers. ARA is an effect mode (`IS_ARA_EFFECT TRUE`) layered on VST3/AU, never a `FORMATS` value.
-- **Headless Linux Display:** `pluginval` instantiates the plugin GUI editor and requires an X11 display on Linux (wrap headless CI runs in `xvfb-run -a`). Generated JUCE `CMakeLists.txt` files automatically define `JUCE_ALSA=0` when `libasound2-dev` is absent on headless Linux containers.
+- **Headless Linux Display & WebView:** `pluginval` instantiates the plugin GUI editor and requires an X11 display on Linux (wrap headless CI runs in `xvfb-run -a`). `ui="webview"` requires `libwebkit2gtk-4.1-dev` / `libgtk-3-dev` on Linux. Generated JUCE `CMakeLists.txt` files automatically define `JUCE_ALSA=0` when `libasound2-dev` is absent on headless Linux containers.
 
 ---
 
@@ -207,8 +283,15 @@ dist/<PluginName>-<Version>-<macOS|Windows|Linux>/
 | [Project status](docs/project-status.md) · [Roadmap](docs/roadmap.md) | Verification baseline, what is done, what is left |
 | [Changelog](CHANGELOG.md) · [Docs index](docs/README.md) | Release history and the full documentation map |
 
-Version `2.0.0` is current; avoid `1.4.0` / `1.5.0` on untrusted input. See [SECURITY.md](SECURITY.md).
+Version `2.0.0` is current; avoid `1.4.0` / `1.5.0` on untrusted input. See [SECURITY.md](SECURITY.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Acknowledgments
+
+- **JUCE Team** — the cross-platform audio plugin framework ([JUCE](https://juce.com/))
+- **ImJimmi** — declarative XML/JSON UI via [JIVE](https://github.com/ImJimmi/JIVE)
+- **Noizefield** — [`audio-plugin-coder`](https://github.com/Noizefield/audio-plugin-coder) (MIT), source of the vendored `apc::dsp` kit and `apc::license` seam
+- **free-audio / LV2** — [CLAP](https://github.com/free-audio/clap) and [LV2](https://lv2plug.in/) specifications
 
 ## License
 
-MIT © 2026 Scott Mills. See [LICENSE](LICENSE).
+MIT © 2026 Scott Mills. See [LICENSE](LICENSE). Note: `apc-mcp` itself is MIT, while plugins built with JUCE inherit JUCE's dual license (AGPLv3 free, or a [JUCE commercial license](https://juce.com/pricing/) for closed-source distribution).

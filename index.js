@@ -2412,6 +2412,23 @@ registerTool(
 
       copyDir(templateDir, pluginDir);
 
+      if (['juce', 'juce-jive', 'juce-webview', 'ara'].includes(typeInfo.template)) {
+        const copyCommonIfMissing = (src, dest) => {
+          if (!fs.existsSync(src)) return;
+          mkdirInside(proj, dest);
+          for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+            const srcPath = path.join(src, entry.name);
+            const destPath = path.join(dest, entry.name);
+            if (entry.isDirectory()) copyCommonIfMissing(srcPath, destPath);
+            else if (entry.isFile() && !lstatExists(destPath)) {
+              writeFileInside(proj, destPath, fs.readFileSync(srcPath, 'utf-8'), { exclusive: true });
+            }
+          }
+        };
+        copyCommonIfMissing(path.join(TEMPLATES_DIR, 'common', 'dsp'), path.join(proj, 'common', 'dsp'));
+        copyCommonIfMissing(path.join(TEMPLATES_DIR, 'common', 'licensing'), path.join(proj, 'common', 'licensing'));
+      }
+
       // Seed style-specific initial DSP & JIVE control when using JIVE template
       if (typeInfo.template === 'juce-jive') {
         if (params.style === 'synth') {
