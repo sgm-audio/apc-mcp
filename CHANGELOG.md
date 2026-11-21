@@ -40,6 +40,31 @@
   `line_width`/`tab_size` from `.cmake-format.py` rather than hard-coding them) and fail locally
   with the offending file, line and column count.
 
+### Test diagnostics
+
+- **A failing test now names itself in CI.** On 2026-11-20 seven `test (*, macos-latest)` runs on
+  `main` failed and none could be diagnosed afterwards: the `Test` step's stdout is not retrievable
+  through the API, the HTML log view requires authentication, and the only annotation was *"Process
+  completed with exit code 1"* — so the failing test name was lost every time. The failure was
+  almost certainly a timing flake, not a code defect: it hit exactly one of the two Node legs per
+  run, alternated between Node 22 and 24 across consecutive commits, and several of the failing
+  commits changed only `skills/` files, which no test reads. The `Test` step now pipes TAP through
+  `scripts/report-tests.mjs` (under `set -o pipefail`, so the step's status is still `npm test`'s),
+  which emits one `::error` annotation per failing test with its suite path, `file:line` and
+  assertion message. It ignores the suite-level echoes of a child failure, ranks real failures above
+  the cancellations a cascade produces, and caps output at GitHub's ten-annotation limit so one root
+  cause cannot crowd out unrelated failures.
+- **`npm run test:stress`** repeats the suite until it fails, with `--iterations`, `--par` (suites
+  at once, to load the machine) and `--concurrency` (parallel tests within a run), and names the
+  failing tests on the first bad iteration. This is how a suspected flake should be settled now,
+  rather than by re-reading logs that no longer exist.
+- **Both helpers live at `scripts/report-tests.mjs` and `scripts/stress-tests.mjs`, not
+  `test-report.mjs` / `test-stress.mjs`.** `node --test` discovers `**/test-*.{cjs,mjs,js}` anywhere
+  in the repo, so the original names made the runner execute the reporter *as a test*; it then
+  blocked forever on stdin that never closed and hung the entire suite. A test now asserts that no
+  file under `scripts/` matches the discovery patterns, so a future helper cannot reintroduce the
+  hang.
+
 ### Tool names
 
 - The short names are canonical and preferred: `apc`, `apc-add-param`, `apc-ship`,

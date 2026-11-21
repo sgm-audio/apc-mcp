@@ -42,7 +42,17 @@ jobs:
       - name: Documentation links
         run: npm run docs:check
       - name: Test
-        run: npm test
+        # `set -o pipefail` keeps `npm test`'s status as the step's status even
+        # though its output is piped. report-tests.mjs passes the TAP through
+        # unchanged and adds one `::error` annotation per failing test, so the
+        # failing test name is readable from the check run's annotations. It
+        # exists because a `test (*, macos-latest)` flake failed seven times on
+        # 2026-11-20 and could not be diagnosed: the log needs auth and the only
+        # annotation was "Process completed with exit code 1". It always exits 0,
+        # so a broken reporter can never masquerade as a test failure.
+        run: |
+          set -o pipefail
+          npm test 2>&1 | node scripts/report-tests.mjs
       - name: Scaffold smoke (every type x ui)
         run: npm run smoke
       - name: Security advisories

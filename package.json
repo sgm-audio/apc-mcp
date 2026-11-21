@@ -13,6 +13,8 @@
   ],
   "scripts": {
     "test": "node --test",
+    "test:report": "node --test 2>&1 | node scripts/report-tests.mjs",
+    "test:stress": "node scripts/stress-tests.mjs",
     "lint": "eslint . && node --check index.js",
     "audit": "npm audit && echo '\u2705 No known vulnerabilities'",
     "licenses": "node scripts/check-licenses.mjs",
