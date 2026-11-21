@@ -231,6 +231,8 @@ apc-ship(version="1.2.0", installLocal=true)
 
 Runs the complete release pipeline (`Release Build → clang-format Lint → pluginval --strictness-level 5 --validate-in-process → dist/ Package + INSTALL.txt + macOS ad-hoc codesign → Local VST3 Install`) and returns structured compiler/validator diagnostics on any stage failure.
 
+The `codesign` step is an **ad-hoc, local-only** signature (`codesign --force --deep --sign -`): it is not hardened, not timestamped, not notarized, and not valid for distribution — it exists so the bundles load on your own machine. For a distributable artifact (Developer ID + hardened runtime + `notarytool --wait` + `stapler staple` on macOS; timestamped Authenticode on Windows) see [Release signing & distribution](release.md).
+
 ### apc-doctor
 
 ```text

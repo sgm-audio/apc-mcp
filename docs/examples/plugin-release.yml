@@ -1,0 +1,198 @@
+# Example release workflow for a plugin repository scaffolded by apc-mcp.
+#
+# Copy this file to .github/workflows/release.yml in YOUR plugin repository (it
+# does nothing here; apc-mcp itself is not a plugin). On a `v*` tag it:
+#
+#   1. builds Release on macOS (universal arm64;x86_64) and Windows,
+#   2. packages via the `<PluginName>_package` target the scaffold emits,
+#   3. signs with a DEVELOPER ID APPLICATION certificate on macOS
+#      (hardened runtime + secure timestamp) and APP-STORE-CONNECT notarization
+#      with `xcrun notarytool submit --wait`, then `xcrun stapler staple`,
+#   4. signs on Windows with an AUTHENTICODE certificate
+#      (SHA-256 + RFC 3161 timestamp via `signtool sign /tr ... /td sha256 /fd sha256`),
+#   5. attaches both dist/ packages to the GitHub release for the tag.
+#
+# Required secrets (Settings → Secrets and variables → Actions):
+#
+#   MACOS_CERT_P12_BASE64     base64 of your Developer ID Application .p12
+#   MACOS_CERT_P12_PASSWORD   password of that .p12
+#   APC_DEVELOPER_IDENTITY    "Developer ID Application: <Name> (<TEAMID>)"
+#   APPLE_API_KEY_P8_BASE64   base64 of the App Store Connect API key (.p8)
+#   APPLE_API_KEY_ID          key ID
+#   APPLE_API_ISSUER          issuer UUID
+#   WINDOWS_CERT_SHA1         thumbprint of the Authenticode cert (EV token or store)
+#                             — or replace the signtool call with your cloud signer
+#
+# EV certificates cannot leave a token: on GitHub-hosted runners use a cloud
+# signing service (e.g. Azure Trusted Signing, SSL.com eSigner) or a self-hosted
+# runner with the token attached. Keep the same /fd sha256 /tr <url> /td sha256.
+#
+# NOTE ON AD-HOC SIGNING: the `package` target ad-hoc signs macOS bundles
+# (`codesign --force --deep --sign -`) so they load during local development.
+# That signature is LOCAL-ONLY and is re-signed here with the Developer ID
+# identity before any artifact is published. Never remove the re-sign.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  macos:
+    name: macOS — build, sign, notarize, staple
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      APC_TIMESTAMP_URL: http://timestamp.digicert.com
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # immutable pin, same as apc-mcp CI
+
+      - name: Configure (Release, universal)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DAPC_MACOS_UNIVERSAL=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package (stages dist/; ad-hoc signed — re-signed below)
+        run: cmake --build build --config Release --target package
+
+      - name: Import Developer ID Application certificate
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/release.keychain-db"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$CERT_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$CERT_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" -P "$CERT_PASSWORD" -T /usr/bin/codesign -A
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$CERT_PASSWORD" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          # Prepend the throwaway keychain to the user search list (do not drop login.keychain).
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Codesign with Developer ID (hardened runtime, secure timestamp)
+        env:
+          IDENTITY: ${{ secrets.APC_DEVELOPER_IDENTITY }}
+        run: |
+          set -euo pipefail
+          # Hardened runtime + timestamp are both mandatory for notarization; the
+          # ad-hoc signature produced by the package target is overwritten here.
+          find dist -type d \( -name '*.vst3' -o -name '*.component' -o -name '*.clap' \) -print0 |
+            while IFS= read -r -d '' bundle; do
+              codesign --force --deep --options runtime --timestamp --sign "$IDENTITY" "$bundle"
+              codesign --verify --deep --strict --verbose=2 "$bundle"
+            done
+
+      - name: Notarize (notarytool --wait) and staple
+        env:
+          API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          echo "$API_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          find dist -type d \( -name '*.vst3' -o -name '*.component' -o -name '*.clap' \) -print0 |
+            while IFS= read -r -d '' bundle; do
+              ditto -c -k --keepParent "$bundle" "$RUNNER_TEMP/payload.zip"
+              # --wait blocks until Apple verdicts; a missing "status: Accepted" fails the job.
+              xcrun notarytool submit "$RUNNER_TEMP/payload.zip" \
+                --api-key "$RUNNER_TEMP/notary.p8" --api-key-id "$API_KEY_ID" \
+                --api-issuer "$API_ISSUER" --wait | tee "$RUNNER_TEMP/notary.log"
+              grep -q 'status: Accepted' "$RUNNER_TEMP/notary.log" || {
+                echo "::error::Notarization did not reach status: Accepted for $bundle"; exit 1;
+              }
+              # xcrun stapler staple only works on stapleable containers
+              # (.app/.pkg/.dmg). A bare .vst3/.component cannot be stapled; the
+              # bundle will be cleared by Gatekeeper's online notarization check.
+              # To staple, wrap the bundles in a signed .pkg/.dmg and staple that
+              # (see docs/release.md). Remove this failure branch only if you accept
+              # online-only Gatekeeper clearance.
+              if ! xcrun stapler staple "$bundle"; then
+                echo "::error title=staple failed::$bundle could not be stapled. Ship a stapled .pkg/.dmg or rely on online Gatekeeper notarization (see docs/release.md)."
+                exit 1
+              fi
+              xcrun stapler validate "$bundle"
+              rm -f "$RUNNER_TEMP/payload.zip"
+            done
+
+      - name: Attach dist/ to the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="$RUNNER_TEMP/plugin-macOS.zip"
+          ditto -c -k --keepParent dist "$ARCHIVE"
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes 2>/dev/null || echo "release exists, uploading"
+          gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" --clobber
+
+  windows:
+    name: Windows — build, sign (timestamped Authenticode)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      APC_TIMESTAMP_URL: http://timestamp.digicert.com
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # immutable pin, same as apc-mcp CI
+
+      - name: Configure (Release)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package (stages dist/)
+        run: cmake --build build --config Release --target package
+
+      - name: Sign every PE with timestamped Authenticode (SHA-256)
+        shell: pwsh
+        env:
+          CERT_SHA1: ${{ secrets.WINDOWS_CERT_SHA1 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # signtool ships with the Windows SDK; pick the newest x64 one.
+          $kitsRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          $signtool = Get-ChildItem -Path $kitsRoot -Recurse -File -Filter signtool.exe |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found under $kitsRoot — install the Windows SDK" }
+          Write-Host "Using $($signtool.FullName)"
+
+          # A Windows VST3 inner binary is a PE with the .vst3 extension; find
+          # PE files by their MZ magic instead of trusting extensions.
+          $files = Get-ChildItem -Path dist -Recurse -File |
+            Where-Object { $_.Extension -in '.exe', '.dll', '.vst3', '.clap' }
+          $signed = 0
+          foreach ($f in $files) {
+            $head = [System.IO.File]::ReadAllBytes($f.FullName)[0..1]
+            if ($head.Length -lt 2 -or $head[0] -ne 0x4D -or $head[1] -ne 0x5A) { continue }
+            # /fd sha256 + /tr (RFC 3161 timestamp) + /td sha256 are all
+            # mandatory; /sha1 selects the certificate, /a auto-selects (EV wins).
+            & $signtool.FullName sign /fd sha256 /tr $env:APC_TIMESTAMP_URL /td sha256 /sha1 $env:CERT_SHA1 $f.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed for $($f.FullName)" }
+            & $signtool.FullName verify /pa /v $f.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool verify failed for $($f.FullName)" }
+            $signed++
+          }
+          if ($signed -eq 0) { throw 'no PE binaries found to sign under dist/' }
+          Write-Host "Signed $signed file(s)."
+
+      - name: Attach dist/ to the GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'plugin-Windows.zip'
+          Compress-Archive -Path dist -DestinationPath $archive -Force
+          gh release create "$env:GITHUB_REF_NAME" --verify-tag --title "$env:GITHUB_REF_NAME" --generate-notes 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Host 'release exists, uploading' }
+          gh release upload "$env:GITHUB_REF_NAME" $archive --clobber

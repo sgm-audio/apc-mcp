@@ -424,10 +424,14 @@ if(APPLE AND TARGET {{PLUGIN_NAME}}_AU)
     )
 endif()
 
+# macOS ad-hoc signing below is for LOCAL TESTING ONLY: it confers no
+# Gatekeeper trust. Public distribution needs a Developer ID Application
+# certificate, the hardened runtime, notarytool notarization and stapling,
+# and on Windows a timestamped Authenticode signature.
 if(APPLE)
     if(TARGET {{PLUGIN_NAME}}_VST3)
         add_custom_command(TARGET {{PLUGIN_NAME}}_package POST_BUILD
-            COMMENT "Ad-hoc signing {{PLUGIN_NAME}}.vst3"
+            COMMENT "Ad-hoc signing (LOCAL ONLY) {{PLUGIN_NAME}}.vst3"
             COMMAND codesign --force --deep --sign -
                 "${APC_DIST_DIR}/{{PLUGIN_NAME}}.vst3"
             COMMAND codesign --force --deep --sign -
@@ -452,7 +456,10 @@ file(WRITE "${APC_INSTALL_TXT}"
     "macOS:   ~/Library/Audio/Plug-Ins/VST3/  or  /Library/Audio/Plug-Ins/VST3/\n"
     "Windows: C:\\Program Files\\Common Files\\VST3\\\n"
     "Linux:   ~/.vst3/\n\n"
-    "These bundles are ad-hoc signed for local testing only.\n"
+    "These bundles are ad-hoc signed (codesign --sign -) for LOCAL TESTING ONLY.\n"
+    "They are not hardened, timestamped or notarized and will be blocked on other machines.\n"
+    "Public distribution requires a Developer ID Application certificate + notarization\n"
+    "(macOS), or a timestamped Authenticode signature (Windows).\n"
 )
 
 add_custom_command(TARGET {{PLUGIN_NAME}}_package POST_BUILD
