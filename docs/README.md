@@ -10,6 +10,7 @@ Everything you need to use or maintain apc-mcp. Start with the [README](../READM
 | [Tool reference](tools.md) | Every tool, its arguments, examples, scaffold types and failure reporting |
 | [Configuration](configuration.md) | `apc-mcp.json`, defaults, project-root detection, expected layout |
 | [Toolchain & SDKs](toolchain.md) | Prerequisites, how CMake finds JUCE / CLAP / LV2, and how to supply the external ARA SDK; platform notes and gotchas |
+| [Release signing & distribution](release.md) | Developer ID + notarization + stapling on macOS, timestamped Authenticode on Windows, CI wiring, the fail-closed signing scripts |
 | [Troubleshooting](troubleshooting.md) | FAQ, missing-binary errors, validation skips, `npx` cache |
 
 ## For maintainers

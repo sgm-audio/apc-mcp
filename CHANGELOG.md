@@ -1079,6 +1079,52 @@ after), and the CLAP template still compiles and links with `-Wall -Wextra
   unreadable-subtree reporting the matrix asked for had already landed in the
   2026-11-17 round.
 
+### Release signing toolkit — 2026-11-20
+
+- **The distribution signing path now exists and fails closed.** Two new scripts
+  encode the full release sequences instead of leaving them as prose:
+  `scripts/sign-release-macos.mjs` (a **Developer ID Application** identity is
+  required — the ad-hoc `-` identity is refused; signing is always
+  `--force --deep --options runtime --timestamp`; `xcrun notarytool submit
+  --wait` whose output is gated on the literal `status: Accepted`; then `xcrun
+  stapler staple` + `stapler validate`, with `--allow-unstapled` as the
+  explicit, opt-in exception for unstapleable bare `.vst3`/`.component`
+  bundles) and `scripts/sign-release-windows.mjs` (every PE binary found by
+  MZ magic — including the inner `.vst3` — is signed
+  `signtool sign /fd sha256 /tr <RFC 3161 timestamp> /td sha256` with the
+  certificate from `/sha1` thumbprint, `/n` subject, `/f` PFX, or store `/a`
+  auto-select with EV preferred; `signtool verify /pa /v` gates each file).
+  Both validate credentials **before** invoking any signing binary and never
+  fall back to an unsigned or self-signed build — there is no silent success.
+- **New [Release signing & distribution](docs/release.md)** documents the
+  complete macOS sequence (Developer ID → hardened runtime →
+  `notarytool submit --wait` → stapling, including the honest treatment of
+  unstapleable bare plugin bundles and shipping a stapled `.pkg`/`.dmg`
+  instead) and the Windows Authenticode sequence (EV preferred, SHA-256,
+  RFC 3161 timestamp), plus a reusable
+  [`docs/examples/plugin-release.yml`](docs/examples/plugin-release.yml)
+  GitHub Actions workflow for scaffolded plugin repositories (tag-triggered,
+  macOS + Windows jobs, secrets documented, assets uploaded to the GitHub
+  release). The published npm package is unchanged: still `index.js` +
+  `templates/` only.
+- **Ad-hoc signing is now labelled local-only everywhere it appears.**
+  `README.md`, `docs/tools.md`, `docs/toolchain.md`, both JUCE templates'
+  `INSTALL.txt` and their `package`-target comments, and the
+  `clap-vst3-packaging` skill now state that `codesign --force --deep --sign -`
+  is a local-testing signature that is never valid for distribution — distinct
+  from the release path above. Tool references use the canonical `apc-*` names
+  (the `audio_plugin_*` aliases are deprecated).
+  `apc-ship` behaviour is unchanged: it remains a local
+  build/validate/staging gate, not a release process.
+- **Tests**: new `tests/release-sign.test.js` (26 tests) drives both scripts
+  against PATH shims — refusal of the ad-hoc identity, notarization
+  credentials validated before signing, the `status: Accepted` gate, stapler
+  gating and the `--allow-unstapled` opt-out (macOS), and MZ-magic PE
+  discovery with inner `.vst3` signing, `/fd sha256 /tr /td sha256` argv
+  shape, non-PE skipping and per-file `verify /pa` gating (Windows).
+  The delivery of distribution signing remains the plugin author's
+  certificates and CI secrets, not apc-mcp's.
+
 ## [1.5.0] — 2026-06-17
 
 ### Added
