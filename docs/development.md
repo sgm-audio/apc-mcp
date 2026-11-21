@@ -22,7 +22,7 @@ Requires Node.js 22+. The server itself is `index.js` (ESM, single file) with tw
 | `npm run smoke` | Scaffolds every `type` × `ui` case into a temp project and verifies structure |
 | `npm run smoke:configure` | Same, plus real CMake configure (needs CMake and SDK paths) |
 | `npm run smoke -- --build` | Plus compile/link and artefact checks. Add `--install` (honour `cmake --install --prefix`), `--lv2lint` (validate the built bundle; no distribution packages `lv2lint`, the CI job builds it from source) or `--clang-tidy` (static analysis) — each fails when its tool is missing rather than skipping. A build run also fails when a family has no SDK, so pass `--family=clap`, `--family=juce` or `--family=lv2` when the machine has only some of them (CI passes exactly one per job) |
-| `npm run cmake:lint` | `cmake-lint` over `templates/*/CMakeLists.txt`, configured by `.cmake-format.py` (needs `pip install cmakelang`) |
+| `npm run cmake:lint` | `cmake-lint` over `templates/*/CMakeLists.txt`, configured by `.cmake-format.py` (needs `pip install cmakelang`). `npm test` also checks the same line-width and indent rules without cmakelang, so a breach fails locally rather than only in the CI `lint-config` job |
 | `npm run smoke:validate -- --type=clap` | Scaffolds, builds and validates one plugin with the **real** `clap-validator` (needs `APC_CLAP_DIR` + the binary on `PATH`). `--type=juce` does the same with `pluginval` and `APC_JUCE_DIR`. Fails when a dependency is missing — it never skips |
 | `npm run audit` | `npm audit` |
 | `npm run licenses` | Lockfile license gate against `license_decisions.yml` |
