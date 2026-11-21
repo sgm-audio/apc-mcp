@@ -518,3 +518,143 @@ describe('workflow files are parseable YAML', () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+describe('a failing test in CI names itself', () => {
+  // Seven `test (*, macos-latest)` runs failed on main on 2026-11-20 and none of
+  // them could be diagnosed after the fact: the step's stdout is not retrievable
+  // through the API, the HTML log view needs auth, and the only annotation was
+  // "Process completed with exit code 1". The failing test name was lost every
+  // time. scripts/report-tests.mjs turns TAP into check-run annotations, which is
+  // the one diagnostic channel that survives without authentication.
+  //
+  // The fixture below is verbatim structure from `node --test` on Node 22: TAP
+  // single-quotes plain scalars, and suites re-report their children's failure as
+  // `subtestsFailed`.
+  const TAP_FIXTURE = [
+    'TAP version 13',
+    '# Subtest: outer suite',
+    '    # Subtest: inner',
+    '        # Subtest: fails with a message',
+    '        not ok 1 - fails with a message',
+    '          ---',
+    '          duration_ms: 2.82',
+    "          type: 'test'",
+    "          location: '/repo/tests/demo.test.js:6:5'",
+    "          failureType: 'testCodeFailure'",
+    '          error: |-',
+    '            the values differ',
+    "            + 'actual'",
+    "            - 'expected'",
+    '          code: ERR_ASSERTION',
+    '          ...',
+    '        1..1',
+    '    not ok 1 - inner',
+    '      ---',
+    "      type: 'suite'",
+    "      failureType: 'subtestsFailed'",
+    "      error: '1 subtest failed'",
+    '      ...',
+    '    1..1',
+    'not ok 1 - outer suite',
+    '  ---',
+    "  type: 'suite'",
+    "  failureType: 'subtestsFailed'",
+    "  error: '1 subtest failed'",
+    '  ...',
+    '# fail 1',
+    '',
+  ].join('\n');
+
+  it('no script is discoverable as a test by node --test', () => {
+    // `node --test` does not only run tests/*.test.js: its default discovery
+    // patterns include `**/test-*.{cjs,mjs,js}`, matched against every file in
+    // the repo. Naming the reporter `scripts/test-report.mjs` therefore made the
+    // runner *execute the reporter as a test*, where it blocked forever reading
+    // stdin that never closed — the whole suite hung instead of failing. Any
+    // helper under scripts/ whose name starts with `test-` has the same trap.
+    const scripts = fs.readdirSync(path.join(PROJECT_ROOT, 'scripts'));
+    const discoverable = scripts.filter(name => /^test-.*\.(cjs|mjs|js)$/.test(name));
+    assert.deepEqual(discoverable, [],
+      'node --test would run these as test files, not as the helpers they are: '
+      + `${discoverable.join(', ')} — rename them (e.g. report-tests.mjs)`);
+  });
+
+  it('CI pipes the test output through the reporter', () => {
+    assert.match(workflowText('publish.yml'),
+      /npm test 2>&1 \| node scripts\/report-tests\.mjs/,
+      'the Test step must pipe npm test through scripts/report-tests.mjs');
+    // Without pipefail the pipe's status is the reporter's, and the reporter
+    // exits 0 by design — the step would go green on a failing suite.
+    assert.match(workflowText('publish.yml'), /set -o pipefail[\s\S]{0,120}npm test/,
+      'the Test step must set pipefail, or a failing suite reports as a passing step');
+    assert.ok(fs.existsSync(path.join(PROJECT_ROOT, 'scripts', 'report-tests.mjs')),
+      'the workflow names a reporter that does not exist');
+    assert.ok(fs.existsSync(path.join(PROJECT_ROOT, 'scripts', 'stress-tests.mjs')),
+      '`npm run test:stress` names a script that does not exist');
+  });
+
+  it('parses TAP into one record per real failure, ignoring suite echoes', async () => {
+    const { parseTap } = await import('../scripts/report-tests.mjs');
+    const failures = parseTap(TAP_FIXTURE);
+    // The two suites re-report the child's failure; annotating them too would
+    // triplicate a single assertion error.
+    assert.equal(failures.length, 1, `expected 1 failure, got ${JSON.stringify(failures)}`);
+    const [f] = failures;
+    assert.equal(f.name, 'fails with a message');
+    assert.equal(f.file, '/repo/tests/demo.test.js');
+    assert.equal(f.line, 6, 'the annotation must point at the assertion, not the file top');
+    assert.deepEqual(f.suite, ['outer suite', 'inner']);
+    // TAP single-quotes scalars; a parser that keeps the quotes will not recogise
+    // 'suite' and will emit an annotation per describe() instead of per test.
+    assert.equal(f.type, 'test');
+    assert.match(f.error, /the values differ/, 'the assertion message must survive the |- block');
+    assert.match(f.error, /\+ 'actual'/);
+  });
+
+  it('emits a GitHub annotation with file, line and suite path', async () => {
+    const { parseTap, formatAnnotation } = await import('../scripts/report-tests.mjs');
+    const [f] = parseTap(TAP_FIXTURE);
+    const annotation = formatAnnotation(f, '/repo');
+    assert.match(annotation, /^::error file=tests\/demo\.test\.js,line=6,title=/,
+      `annotation must carry file and line: ${annotation}`);
+    assert.ok(annotation.includes('outer suite > inner > fails with a message'),
+      `annotation must carry the suite path: ${annotation}`);
+    assert.ok(annotation.includes('the values differ'), 'annotation must carry the message');
+    // A newline in the command body truncates the annotation at the first line.
+    assert.ok(!annotation.endsWith('\n') && !/\n/.test(annotation.slice(0, 200)),
+      'the command must be a single line');
+  });
+
+  it('escapes the workflow-command delimiters', async () => {
+    const { escapeCommand } = await import('../scripts/report-tests.mjs');
+    // % starts an escape sequence, and , / : delimit properties: unescaped they
+    // corrupt the command or silently drop the annotation.
+    assert.equal(escapeCommand('100%'), '100%25');
+    assert.equal(escapeCommand('a\nb'), 'a%0Ab');
+    assert.equal(escapeCommand('a\r\nb'), 'a%0D%0Ab');
+    // Only properties reserve comma and colon; the message body keeps them.
+    assert.equal(escapeCommand('a,b:c', true), 'a%2Cb%3Ac');
+    assert.equal(escapeCommand('a,b:c'), 'a,b:c');
+  });
+
+  it('ranks real failures above the cancellations a cascade produces', async () => {
+    const { rankFailures, isCascade } = await import('../scripts/report-tests.mjs');
+    const real = { depth: 8, name: 'assertion', failureType: 'testCodeFailure', error: 'x !== y' };
+    const cancel = { depth: 8, name: 'collateral', failureType: 'cancelledByParent',
+      error: 'test did not finish before its parent and was cancelled' };
+    const suite = { depth: 4, name: 'suite', failureType: 'testCodeFailure', error: '1 subtest failed' };
+    assert.equal(isCascade(real), false);
+    assert.equal(isCascade(cancel), true);
+    assert.deepEqual(rankFailures([cancel, suite, real]).map(f => f.name),
+      ['suite', 'assertion', 'collateral']);
+  });
+
+  it('never annotates a file outside the repository', async () => {
+    const { formatAnnotation } = await import('../scripts/report-tests.mjs');
+    const annotation = formatAnnotation({
+      name: 'x', error: 'y', file: '/somewhere/else/x.test.js', line: 3, suite: [],
+    }, '/repo');
+    assert.equal(annotation, '', 'a path outside the repo cannot be attached to the diff');
+  });
+});

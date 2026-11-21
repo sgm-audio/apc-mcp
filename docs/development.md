@@ -17,6 +17,8 @@ Requires Node.js 22+. The server itself is `index.js` (ESM, single file) with tw
 | Command | What it does |
 |---|---|
 | `npm test` | Full suite (`node --test`, auto-discovers `tests/`). Some C/C++ compile checks skip unless `APC_CLAP_INCLUDE` / `APC_LV2_INCLUDE` point at real upstream headers |
+| `npm run test:report` | Same suite, but TAP is passed through `scripts/report-tests.mjs`, which prints one line per failing test (suite path, `file:line`, assertion message) and, under GitHub Actions, emits them as check-run annotations. This is what the CI `Test` step runs |
+| `npm run test:stress -- --iterations=20` | Repeats the suite until it fails, to reproduce a flake. Add `--par=3` to load the machine and `--concurrency=4` for parallel tests inside a run; pass a file (`tests/security.test.js`) to narrow it. Exits non-zero on the first failing iteration and names the failing tests |
 | `npm run lint` | ESLint over the repo + `node --check index.js` |
 | `npm run typecheck` | `tsc -p tsconfig.json`: `checkJs` over `index.js`, `scripts/` and the test helpers. No emit |
 | `npm run smoke` | Scaffolds every `type` × `ui` case into a temp project and verifies structure |
