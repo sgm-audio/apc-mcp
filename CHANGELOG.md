@@ -30,6 +30,16 @@
 - **External ARA SDK is required.** CMake fails early with `FATAL_ERROR` when `APC_ARA_SDK_PATH` is unset, empty, or does not point to an initialized SDK root containing `ARA_Library/PlugIn/ARAPlug.h` and `ARA_API/ARAInterface.h`; it calls `juce_set_ara_sdk_path(...)` before `juce_add_plugin(...)`. `apc` defers auto-configuration and reports the configure option; `formats` overrides are rejected for ARA. This supersedes the historical removal notes below, which describe the invalid intermediate scaffold.
 - Added structural, C++ compile/link fixture and CMake missing-SDK integration coverage for the ARA template.
 
+### Lint gate
+
+- **The template house style is now checked by `npm test`, not only by CI.** `npm run cmake:lint`
+  needs `pip install cmakelang`, so a template edit breaching `.cmake-format.py` was previously
+  discovered only by the `lint-config` CI job. The ARA missing-SDK `FATAL_ERROR` was joined onto a
+  single 111-column line this way and turned an otherwise green run red. Two tests in
+  `tests/release.test.js` now reproduce cmake-lint's C0301 and C0307 findings (reading
+  `line_width`/`tab_size` from `.cmake-format.py` rather than hard-coding them) and fail locally
+  with the offending file, line and column count.
+
 ### Tool names
 
 - The short names are canonical and preferred: `apc`, `apc-add-param`, `apc-ship`,

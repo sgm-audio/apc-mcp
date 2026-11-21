@@ -155,6 +155,72 @@ describe('QA-08 · every static-analysis gate is wired into CI', () => {
       '.cmake-format.py must state the house style (tab_size/line_width), not disable C0301/C0307');
     assert.match(cmakeFmt, /tab_size\s*=\s*4/, '.cmake-format.py must declare the 4-space indent');
   });
+
+  // `npm run cmake:lint` needs `pip install cmakelang`, so the one gate that
+  // catches this runs nowhere locally for most people: a template edit that
+  // breaches the house style is only discovered by the CI `lint-config` job a
+  // few minutes later. That is what happened to the ARA template's missing-SDK
+  // FATAL_ERROR, which was joined onto one 111-column line and turned
+  // `templates/ara/CMakeLists.txt` red on an otherwise green run. These two
+  // checks are the same C0301 and C0307 findings cmake-lint reports, computed
+  // here so the failure surfaces in `npm test`.
+  describe('the templates satisfy the cmake-lint house style without cmakelang', () => {
+    const templates = path.join(PROJECT_ROOT, 'templates');
+    // Read the limits out of .cmake-format.py instead of hard-coding them, so
+    // this check cannot drift from the config CI actually uses.
+    const cmakeFmt = fs.readFileSync(path.join(PROJECT_ROOT, '.cmake-format.py'), 'utf8');
+    const setting = name => {
+      const match = cmakeFmt.match(new RegExp(`^\\s*${name}\\s*=\\s*(\\d+)`, 'm'));
+      assert.ok(match, `.cmake-format.py no longer sets ${name}, so this check would be vacuous`);
+      return Number(match[1]);
+    };
+    const files = fs.readdirSync(templates)
+      .map(dir => path.join(templates, dir, 'CMakeLists.txt'))
+      .filter(file => fs.existsSync(file));
+
+    it('every CMakeLists.txt line fits the configured line_width', () => {
+      assert.ok(files.length > 0, 'no templates/*/CMakeLists.txt found');
+      const lineWidth = setting('line_width');
+      const offenders = [];
+      for (const file of files) {
+        // cmake-lint measures columns, not bytes, so split on code points the
+        // same way: a line of 98 box-drawing characters is 100 columns wide even
+        // though it occupies 296 bytes in UTF-8.
+        const lines = fs.readFileSync(file, 'utf8').split('\n');
+        lines.forEach((line, index) => {
+          const columns = [...line].length;
+          if (columns > lineWidth) {
+            offenders.push(`${path.relative(PROJECT_ROOT, file)}:${index + 1} is `
+              + `${columns} columns (limit ${lineWidth}): ${line.trim().slice(0, 60)}…`);
+          }
+        });
+      }
+      assert.deepEqual(offenders, [],
+        `cmake-lint would report C0301 here. Wrap the line the way the rest of the `
+        + `template does (split a message() across adjacent string literals):\n  `
+        + offenders.join('\n  '));
+    });
+
+    it('block bodies are indented with spaces in multiples of tab_size', () => {
+      const tabSize = setting('tab_size');
+      const offenders = [];
+      for (const file of files) {
+        const lines = fs.readFileSync(file, 'utf8').split('\n');
+        lines.forEach((line, index) => {
+          if (line.trim() === '') return; // blank lines carry no indentation
+          const indent = line.slice(0, line.length - line.trimStart().length);
+          if (indent.includes('\t')) {
+            offenders.push(`${path.relative(PROJECT_ROOT, file)}:${index + 1} indents with a tab`);
+          } else if (indent.length % tabSize !== 0) {
+            offenders.push(`${path.relative(PROJECT_ROOT, file)}:${index + 1} is indented `
+              + `${indent.length} spaces, not a multiple of ${tabSize}`);
+          }
+        });
+      }
+      assert.deepEqual(offenders, [],
+        `cmake-lint would report C0307 here:\n  ${offenders.join('\n  ')}`);
+    });
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
